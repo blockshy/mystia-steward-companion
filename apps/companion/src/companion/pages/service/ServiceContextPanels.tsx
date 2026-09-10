@@ -30,8 +30,8 @@ type SpecialBusinessOrderSummary = {
   source: string;
 };
 
-export function OrderTraceBadge({ traceId }: { traceId?: string }) {
-  if (!traceId) return null;
+export function OrderTraceBadge({ traceId, showDebugDetails }: { traceId?: string; showDebugDetails: boolean }) {
+  if (!traceId || !showDebugDetails) return null;
   return (
     <Badge variant="secondary" title={`总日志标识 ${traceId}`}>
       日志 {traceId}
@@ -51,7 +51,7 @@ export function SpecialBusinessNotice({
 
   return (
     <Card>
-      <CardContent className="space-y-3 p-4 text-sm">
+      <CardContent className="space-y-3 text-sm">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant="secondary">特殊经营</Badge>
           <span className="font-medium text-foreground">{displayName}</span>
@@ -101,7 +101,7 @@ export function SpecialBusinessOrderList({
             <Badge variant="outline">{order.kind === 'rare' ? '稀客订单' : '普客订单'}</Badge>
             <Badge variant="outline">{order.foodText}</Badge>
             <Badge variant="outline">{order.beverageText}</Badge>
-            <OrderTraceBadge traceId={order.traceId} />
+            <OrderTraceBadge traceId={order.traceId} showDebugDetails={showDebugDetails} />
             {showDebugDetails && <Badge variant="secondary">{order.source}</Badge>}
           </div>
         </div>

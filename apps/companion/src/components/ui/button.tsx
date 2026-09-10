@@ -14,6 +14,7 @@ type ButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'color'> & {
   rightSection?: ReactNode;
   loading?: boolean;
   fullWidth?: boolean;
+  density?: 'standard' | 'compact';
 };
 
 const buttonVariantMap: Record<ButtonVariant, MantineButtonProps['variant']> = {
@@ -36,12 +37,13 @@ const buttonSizeMap: Record<ButtonSize, MantineButtonProps['size']> = {
   'icon-lg': 'compact-md',
 };
 
-function Button({ className, variant = 'default', size = 'default', ...props }: ButtonProps) {
+function Button({ className, variant = 'default', size = 'default', density = 'standard', ...props }: ButtonProps) {
   return (
     <MantineButton
       data-slot="button"
       data-ui-variant={variant}
       data-ui-size={size}
+      data-ui-density={density}
       color={variant === 'destructive' ? 'red' : 'steward'}
       variant={buttonVariantMap[variant]}
       size={buttonSizeMap[size]}

@@ -6,15 +6,16 @@ import { composeClassNames } from '@/components/ui/style';
 function Card({
   className,
   size = "default",
+  padding = size === 'sm' ? 'sm' : 'md',
   ...props
-}: React.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+}: React.ComponentProps<"div"> & { size?: "default" | "sm"; padding?: 0 | 'sm' | 'md' }) {
   return (
     <MantineCard
       data-slot="card"
       data-size={size}
       withBorder
       radius={0}
-      padding={size === 'sm' ? 'sm' : 'md'}
+      padding={padding}
       className={composeClassNames('steward-card group/card flex flex-col gap-3 overflow-hidden text-sm data-[size=sm]:gap-2.5', className)}
       {...props}
     />

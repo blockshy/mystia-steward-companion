@@ -997,7 +997,7 @@ async function assertStageAndControlContracts() {
   assert.ok(workbench.includes('|| automationControlReleasePending) return undefined;')
     && workbench.includes('if (automationControlReleasePendingRef.current) return;'),
   'Lease renewal must remain closed until the latest serialized control-state release finishes.');
-  assert.ok(connection.includes('if (inFlightRequestIdRef.current !== null) return null;')
+  assert.ok(connection.includes('if (inFlightRequestIdRef.current !== null && !supersede) return null;')
     && connection.includes('if (isSnapshotUnchanged(data))')
     && connection.includes('return currentSnapshot;')
     && connection.includes('return data;'),

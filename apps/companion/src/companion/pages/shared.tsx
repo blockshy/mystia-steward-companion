@@ -1,3 +1,4 @@
+import type { FavoriteAvailability } from '@/companion/domain/favorite-availability';
 import type { ReactNode } from 'react';
 
 import { PlaceSelect } from '@/components/controls/PlaceSelect';
@@ -174,6 +175,7 @@ export function FocusLimitInput({
     >
       <span className="whitespace-nowrap text-muted-foreground">{label}</span>
       <NumberInput
+        aria-label={label}
         min={1}
         max={MAX_FOCUS_RECOMMENDATION_ROWS}
         value={value}
@@ -627,6 +629,7 @@ export function RecipeRecommendationRow({
   favorite,
   favoriteKey = '',
   favoriteBusyKey = '',
+  favoriteAvailability,
   compact = false,
   gamepadOccurrenceKey,
   onToggleFavorite,
@@ -638,6 +641,7 @@ export function RecipeRecommendationRow({
   favorite?: FavoriteRecipeEntry | null;
   favoriteKey?: string;
   favoriteBusyKey?: string;
+  favoriteAvailability: FavoriteAvailability;
   compact?: boolean;
   gamepadOccurrenceKey: string;
   onToggleFavorite?: () => void;
@@ -653,7 +657,7 @@ export function RecipeRecommendationRow({
     ownedIngredientQty,
     ingredientIdByName,
   ) || '无';
-  const busy = Boolean(favoriteBusyKey);
+  const busy = Boolean(favoriteBusyKey) || !favoriteAvailability.canWrite;
 
   return (
     <RecommendationItem
@@ -707,6 +711,7 @@ export function BeverageRecommendationRow({
   favorite,
   favoriteKey = '',
   favoriteBusyKey = '',
+  favoriteAvailability,
   compact = false,
   gamepadOccurrenceKey,
   onToggleFavorite,
@@ -717,11 +722,12 @@ export function BeverageRecommendationRow({
   favorite?: FavoriteBeverageEntry | null;
   favoriteKey?: string;
   favoriteBusyKey?: string;
+  favoriteAvailability: FavoriteAvailability;
   compact?: boolean;
   gamepadOccurrenceKey: string;
   onToggleFavorite?: () => void;
 }) {
-  const busy = Boolean(favoriteBusyKey);
+  const busy = Boolean(favoriteBusyKey) || !favoriteAvailability.canWrite;
 
   return (
     <RecommendationItem

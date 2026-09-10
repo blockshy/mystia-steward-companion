@@ -1,5 +1,5 @@
-import type { ReactNode } from 'react';
-import { useCallback, useMemo, useState } from 'react';
+import type { ReactNode, RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   IconChevronRight,
   IconFileText,
@@ -8,6 +8,7 @@ import {
 } from '@tabler/icons-react';
 import {
   Card,
+  Button,
   CardContent,
   EmptyState,
   Input,
@@ -57,6 +58,11 @@ export function ModHelpPanel() {
   const [selectedItemId, setSelectedItemId] = useState(
     () => HELP_CONTENT.categories[0]?.items[0]?.id ?? '',
   );
+  const [mobileDetail, setMobileDetail] = useState(false);
+  const pendingFocusRef = useRef<'detail' | 'navigation' | null>(null);
+  const navigationRef = useRef<HTMLDivElement>(null);
+  const detailTitleRef = useRef<HTMLHeadingElement>(null);
+  const navigationPositionRef = useRef({ pageY: 0, treeY: 0 });
   const normalizedQuery = normalizeHelpSearchText(query);
   const filteredCategories = useMemo(
     () => filterHelpCategories(HELP_CONTENT.categories, normalizedQuery),
@@ -73,6 +79,40 @@ export function ModHelpPanel() {
   const selectedTreeValue = selectedContext ? getItemTreeValue(selectedContext.item.id) : undefined;
   const totalItems = HELP_CONTENT.categories.reduce((sum, category) => sum + category.items.length, 0);
   const visibleItems = filteredCategories.reduce((sum, category) => sum + category.items.length, 0);
+
+  const selectHelpItem = useCallback((itemId: string) => {
+    setSelectedItemId(itemId);
+    if (window.matchMedia('(max-width: 1023px)').matches) {
+      navigationPositionRef.current = {
+        pageY: window.scrollY,
+        treeY: navigationRef.current?.querySelector('[role="tree"]')?.scrollTop ?? 0,
+      };
+      setMobileDetail(true);
+      pendingFocusRef.current = 'detail';
+    }
+  }, []);
+  const returnToNavigation = useCallback(() => {
+    setMobileDetail(false);
+    pendingFocusRef.current = 'navigation';
+  }, []);
+
+  useEffect(() => {
+    const pendingFocus = pendingFocusRef.current;
+    if (!pendingFocus) return;
+    if (pendingFocus === 'detail') {
+      detailTitleRef.current?.focus({ preventScroll: true });
+      detailTitleRef.current?.scrollIntoView({ block: 'nearest' });
+    } else {
+      const tree = navigationRef.current?.querySelector<HTMLElement>('[role="tree"]');
+      const selected = navigationRef.current?.querySelector<HTMLElement>(
+        `[role="treeitem"][data-value="${CSS.escape(selectedTreeValue || '')}"]`,
+      );
+      if (tree) tree.scrollTop = navigationPositionRef.current.treeY;
+      selected?.focus({ preventScroll: true });
+      window.scrollTo({ top: navigationPositionRef.current.pageY });
+    }
+    pendingFocusRef.current = null;
+  }, [mobileDetail, selectedTreeValue]);
 
   const renderNode = useCallback(
     ({ node, expanded, hasChildren, selected, elementProps }: RenderTreeNodePayload) => {
@@ -94,7 +134,7 @@ export function ModHelpPanel() {
           onClick={(event) => {
             onClick(event);
             if (meta?.type === 'item') {
-              setSelectedItemId(meta.item.id);
+              selectHelpItem(meta.item.id);
             }
           }}
         >
@@ -115,13 +155,13 @@ export function ModHelpPanel() {
         </div>
       );
     },
-    [metaByValue],
+    [metaByValue, selectHelpItem],
   );
 
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="space-y-3 p-4">
+        <CardContent className="space-y-3">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-base font-semibold">帮助</h2>
@@ -134,8 +174,13 @@ export function ModHelpPanel() {
           </div>
           <Input
             value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setMobileDetail(false);
+            }}
             placeholder="搜索功能、问题或关键词"
+            aria-label="搜索帮助"
+            data-gamepad-focus-key="help:search"
             data-gamepad-clickable="true"
           />
         </CardContent>
@@ -145,8 +190,9 @@ export function ModHelpPanel() {
         <EmptyState text="没有匹配的帮助内容" />
       ) : (
         <div className="grid gap-3 lg:grid-cols-[18rem_minmax(0,1fr)]">
-          <Card className="min-w-0">
-            <CardContent className="p-3">
+          <Card className={composeClassNames('min-w-0', mobileDetail && 'hidden lg:block')}>
+            <CardContent className="">
+              <div ref={navigationRef} data-help-navigation>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <h3 className="text-sm font-semibold">目录</h3>
                 <span className="text-xs text-muted-foreground">{filteredCategories.length} 类</span>
@@ -156,14 +202,37 @@ export function ModHelpPanel() {
                 data={treeData}
                 renderNode={renderNode}
                 selectedTreeValue={selectedTreeValue}
+                onActivate={selectHelpItem}
               />
+              </div>
             </CardContent>
           </Card>
 
-          <Card className="min-w-0">
-            <CardContent className="p-4">
+          <Card
+            className={composeClassNames('min-w-0', !mobileDetail && 'hidden lg:block')}
+            data-gamepad-back-scope="true"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && mobileDetail && window.matchMedia('(max-width: 1023px)').matches) {
+                event.preventDefault();
+                event.stopPropagation();
+                returnToNavigation();
+              }
+            }}
+          >
+            <CardContent className="">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mb-3 lg:hidden"
+                data-gamepad-focus-key="help:return-navigation"
+                data-gamepad-back="true"
+                onClick={returnToNavigation}
+              >
+                返回目录
+              </Button>
               {selectedContext ? (
-                <HelpDetail selected={selectedContext} />
+                <HelpDetail selected={selectedContext} titleRef={detailTitleRef} />
               ) : (
                 <EmptyState text="请选择一个帮助条目" />
               )}
@@ -179,10 +248,12 @@ function HelpTreeNavigation({
   data,
   renderNode,
   selectedTreeValue,
+  onActivate,
 }: {
   data: TreeNodeData[];
   renderNode: (payload: RenderTreeNodePayload) => ReactNode;
   selectedTreeValue?: string;
+  onActivate: (itemId: string) => void;
 }) {
   const initialExpandedState = useMemo(() => getTreeExpandedStateFromData(data), [data]);
   const tree = useTree({
@@ -201,16 +272,39 @@ function HelpTreeNavigation({
       data-gamepad-scroll-key="help:navigation"
       data-gamepad-scroll-region="true"
       tabIndex={-1}
+      onKeyDownCapture={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        const item = event.target instanceof HTMLElement
+          ? event.target.closest<HTMLElement>('[role="treeitem"]')
+          : null;
+        const value = item?.dataset.value;
+        if (!value?.startsWith('item:')) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onActivate(value.slice('item:'.length));
+      }}
     />
   );
 }
 
-function HelpDetail({ selected }: { selected: SelectedHelpItem }) {
+function HelpDetail({ selected, titleRef }: {
+  selected: SelectedHelpItem;
+  titleRef: RefObject<HTMLHeadingElement | null>;
+}) {
   const { category, item } = selected;
   return (
     <div className="min-w-0">
       <div className="text-xs font-medium text-muted-foreground">{category.title}</div>
-      <h3 className="mt-1 text-base font-semibold leading-snug">{item.title}</h3>
+      <h3
+        ref={titleRef}
+        tabIndex={-1}
+        className="mt-1 text-base font-semibold leading-snug outline-none"
+        data-help-detail-title
+        data-gamepad-focusable="true"
+        data-gamepad-focus-key="help:detail-title"
+      >
+        {item.title}
+      </h3>
       {item.summary && <p className="mt-2 text-sm text-muted-foreground">{item.summary}</p>}
       {category.description && (
         <p className="mt-2 text-xs text-muted-foreground">{category.description}</p>

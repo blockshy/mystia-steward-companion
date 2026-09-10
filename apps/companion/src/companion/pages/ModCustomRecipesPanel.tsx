@@ -1,5 +1,5 @@
-import { useMemo } from 'react';
-import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import {
   Badge,
   Button,
@@ -91,6 +91,9 @@ export function ModCustomRecipesPanel({
   onFormChange,
   onGroupModeChange,
 }: ModCustomRecipesPanelProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const editorHeadingRef = useRef<HTMLHeadingElement>(null);
+  const returnFocusKeyRef = useRef<string | null>(null);
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(
     () => getAllRareCustomers(data)
@@ -98,8 +101,10 @@ export function ModCustomRecipesPanel({
       .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN')),
     [data],
   );
-  const selectedCustomer = customers.find((customer) => String(customer.id) === form.customerId) ?? customers[0] ?? null;
-  const selectedRecipe = dataIndexes.recipeByFoodId.get(Number(form.foodId)) ?? null;
+  const selectedCustomer = form.customerId
+    ? customers.find((customer) => String(customer.id) === form.customerId) ?? null
+    : customers[0] ?? null;
+  const selectedRecipe = form.foodId ? dataIndexes.recipeByFoodId.get(Number(form.foodId)) ?? null : null;
   const baseIngredientIds = useMemo(
     () => buildBaseIngredientIds(selectedRecipe, dataIndexes.ingredientIdByName),
     [dataIndexes.ingredientIdByName, selectedRecipe],
@@ -108,8 +113,8 @@ export function ModCustomRecipesPanel({
     ? Math.max(0, MAX_FOOD_INGREDIENT_COUNT - selectedRecipe.ingredients.length)
     : 0;
   const selectedExtraIds = useMemo(() =>
-    normalizeIdList(form.extraIngredientIds.map((value) => Number(value))).slice(0, extraCapacity),
-    [extraCapacity, form.extraIngredientIds],
+    normalizeIdList(form.extraIngredientIds.map((value) => Number(value))),
+    [form.extraIngredientIds],
   );
   const selectedExtraValues = useMemo(
     () => selectedExtraIds.map(String),
@@ -124,8 +129,18 @@ export function ModCustomRecipesPanel({
     [customers, dataIndexes.recipeByFoodId, entries, groupMode],
   );
   const recipeOptions = useMemo(
-    () => buildRecipeOptions(data.recipes, runtimeSets),
-    [data.recipes, runtimeSets],
+    () => {
+      const options = buildRecipeOptions(data.recipes, runtimeSets);
+      if (form.foodId && !options.some((option) => option.value === form.foodId)) {
+        options.unshift({
+          value: form.foodId,
+          label: selectedRecipe ? `${selectedRecipe.name}（当前未解锁）` : `目录未识别的料理 #${form.foodId}`,
+          disabled: true,
+        });
+      }
+      return options;
+    },
+    [data.recipes, form.foodId, runtimeSets, selectedRecipe],
   );
   const ingredientOptions = useMemo(
     () => buildIngredientOptions(
@@ -148,25 +163,51 @@ export function ModCustomRecipesPanel({
     ],
   );
   const foodTagOptions = useMemo(
-    () => [
-      { value: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE, label: '全部点单料理标签' },
-      ...(selectedCustomer?.positiveTags ?? [])
-        .filter(isOrderableRareFoodTag)
-        .map((tag) => ({ value: tag, label: tag })),
-    ],
-    [selectedCustomer],
+    () => {
+      const options = [
+        { value: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE, label: '全部点单料理标签' },
+        ...(selectedCustomer?.positiveTags ?? []).filter(isOrderableRareFoodTag)
+          .map((tag) => ({ value: tag, label: tag })),
+      ];
+      if (!options.some((option) => option.value === form.foodTagValue)) {
+        options.unshift({ value: form.foodTagValue, label: `${form.foodTagValue}（当前不适用）` });
+      }
+      return options;
+    },
+    [form.foodTagValue, selectedCustomer],
   );
   const totalIngredientCount = (selectedRecipe?.ingredients.length ?? 0) + selectedExtraIds.length;
   const busy = Boolean(customRecipeBusyKey);
   const summary = summarizeEntries(entries);
   const formError = buildFormError({
     apiToken,
+    form,
     selectedCustomer,
     selectedRecipe,
     totalIngredientCount,
+    selectedExtraIds,
+    runtimeSets,
+    dataIndexes,
   });
 
-  const resetForm = () => onFormChange(createInitialForm(selectedCustomer));
+  useEffect(() => {
+    if (!form.editingId) return;
+    editorHeadingRef.current?.focus();
+    editorHeadingRef.current?.scrollIntoView({ block: 'start' });
+  }, [form.editingId]);
+
+  const resetForm = () => {
+    onFormChange(createInitialForm(selectedCustomer));
+    const returnFocusKey = returnFocusKeyRef.current;
+    returnFocusKeyRef.current = null;
+    window.requestAnimationFrame(() => {
+      const target = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('[data-gamepad-focus-key]') ?? [])
+        .find((element) => element.dataset.gamepadFocusKey === returnFocusKey);
+      const focusTarget = target ?? editorHeadingRef.current;
+      focusTarget?.focus();
+      focusTarget?.scrollIntoView({ block: 'nearest' });
+    });
+  };
   const saveForm = async () => {
     if (!selectedCustomer || !selectedRecipe || formError) return;
     const creating = !form.editingId;
@@ -191,7 +232,7 @@ export function ModCustomRecipesPanel({
   }
 
   return (
-    <div className="space-y-4">
+    <div ref={panelRef} className="space-y-4">
       <div className="steward-inline-panel space-y-3 px-3 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <SwitchField
@@ -217,12 +258,22 @@ export function ModCustomRecipesPanel({
       </div>
 
       <Card>
-        <CardContent className="space-y-4 p-4 text-sm">
+        <CardContent className="space-y-4 text-sm">
+          <h2 ref={editorHeadingRef} tabIndex={-1} className="font-semibold" data-custom-recipe-editor-heading="true">
+            {form.editingId
+              ? `编辑配方 · ${selectedCustomer?.name ?? `稀客 #${form.customerId}`} · ${selectedRecipe?.name ?? `料理 #${form.foodId}`} · ${form.foodTagValue === CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE ? '全部点单' : form.foodTagValue}`
+              : '新增自定义配方'}
+          </h2>
           <div className={DENSE_TWO_COLUMN_GRID}>
-            <LabeledControl label="稀客">
               <SelectBox
-                value={selectedCustomer ? String(selectedCustomer.id) : ''}
-                options={customers.map((customer) => ({ value: String(customer.id), label: customer.name }))}
+                label="稀客"
+                value={form.customerId || (selectedCustomer ? String(selectedCustomer.id) : '')}
+                options={[
+                  ...(!selectedCustomer && form.customerId
+                    ? [{ value: form.customerId, label: `目录未识别的稀客 #${form.customerId}`, disabled: true }]
+                    : []),
+                  ...customers.map((customer) => ({ value: String(customer.id), label: customer.name })),
+                ]}
                 searchable
                 disabled={customers.length === 0 || busy}
                 onValueChange={(value) => onFormChange((current) => ({
@@ -231,18 +282,16 @@ export function ModCustomRecipesPanel({
                   foodTagValue: CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE,
                 }))}
               />
-            </LabeledControl>
-            <LabeledControl label="点单料理标签">
               <SelectBox
+                label="点单料理标签"
                 value={form.foodTagValue}
                 options={foodTagOptions}
                 searchable
                 disabled={!selectedCustomer || busy}
                 onValueChange={(value) => onFormChange((current) => ({ ...current, foodTagValue: value }))}
               />
-            </LabeledControl>
-            <LabeledControl label="基础料理">
               <SelectBox
+                label="基础料理"
                 value={form.foodId}
                 options={recipeOptions}
                 searchable
@@ -253,19 +302,17 @@ export function ModCustomRecipesPanel({
                   extraIngredientIds: [],
                 }))}
               />
-            </LabeledControl>
-            <LabeledControl label={`加料材料 (${selectedExtraIds.length}/${extraCapacity})`}>
               <MultiSelectBox
+                label={`加料材料 (${selectedExtraIds.length}/${extraCapacity})`}
                 value={selectedExtraValues}
                 options={ingredientOptions}
                 disabled={!selectedRecipe || extraCapacity <= 0 || busy}
-                placeholder={extraCapacity <= 0 ? '该料理已达到 5 个材料上限' : '选择额外材料'}
+                placeholder={!selectedRecipe ? '请先选择基础料理' : extraCapacity <= 0 ? '该料理已达到 5 个材料上限' : '选择额外材料'}
                 onValueChange={(values) => {
                   const nextIds = normalizeIdList(values.map((value) => Number(value))).slice(0, extraCapacity);
                   onFormChange((current) => ({ ...current, extraIngredientIds: nextIds.map(String) }));
                 }}
               />
-            </LabeledControl>
           </div>
 
           <div className="flex flex-wrap items-center gap-4">
@@ -380,8 +427,13 @@ export function ModCustomRecipesPanel({
                       runtimeSets={runtimeSets}
                       dataIndexes={dataIndexes}
                       busy={busy}
-                      onEdit={() => onFormChange(entryToForm(entry))}
-                      onRemove={() => void onRemoveCustomRecipe(entry.id)}
+                      onEdit={() => {
+                        returnFocusKeyRef.current = `custom-recipe:${entry.id}:edit`;
+                        onFormChange(entryToForm(entry));
+                      }}
+                      onRemove={() => void onRemoveCustomRecipe(entry.id).then((removed) => {
+                        if (removed && form.editingId === entry.id) resetForm();
+                      })}
                       onToggle={() => void onUpdateCustomRecipeFlags({
                         selection: { scope: 'entry', id: entry.id },
                         enabled: !entry.enabled,
@@ -462,15 +514,6 @@ function FlagActions({
   );
 }
 
-function LabeledControl({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div>
-      <div className="mb-1 text-xs text-muted-foreground">{label}</div>
-      {children}
-    </div>
-  );
-}
-
 function RecipeFormSummary({
   recipe,
   extraIngredientIds,
@@ -544,6 +587,7 @@ function CustomRecipeRow({
   const primaryLabel = groupMode === 'customer'
     ? recipe?.name ?? (entry.recipeName || `料理 #${entry.foodId}`)
     : entry.customerName || `稀客 #${entry.customerId}`;
+  const actionTarget = `${entry.customerName || `稀客 #${entry.customerId}`}的${recipe?.name || entry.recipeName || `料理 #${entry.foodId}`}配方`;
 
   return (
     <div
@@ -551,8 +595,8 @@ function CustomRecipeRow({
       data-gamepad-row="true"
       data-gamepad-row-key={`custom-recipe:${entry.id}`}
     >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0 flex-1">
+      <div className="grid min-w-0 gap-2 min-[640px]:grid-cols-[minmax(10rem,1fr)_auto] min-[640px]:items-center">
+        <div className="min-w-0" data-custom-recipe-row-content="true">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="font-medium">{primaryLabel}</span>
             <Badge variant={entry.foodTag === null ? 'secondary' : 'outline'}>
@@ -568,7 +612,7 @@ function CustomRecipeRow({
             厨具 {recipe?.cooker || '未知'} · 基础 {base} · 加料 {extras}
           </div>
         </div>
-        <div className="flex flex-wrap justify-end gap-1.5" data-gamepad-axis="x">
+        <div className="flex min-w-0 flex-wrap justify-end gap-1.5 min-[640px]:max-w-[22rem]" data-gamepad-axis="x">
           {groupMode === 'customer' && (
             <>
               <Button
@@ -577,6 +621,7 @@ function CustomRecipeRow({
                 variant="outline"
                 disabled={busy || index === 0}
                 data-gamepad-focus-key={`custom-recipe:${entry.id}:up`}
+                aria-label={`上移${actionTarget}`}
                 onClick={() => void onMove(entry.id, 'up')}
               >
                 上移
@@ -587,6 +632,7 @@ function CustomRecipeRow({
                 variant="outline"
                 disabled={busy || index === total - 1}
                 data-gamepad-focus-key={`custom-recipe:${entry.id}:down`}
+                aria-label={`下移${actionTarget}`}
                 onClick={() => void onMove(entry.id, 'down')}
               >
                 下移
@@ -599,6 +645,7 @@ function CustomRecipeRow({
             variant="outline"
             disabled={busy}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:pin`}
+            aria-label={`${entry.pinToTop ? '取消置顶' : '置顶'}${actionTarget}`}
             onClick={onTogglePin}
           >
             {entry.pinToTop ? '取消置顶' : '置顶'}
@@ -609,6 +656,7 @@ function CustomRecipeRow({
             variant="outline"
             disabled={busy}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:toggle`}
+            aria-label={`${entry.enabled ? '停用' : '启用'}${actionTarget}`}
             onClick={onToggle}
           >
             {entry.enabled ? '停用' : '启用'}
@@ -619,6 +667,7 @@ function CustomRecipeRow({
             variant="outline"
             disabled={busy}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:edit`}
+            aria-label={`编辑${actionTarget}`}
             onClick={onEdit}
           >
             编辑
@@ -629,6 +678,7 @@ function CustomRecipeRow({
             variant="destructive"
             disabled={busy}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:remove`}
+            aria-label={`删除${actionTarget}`}
             onClick={onRemove}
           >
             删除
@@ -740,7 +790,7 @@ function buildIngredientOptions(
   extraCapacity: number,
 ) {
   const selected = new Set(selectedExtraIds);
-  return ingredients
+  const options = ingredients
     .filter((ingredient) => runtimeSets?.ingredientIds.has(ingredient.id))
     .filter((ingredient) => !baseIngredientIds.has(ingredient.id))
     .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN'))
@@ -753,6 +803,15 @@ function buildIngredientOptions(
       ),
       disabled: selectedExtraIds.length >= extraCapacity && !selected.has(ingredient.id),
     }));
+  for (const id of selectedExtraIds) {
+    if (options.some((option) => option.value === String(id))) continue;
+    options.push({
+      value: String(id),
+      label: `${ingredientNameById.get(id) ?? `材料 #${id}`}（当前不可用）`,
+      disabled: false,
+    });
+  }
+  return options;
 }
 
 function buildBaseIngredientIds(
@@ -766,18 +825,37 @@ function buildBaseIngredientIds(
 
 function buildFormError({
   apiToken,
+  form,
   selectedCustomer,
   selectedRecipe,
   totalIngredientCount,
+  selectedExtraIds,
+  runtimeSets,
+  dataIndexes,
 }: {
   apiToken: string;
+  form: CustomRecipeFormState;
   selectedCustomer: RareCustomerCatalogItem | null;
   selectedRecipe: RecipeCatalogItem | null;
   totalIngredientCount: number;
+  selectedExtraIds: number[];
+  runtimeSets: RuntimeSets | null;
+  dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
 }): string {
   if (!apiToken) return '未收到本地 API Token，无法保存自定义推荐料理。';
-  if (!selectedCustomer) return '请选择稀客。';
-  if (!selectedRecipe) return '请选择基础料理。';
+  if (!selectedCustomer) return form.customerId ? `当前目录未识别稀客 #${form.customerId}，请明确选择稀客后再保存。` : '请选择稀客。';
+  if (!selectedRecipe) return form.foodId ? `当前目录未识别料理 #${form.foodId}，请明确选择基础料理后再保存。` : '请选择基础料理。';
+  if (!runtimeSets?.recipeIds.has(selectedRecipe.id)) return '基础料理当前未解锁，请选择已解锁料理。';
+  if (form.foodTagValue !== CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE
+    && !selectedCustomer.positiveTags.filter(isOrderableRareFoodTag).includes(form.foodTagValue)) {
+    return `当前稀客没有点单标签「${form.foodTagValue}」，请明确选择点单标签后再保存。`;
+  }
+  const unavailableExtraId = selectedExtraIds.find((id) => !dataIndexes.ingredientNameById.has(id)
+    || !runtimeSets.ingredientIds.has(id));
+  if (unavailableExtraId !== undefined) return `加料材料 #${unavailableExtraId} 当前不可用，请重新选择加料。`;
+  if (selectedExtraIds.some((id) => selectedRecipe.ingredients.some((name) => dataIndexes.ingredientIdByName.get(name) === id))) {
+    return '加料包含基础配方已有材料，请重新选择加料。';
+  }
   if (selectedRecipe.ingredients.length > MAX_FOOD_INGREDIENT_COUNT) return '基础料理材料数量超过游戏上限。';
   if (totalIngredientCount > MAX_FOOD_INGREDIENT_COUNT) return '料理总材料数不能超过 5 个。';
   return '';

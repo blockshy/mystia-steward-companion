@@ -16,6 +16,10 @@ export function ModOverviewPanel({
   onApiTokenDraftChange,
   onApplyEndpointConnection,
   onPauseConnection,
+  onResumeConnection,
+  onDiscardConnectionDraft,
+  connectionDraftDirty,
+  supportsDesktopWindowControls,
   onRefresh,
   apiToken,
   connectionPaused,
@@ -37,6 +41,10 @@ export function ModOverviewPanel({
   onApiTokenDraftChange: (value: string) => void;
   onApplyEndpointConnection: () => void;
   onPauseConnection: () => void;
+  onResumeConnection: () => void;
+  onDiscardConnectionDraft: () => void;
+  connectionDraftDirty: boolean;
+  supportsDesktopWindowControls: boolean;
   onRefresh: () => void;
   apiToken: string;
   connectionPaused: boolean;
@@ -84,7 +92,7 @@ export function ModOverviewPanel({
             库存
           </TabsTrigger>
           <TabsTrigger value="actions" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-            操作
+            快捷键
           </TabsTrigger>
         </TabsList>
 
@@ -96,6 +104,9 @@ export function ModOverviewPanel({
             onApiTokenDraftChange={onApiTokenDraftChange}
             onApplyEndpointConnection={onApplyEndpointConnection}
             onPauseConnection={onPauseConnection}
+            onResumeConnection={onResumeConnection}
+            onDiscardConnectionDraft={onDiscardConnectionDraft}
+            connectionDraftDirty={connectionDraftDirty}
             onRefresh={onRefresh}
             apiToken={apiToken}
             connectionPaused={connectionPaused}
@@ -111,7 +122,7 @@ export function ModOverviewPanel({
 
         <TabsContent value="status" className="space-y-4">
           <Card>
-            <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} p-4 text-sm`}>
+            <CardContent className={`${DENSE_TWO_COLUMN_GRID_TIGHT} text-sm`}>
               <InfoLine label="数据来源" value="游戏实时 API，不读取 .memory 存档" />
               <InfoLine label="场景" value={snapshot?.activeSceneName || '未知'} />
               <InfoLine
@@ -142,11 +153,11 @@ export function ModOverviewPanel({
 
         <TabsContent value="inventory" className="space-y-4">
           <Card>
-            <CardContent className={`${DENSE_FOUR_COLUMN_GRID} p-4 text-sm`}>
-              <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? 0} />
-              <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? 0} />
-              <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? 0} />
-              <Metric label="明星店" value={runtime?.famousShopEnabled ? '开启' : '关闭'} />
+            <CardContent className={`${DENSE_FOUR_COLUMN_GRID} text-sm`}>
+              <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? '未读取'} />
+              <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? '未读取'} />
+              <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? '未读取'} />
+              <Metric label="明星店" value={!runtime ? '未读取' : runtime.famousShopEnabled ? '开启' : '关闭'} />
             </CardContent>
           </Card>
 
@@ -161,12 +172,12 @@ export function ModOverviewPanel({
         <TabsContent value="actions" className="space-y-4">
           <ListPanel title="快捷键">
             <div className={`${DENSE_TWO_COLUMN_GRID_TIGHT} text-sm`}>
-              <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />
-              <InfoLine label="F10" value="开启或关闭鼠标穿透锁定；穿透后可用它恢复窗口操作" />
-              <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />
+              {supportsDesktopWindowControls && <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />}
+              {supportsDesktopWindowControls && <InfoLine label="F10" value="注册成功后切换鼠标穿透；状态见设置中的窗口选项" />}
+              {supportsDesktopWindowControls && <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />}
               <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 关闭/返回，X 收藏，Y 专注模式，LB/RB 切页，LT/RT 滚动" />
               <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
-              <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />
+              {supportsDesktopWindowControls && <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />}
             </div>
           </ListPanel>
         </TabsContent>

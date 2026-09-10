@@ -633,6 +633,27 @@ async function auditNumberInput(page) {
     issues.push(`NumberInput 按左键应递减，实际从 ${afterRight} 变为 ${afterLeft}。`);
   }
   await expectFocusedElement(page, input, 'NumberInput 反向调值后焦点应保持在输入框');
+
+  const label = await input.getAttribute('aria-label');
+  const increase = page.getByRole('button', { name: `增加${label}`, exact: true });
+  const decrease = page.getByRole('button', { name: `减少${label}`, exact: true });
+  await increase.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  const afterKeyboardIncrease = Number(await input.inputValue());
+  if (afterKeyboardIncrease <= afterLeft) {
+    issues.push(`具名递增按钮按 Enter 应递增，实际从 ${afterLeft} 变为 ${afterKeyboardIncrease}。`);
+  }
+  await expectFocusedElement(page, increase, '具名递增按钮按 Enter 后应保留键盘焦点');
+  await decrease.focus();
+  await page.keyboard.press('Space');
+  const afterKeyboardDecrease = Number(await input.inputValue());
+  if (afterKeyboardDecrease >= afterKeyboardIncrease) {
+    issues.push(`具名递减按钮按空格应递减，实际从 ${afterKeyboardIncrease} 变为 ${afterKeyboardDecrease}。`);
+  }
+  await expectFocusedElement(page, decrease, '具名递减按钮按空格后应保留键盘焦点');
+  await input.fill(String(afterLeft));
+  await input.press('Tab');
 }
 
 async function auditLayeredBackNavigation(page) {
@@ -1023,7 +1044,7 @@ async function auditPlaceToolbarAndRareSelectors(page) {
   await expectFocusedText(page, /跟随经营场景/, '稀客页地区下拉框按右键应聚焦“跟随经营场景”按钮');
 
   await pressButton(page, BUTTON_DPAD_LEFT, { holdMs: 70 });
-  await expectFocusedText(page, /选择地区/, '稀客页“跟随经营场景”按左键应回到地区下拉框');
+  await expectFocusedElement(page, page.getByRole('combobox', { name: '地区', exact: true }), '稀客页“跟随经营场景”按左键应回到地区下拉框');
 
   await focusVisibleLocator(page, 'input[aria-label="稀客"]');
   await pressButton(page, BUTTON_DPAD_RIGHT, { holdMs: 70 });

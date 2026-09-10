@@ -13,8 +13,8 @@ export function UpdateNoticeBar({
   const { status } = manager;
   if (!manager.noticeVisible || !status) return null;
 
-  const content = getUpdateNoticeContent(status);
-  const failed = content.kind === 'install-failed';
+  const content = getUpdateNoticeContent(status, manager.busy);
+  const failed = content.kind === 'install-failed' || content.kind === 'update-failed';
 
   return (
     <div

@@ -10,6 +10,7 @@ const STORAGE_PREFIX = 'mystia-steward-companion';
 const FAVORITE_CONNECT_TIMEOUT = '连接本地 API 超时。请确认手机和电脑位于同一局域网，并检查电脑防火墙和路由器的客户端隔离设置。';
 const FAVORITE_SYNC_ERROR = `收藏数据同步失败：${FAVORITE_CONNECT_TIMEOUT}`;
 const FAVORITE_WRITE_RACE_ERROR = '收藏数据同步失败：模拟收藏读取失败';
+const LOST_MUTATION_RESPONSE_ERROR = '模拟收藏修改响应丢失';
 const mutationRequests = [];
 let activeMutations = 0;
 let maxActiveMutations = 0;
@@ -20,6 +21,9 @@ let failNextCompactSnapshot = false;
 let holdNextCompactSnapshot = false;
 let failNextFavoriteRead = false;
 let holdNextMutation = false;
+let loseNextMutationResponse = false;
+let holdFavoriteVerification = false;
+let lostMutationExecutedOnServer = false;
 let mutationStartedAt = 0;
 let snapshotRecoveryWatchdogTriggered = false;
 let mutationWatchdogTriggered = false;
@@ -29,6 +33,8 @@ let releaseSnapshotRecovery = () => {};
 let markSnapshotRecoveryStarted = () => {};
 let releaseMutation = () => {};
 let markMutationStarted = () => {};
+let releaseFavoriteVerification = () => {};
+let markFavoriteVerificationStarted = () => {};
 const favoriteRetryGate = new Promise((resolve) => {
   releaseFavoriteRetry = resolve;
 });
@@ -46,6 +52,12 @@ const mutationGate = new Promise((resolve) => {
 });
 const mutationStarted = new Promise((resolve) => {
   markMutationStarted = resolve;
+});
+const favoriteVerificationGate = new Promise((resolve) => {
+  releaseFavoriteVerification = resolve;
+});
+const favoriteVerificationStarted = new Promise((resolve) => {
+  markFavoriteVerificationStarted = resolve;
 });
 
 await mkdir(OUTPUT_DIR, { recursive: true });
@@ -90,6 +102,14 @@ try {
     }
     if (request.method() === 'GET' && url.pathname === '/favorites') {
       favoriteReadRequests += 1;
+      if (holdFavoriteVerification) {
+        holdFavoriteVerification = false;
+        markFavoriteVerificationStarted();
+        await favoriteVerificationGate;
+        const response = await route.fetch();
+        await route.fulfill({ response });
+        return;
+      }
       if (favoriteReadRequests === 1) {
         await route.fulfill({
           status: 503,
@@ -142,6 +162,22 @@ try {
         await mutationGate.finally(() => clearTimeout(mutationWatchdog));
       }
       const response = await route.fetch();
+      if (loseNextMutationResponse) {
+        loseNextMutationResponse = false;
+        const actual = await response.json();
+        assert(response.ok() && actual.ok === true, '模拟响应丢失前的服务端删除未成功执行');
+        assert(!actual.favorites.beverages.some((entry) => entry.id === url.searchParams.get('id')),
+          '服务端响应仍包含待删除酒水，未建立真实已执行场景');
+        lostMutationExecutedOnServer = true;
+        holdFavoriteVerification = true;
+        await route.fulfill({
+          status: 502,
+          contentType: 'application/json',
+          headers: { 'access-control-allow-origin': '*' },
+          body: JSON.stringify({ error: LOST_MUTATION_RESPONSE_ERROR }),
+        });
+        return;
+      }
       await route.fulfill({ response });
     } finally {
       activeMutations -= 1;
@@ -255,6 +291,10 @@ try {
 
   holdNextMutation = true;
   const recipeRemove = page.getByRole('button', { name: '取消收藏料理 蜂蜜蛋糕', exact: true });
+  assert(await recipeRemove.isDisabled(), '收藏读取失败时不应允许依据旧集合写入');
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByText(FAVORITE_WRITE_RACE_ERROR, { exact: true }).waitFor({ state: 'detached' });
+  const favoriteReadsBeforeMutation = favoriteReadRequests;
   await recipeRemove.click();
   await Promise.race([
     mutationStarted,
@@ -275,10 +315,10 @@ try {
   );
   await waitFor(() => Date.now() - mutationStartedAt >= 2100, 2_500, '没有跨过收藏读取退避触发点');
   assert(activeMutations === 1, '连接轮次切换提前释放了仍在处理中的收藏写入锁');
-  assert(favoriteReadRequests === 5, '收藏退避或新连接刷新在写请求结束前并发读取了旧集合');
+  assert(favoriteReadRequests === favoriteReadsBeforeMutation, '收藏退避或新连接刷新在写请求结束前并发读取了旧集合');
   releaseMutation();
   await waitFor(() => activeMutations === 0, 2_000, '预期的收藏写请求没有结束');
-  await waitFor(() => favoriteReadRequests === 6, 5_000, '处理中的旧写请求结束后没有读取当前连接轮次的收藏');
+  await waitFor(() => favoriteReadRequests === favoriteReadsBeforeMutation + 1, 5_000, '处理中的旧写请求结束后没有读取当前连接轮次的收藏');
   assert(!mutationWatchdogTriggered, '收藏写入锁测试超过预设等待时限');
   await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
   await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
@@ -299,7 +339,55 @@ try {
   await page.setViewportSize({ width: 390, height: 760 });
   await page.screenshot({ path: `${OUTPUT_DIR}/android-favorite-management.png`, fullPage: true });
   await assertNoHorizontalOverflow('390px');
-  assert(favoriteReadRequests === 6, '收藏写入完成后出现了多余读取或遗漏了当前连接轮次重读');
+  assert(favoriteReadRequests === favoriteReadsBeforeMutation + 1, '收藏写入完成后出现了多余读取或遗漏了当前连接轮次重读');
+
+  const mutationsBeforeLostResponse = mutationRequests.length;
+  const readsBeforeLostResponse = favoriteReadRequests;
+  loseNextMutationResponse = true;
+  await page.getByRole('button', { name: '取消收藏酒水 果味米酒', exact: true }).click();
+  await Promise.race([
+    favoriteVerificationStarted,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('收藏修改响应丢失后未自动发起只读确认')), 2_000)),
+  ]);
+  assert(lostMutationExecutedOnServer, '未验证删除已在服务端执行');
+  const mutationFailure = page.getByText(new RegExp(`${LOST_MUTATION_RESPONSE_ERROR}.*不会自动重试修改`));
+  await mutationFailure.waitFor({ state: 'visible', timeout: 1_000 });
+  assert(await beverageRow.getByText('果味米酒', { exact: true }).isVisible(),
+    '重新确认尚未结束时应保留旧收藏行供查看');
+  assert(await page.getByText('正在确认当前连接的收藏数据。', { exact: true }).isVisible(),
+    '已执行但响应丢失后仍把旧集合标成已确认');
+  const unavailableWrites = page.getByRole('button', {
+    name: /^取消收藏(?:料理|酒水) /,
+  });
+  const unavailableWriteCount = await unavailableWrites.count();
+  assert(unavailableWriteCount > 0, '等待确认时缺少原收藏行的写按钮');
+  for (let index = 0; index < unavailableWriteCount; index += 1) {
+    assert(await unavailableWrites.nth(index).isDisabled(), '重新确认完成前仍允许依据旧集合修改收藏');
+  }
+  assert(mutationRequests.length === mutationsBeforeLostResponse + 1, '结果未确认时自动重发了收藏修改');
+  assert(mutationRequests.at(-1).path === '/favorites/remove-beverage'
+    && mutationRequests.at(-1).id === 'mock-beverage-1001-水果-101', '丢失响应场景未使用酒水的精确删除ID');
+  await page.screenshot({ path: `${OUTPUT_DIR}/lost-mutation-response-confirming.png`, fullPage: true });
+  await page.getByRole('tab', { name: '经营中', exact: true }).click();
+  const pendingRecommendationActions = rareOrders.getByRole('button', {
+    name: /^(?:取消)?收藏该(?:料理方案|酒水)$/,
+  });
+  await pendingRecommendationActions.first().waitFor({ timeout: 1_000 });
+  assert(await pendingRecommendationActions.evaluateAll((buttons) => buttons.every((button) => button.disabled)),
+    '收藏确认尚未完成时经营推荐中仍允许修改收藏');
+  releaseFavoriteVerification();
+  await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
+  await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
+  await beverageRow.waitFor({ state: 'detached', timeout: 5_000 });
+  await page.getByText('暂无料理或酒水收藏', { exact: true }).waitFor({ timeout: 5_000 });
+  assert(await mutationFailure.isVisible(), '只读确认成功不应抹去丢失响应的修改失败说明');
+  const pollsAfterLostResponse = compactSnapshotPolls;
+  await waitFor(() => compactSnapshotPolls >= pollsAfterLostResponse + 2, 5_000,
+    '确认收藏真实集合后没有观测到后续快照轮询');
+  assert(mutationRequests.length === mutationsBeforeLostResponse + 1, '确认真实已删除集合后自动重发了收藏修改');
+  assert(favoriteReadRequests === readsBeforeLostResponse + 1, '响应丢失后的确认应只读取一次当前收藏');
+  assert(maxActiveMutations === 1, '响应丢失场景破坏了收藏单写者约束');
+  await page.screenshot({ path: `${OUTPUT_DIR}/lost-mutation-response-confirmed.png`, fullPage: true });
 
   console.log('收藏管理定向巡检通过：');
   console.log('- 模拟收藏连接超时期间经营订单保留，自动重试成功后旧提示清除');
@@ -307,12 +395,14 @@ try {
   console.log('- 默认料理分类、酒水/全部切换和搜索通过');
   console.log('- 料理与酒水在同一稀客分组中展示');
   console.log('- 精确取消收藏、单写者和剩余收藏保留通过');
+  console.log('- 删除已执行但响应丢失时保留旧行并禁写，只GET确认真实集合且不重发POST，失败说明保留');
   console.log('- 640px 与 390px 无横向溢出');
   console.log(`- 截图：${OUTPUT_DIR}`);
 } finally {
   releaseFavoriteRetry();
   releaseSnapshotRecovery();
   releaseMutation();
+  releaseFavoriteVerification();
   await page.unrouteAll({ behavior: 'wait' }).catch(() => {});
   await browser.close();
 }

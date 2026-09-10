@@ -40,7 +40,7 @@ const pages = [
 const profiles = [
   { name: 'desktop-default', width: 1280, height: 900, scale: 100, allTabs: false },
   { name: 'minimum-small', width: 640, height: 520, scale: 90, allTabs: false, showDebugDetails: false },
-  { name: 'minimum-large', width: 640, height: 520, scale: 130, allTabs: true, mousePassthrough: true },
+  { name: 'minimum-large', width: 640, height: 520, scale: 130, allTabs: true },
   { name: 'mobile-default', width: 390, height: 844, scale: 100, allTabs: false },
   { name: 'mobile-large', width: 390, height: 844, scale: 130, allTabs: true },
 ];
@@ -55,14 +55,13 @@ const browser = await chromium.launch({
 try {
   for (const profile of profiles) {
     console.log(`auditing font scale profile: ${profile.name}`);
-    const page = await browser.newPage({ viewport: { width: profile.width, height: profile.height } });
+    const page = await browser.newPage({ viewport: { width: profile.width, height: profile.height }, hasTouch: profile.width < 640 });
     await page.addInitScript(seedLocalStorage, {
       endpoint: apiUrl,
       token: apiToken,
       fontScale: profile.scale,
       fontScaleStorageKey: storageKey,
       showDebugDetails: profile.showDebugDetails ?? true,
-      mousePassthrough: profile.mousePassthrough ?? false,
     });
     await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor({ timeout: 10_000 });
@@ -95,10 +94,7 @@ try {
       if (tab === 'rare' || tab === 'service') {
         await assertEffectiveCustomRecipeHeaders(page, profile, tab);
       }
-      await page.screenshot({
-        path: path.join(outputDir, `${profile.name}-${tab}.png`),
-        fullPage: true,
-      });
+      await captureProfileScreenshot(page, profile, `${profile.name}-${tab}.png`);
 
       if (profile.allTabs && tab === 'custom-recipes') {
         await auditOpenSelect(page, profile);
@@ -126,12 +122,11 @@ try {
 
 console.log(`font scale Playwright audit passed; screenshots: ${outputDir}`);
 
-function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, showDebugDetails, mousePassthrough }) {
+function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, showDebugDetails }) {
   localStorage.setItem('mystia-steward-companion-mod-api-endpoint', endpoint);
   localStorage.setItem('mystia-steward-companion-mod-api-token', token);
   localStorage.setItem('mystia-steward-companion-client-id', 'font-scale-audit-device');
   localStorage.setItem('mystia-steward-companion-show-debug-details', showDebugDetails ? '1' : '0');
-  localStorage.setItem('mystia-steward-companion-mouse-passthrough', mousePassthrough ? '1' : '0');
   const seedMarker = 'mystia-steward-companion-font-scale-audit-seeded';
   if (!sessionStorage.getItem(seedMarker)) {
     localStorage.setItem(fontScaleStorageKey, String(fontScale));
@@ -142,15 +137,42 @@ function seedLocalStorage({ endpoint, token, fontScale, fontScaleStorageKey, sho
 async function activatePage(page, pageView) {
   const trigger = page.locator(`[data-gamepad-tab-value="${pageView.topValue}"]`).first();
   await trigger.scrollIntoViewIfNeeded();
-  await trigger.click();
+  await activateControl(page, trigger);
   if (pageView.innerSelector && pageView.innerLabel) {
     const innerTrigger = page.locator(pageView.innerSelector).getByRole('tab', {
       name: pageView.innerLabel,
       exact: true,
     });
     await innerTrigger.scrollIntoViewIfNeeded();
-    await innerTrigger.click();
+    await activateControl(page, innerTrigger);
   }
+}
+
+async function activateControl(page, control) {
+  if (page.viewportSize()?.width === 390) {
+    await control.tap();
+    return;
+  }
+  await control.click();
+}
+
+async function captureProfileScreenshot(page, profile, fileName) {
+  if (profile.width !== 390) {
+    await page.screenshot({ path: path.join(outputDir, fileName), fullPage: true });
+    return;
+  }
+  // Chromium 的越过视口截图会清除触屏模拟；逐屏截图保持真实粗指针和原视口布局。
+  const initial = await page.evaluate(() => ({
+    y: window.scrollY,
+    height: window.innerHeight,
+    total: document.documentElement.scrollHeight,
+  }));
+  await page.screenshot({ path: path.join(outputDir, fileName) });
+  for (let index = 0; index < Math.ceil(initial.total / initial.height); index += 1) {
+    await page.evaluate((y) => window.scrollTo(0, y), index * initial.height);
+    await page.screenshot({ path: path.join(outputDir, fileName.replace('.png', `-page-${index + 1}.png`)) });
+  }
+  await page.evaluate((y) => window.scrollTo(0, y), initial.y);
 }
 
 async function activatePageByValue(page, value) {
@@ -226,7 +248,7 @@ async function assertMobileOverviewTabsLayout(page, profile) {
       singleRow: rects.every((rect) => Math.abs(rect.top - rects[0].top) <= 2),
     };
   });
-  assert.deepEqual(result.labels, ['连接', '状态', '库存', '操作'], `${profile.name}: overview tab order drifted`);
+  assert.deepEqual(result.labels, ['连接', '状态', '库存', '快捷键'], `${profile.name}: overview tab order drifted`);
   assert.equal(result.scrollable, true, `${profile.name}: overview tabs must opt in to horizontal scrolling`);
   assert.equal(result.overflows, true, `${profile.name}: overview tabs must expose horizontal scrolling at 390px`);
   assert.equal(result.singleRow, true, `${profile.name}: overview tabs must stay on one row`);
@@ -272,6 +294,15 @@ async function assertControlLayout(page, profile, tab) {
     const viewportWidth = document.documentElement.clientWidth;
 
     return {
+      coarsePointer: matchMedia('(pointer: coarse)').matches,
+      smallTouchTargets: Array.from(document.querySelectorAll(
+        '[data-slot="button"][data-ui-density="standard"], .steward-setting-help-trigger',
+      )).filter((element) => isVisible(element))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.width < 39.5 || rect.height < 39.5;
+        })
+        .map(summary),
       textOverflow: textControls
         .filter((element) => (
           element.scrollWidth > element.clientWidth + 1
@@ -293,6 +324,10 @@ async function assertControlLayout(page, profile, tab) {
   });
   assert.deepEqual(result.textOverflow, [], `${profile.name}/${tab}: control text overflow ${JSON.stringify(result.textOverflow)}`);
   assert.deepEqual(result.boundsOverflow, [], `${profile.name}/${tab}: control bounds overflow ${JSON.stringify(result.boundsOverflow)}`);
+  if (profile.width === 390) {
+    assert.equal(result.coarsePointer, true, `${profile.name}/${tab}: mobile profile must use a coarse pointer`);
+    assert.deepEqual(result.smallTouchTargets, [], `${profile.name}/${tab}: standard controls need 40px touch targets ${JSON.stringify(result.smallTouchTargets)}`);
+  }
 }
 
 async function assertEffectiveCustomRecipeHeaders(page, profile, tab) {
@@ -331,15 +366,12 @@ async function assertEffectiveCustomRecipeHeaders(page, profile, tab) {
 async function auditOpenSelect(page, profile) {
   const select = page.locator('input[data-slot="select"], input.steward-select-input').first();
   if (!(await select.count()) || await select.isDisabled()) return;
-  await select.click();
+  await activateControl(page, select);
   const listbox = page.locator('[role="listbox"]').first();
   await listbox.waitFor({ state: 'visible' });
   await assertNoDocumentOverflow(page, profile, 'custom-recipes-select');
   await assertControlLayout(page, profile, 'custom-recipes-select');
-  await page.screenshot({
-    path: path.join(outputDir, `${profile.name}-custom-recipes-select.png`),
-    fullPage: true,
-  });
+  await captureProfileScreenshot(page, profile, `${profile.name}-custom-recipes-select.png`);
   await page.keyboard.press('Escape');
 }
 
@@ -353,7 +385,7 @@ async function auditSettingsSections(page, profile) {
   ];
 
   for (const section of sections) {
-    await page.getByRole('tab', { name: section.label, exact: true }).click();
+    await activateControl(page, page.getByRole('tab', { name: section.label, exact: true }));
     if (section.key === 'connection') await page.waitForTimeout(400);
     if (section.key === 'updates') {
       await page.locator('[data-gamepad-focus-key="settings:updates:check"]').waitFor();
@@ -364,13 +396,10 @@ async function auditSettingsSections(page, profile) {
     const auditKey = `settings-${section.key}`;
     await assertNoDocumentOverflow(page, profile, auditKey);
     await assertControlLayout(page, profile, auditKey);
-    await page.screenshot({
-      path: path.join(outputDir, `${profile.name}-${auditKey}.png`),
-      fullPage: true,
-    });
+    await captureProfileScreenshot(page, profile, `${profile.name}-${auditKey}.png`);
   }
 
-  await page.getByRole('tab', { name: '窗口', exact: true }).click();
+  await activateControl(page, page.getByRole('tab', { name: '窗口', exact: true }));
 }
 
 async function assertMinimumSettingSegmentedControls(page, profile, section) {
@@ -481,10 +510,7 @@ async function auditExpandedServiceSummary(page, profile) {
   );
   await assertNoDocumentOverflow(page, profile, 'service-summary-expanded');
   await assertControlLayout(page, profile, 'service-summary-expanded');
-  await page.screenshot({
-    path: path.join(outputDir, `${profile.name}-service-summary-expanded.png`),
-    fullPage: true,
-  });
+  await captureProfileScreenshot(page, profile, `${profile.name}-service-summary-expanded.png`);
 
   await trigger.press('Enter');
   await page.waitForFunction(() => {
@@ -499,7 +525,7 @@ async function auditExpandedServiceSummary(page, profile) {
 }
 
 async function auditServiceRecommendationToolbar(page, profile) {
-  await page.locator('[data-service-order-tab-trigger="rare"]').click();
+  await activateControl(page, page.locator('[data-service-order-tab-trigger="rare"]'));
   const toolbar = page.locator('[data-service-recommendation-toolbar="true"]:visible');
   await toolbar.waitFor({ state: 'visible', timeout: 10_000 });
   const layout = await toolbar.evaluate((element) => {
@@ -663,7 +689,7 @@ async function auditCompactCollapsedServiceSummary(trigger, profile) {
 }
 
 async function auditServiceFocusMode(page, profile) {
-  await page.getByRole('button', { name: '专注模式', exact: true }).click();
+  await activateControl(page, page.getByRole('button', { name: '专注模式', exact: true }));
   const focusPage = page.locator('[data-service-focus-page="true"]');
   const toolbar = focusPage.locator('[data-service-focus-toolbar="true"]');
   const controls = focusPage.locator('[data-service-focus-controls="true"]');
@@ -672,8 +698,8 @@ async function auditServiceFocusMode(page, profile) {
   assert.equal(await focusPage.getByText('只显示当前稀客点单推荐。', { exact: true }).count(), 0);
   assert.equal(
     await focusPage.locator('[data-mouse-passthrough-safety="true"]').count(),
-    profile.mousePassthrough ? 1 : 0,
-    `${profile.name}/service-focus: mouse-passthrough safety notice visibility drifted`,
+    0,
+    `${profile.name}/service-focus: browser preview must not invent native passthrough state`,
   );
   assert.equal(await controls.getAttribute('aria-label'), '专注模式显示控制');
   assert.equal(
@@ -683,7 +709,7 @@ async function auditServiceFocusMode(page, profile) {
   );
   assert.equal(
     await toolbar.locator(':scope > *').count(),
-    profile.mousePassthrough ? 2 : 1,
+    1,
     `${profile.name}/service-focus: safety notice must remain separate from the one-line controls`,
   );
   const toolbarLayout = await controls.evaluate((element) => {
@@ -761,11 +787,8 @@ async function auditServiceFocusMode(page, profile) {
   assert.equal(toolbarLayout.ok, true, `${profile.name}/service-focus: toolbar layout ${JSON.stringify(toolbarLayout)}`);
   await assertNoDocumentOverflow(page, profile, 'service-focus');
   await assertControlLayout(page, profile, 'service-focus');
-  await page.screenshot({
-    path: path.join(outputDir, `${profile.name}-service-focus.png`),
-    fullPage: true,
-  });
-  await page.getByRole('button', { name: '退出专注模式', exact: true }).click();
+  await captureProfileScreenshot(page, profile, `${profile.name}-service-focus.png`);
+  await activateControl(page, page.getByRole('button', { name: '退出专注模式', exact: true }));
   await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor();
 }
 

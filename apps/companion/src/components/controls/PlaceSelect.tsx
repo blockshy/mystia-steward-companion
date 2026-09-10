@@ -13,6 +13,7 @@ export function PlaceSelect<PlaceName extends string>({
 }) {
   return (
     <SelectBox
+      aria-label="地区"
       value={value ?? ''}
       placeholder="选择地区"
       className={className}

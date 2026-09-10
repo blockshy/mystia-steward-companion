@@ -310,6 +310,10 @@ try {
   await refresh.click();
   await page.getByText('可接取任务：等待游戏完成存档任务初始化。', { exact: true })
     .waitFor({ timeout: 5_000 });
+  assert.equal(await page.locator('[data-mission-status-tab-count="available"]').textContent(), '—',
+    '未读取成功的可接取资源数量必须未知，不能显示 0。');
+  assert.equal(await page.locator('[data-mission-status-tab-count="all"]').textContent(), '—',
+    '部分资源未知时不能声称已得到完整总数。');
   assert.equal(
     await page.getByText('当前没有可接取任务。', { exact: true }).count(),
     0,
@@ -327,6 +331,10 @@ try {
   await refresh.click();
   await page.getByText('已追踪任务：测试：已追踪任务数据尚未就绪', { exact: true })
     .waitFor({ timeout: 5_000 });
+  for (const status of ['tracking', 'fulfilled', 'unverified']) {
+    assert.equal(await page.locator(`[data-mission-status-tab-count="${status}"]`).textContent(), '—',
+      `未读取成功的已追踪任务 ${status} 数量必须未知。`);
+  }
   assert.equal(
     await page.getByText('当前没有进行中任务。', { exact: true }).count(),
     0,

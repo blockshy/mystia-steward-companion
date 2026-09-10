@@ -1,4 +1,3 @@
-import { isTauriRuntime } from '@/lib/tauri-runtime';
 import {
   normalizeRecommendationSortProfile,
   serializeRecommendationSortProfile,
@@ -23,7 +22,6 @@ const LEGACY_WINDOW_OPACITY_STORAGE_KEY = `${STORAGE_PREFIX}-window-opacity`;
 const FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-behavior`;
 const FOCUS_SWITCH_COOLDOWN_STORAGE_KEY = `${STORAGE_PREFIX}-focus-switch-cooldown-ms`;
 const ALWAYS_ON_TOP_STORAGE_KEY = `${STORAGE_PREFIX}-always-on-top`;
-const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_RARE_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-order-enabled`;
@@ -124,7 +122,6 @@ export interface CompanionPreferences {
   focusSwitchBehavior: FocusSwitchBehavior;
   focusSwitchCooldownMs: number;
   alwaysOnTop: boolean;
-  mousePassthroughEnabled: boolean;
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoRareOrderEnabled: boolean;
@@ -315,7 +312,6 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
       localStorage.getItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY) ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS,
     ),
     alwaysOnTop: readStoredBoolean(ALWAYS_ON_TOP_STORAGE_KEY, true),
-    mousePassthroughEnabled: readStoredBoolean(MOUSE_PASSTHROUGH_STORAGE_KEY, false),
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoRareOrderEnabled: readStoredBoolean(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, true),
@@ -397,7 +393,6 @@ export function normalizeCompanionPreferences(
     focusSwitchBehavior: value.focusSwitchBehavior === 'keep-visible' ? 'keep-visible' : 'hide',
     focusSwitchCooldownMs: normalizeFocusSwitchCooldownMs(value.focusSwitchCooldownMs ?? DEFAULT_FOCUS_SWITCH_COOLDOWN_MS),
     alwaysOnTop: Boolean(value.alwaysOnTop),
-    mousePassthroughEnabled: Boolean(value.mousePassthroughEnabled),
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoRareOrderEnabled: value.autoRareOrderEnabled !== false,
@@ -703,7 +698,6 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(FOCUS_SWITCH_BEHAVIOR_STORAGE_KEY, normalized.focusSwitchBehavior);
   localStorage.setItem(FOCUS_SWITCH_COOLDOWN_STORAGE_KEY, String(normalized.focusSwitchCooldownMs));
   localStorage.setItem(ALWAYS_ON_TOP_STORAGE_KEY, normalized.alwaysOnTop ? '1' : '0');
-  localStorage.setItem(MOUSE_PASSTHROUGH_STORAGE_KEY, normalized.mousePassthroughEnabled ? '1' : '0');
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, normalized.autoRareOrderEnabled ? '1' : '0');
@@ -776,32 +770,6 @@ export function applyCompanionVisualPreferences(preferences: CompanionPreference
   document.documentElement.style.setProperty('--companion-background-opacity-percent', backgroundPercent);
   document.documentElement.style.setProperty('--companion-content-opacity-percent', contentPercent);
   document.documentElement.style.setProperty('--companion-font-scale', String(fontScale));
-}
-
-/**
- * 将窗口行为偏好同步到 Tauri 壳。
- *
- * 浏览器模式或旧版本伴随窗口缺少命令时静默忽略，避免设置页在开发预览中报错。
- */
-export async function applyCompanionPreferencesToTauri(
-  focusSwitchBehavior: FocusSwitchBehavior,
-  alwaysOnTop: boolean,
-  focusSwitchCooldownMs: number,
-  mousePassthroughEnabled: boolean,
-) {
-  if (!isTauriRuntime()) return;
-
-  try {
-    const { invoke } = await import('@tauri-apps/api/core');
-    await invoke('apply_companion_preferences', {
-      keepVisibleWhenFocused: focusSwitchBehavior === 'keep-visible',
-      alwaysOnTop,
-      windowSwitchCooldownMs: normalizeFocusSwitchCooldownMs(focusSwitchCooldownMs),
-    });
-    await invoke('set_mouse_passthrough', { enabled: mousePassthroughEnabled });
-  } catch {
-    // 浏览器模式和旧版伴随窗口不一定暴露这些 command，偏好仍会保存在前端本地。
-  }
 }
 
 function readStoredBoolean(key: string, fallback: boolean) {

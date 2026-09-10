@@ -67,6 +67,7 @@ export function ServiceOrderCollectionPanel({
         data-service-order-retaining-rows={showRows ? 'true' : 'false'}
       >
         {notice}
+        {state.kind === 'error' && state.detail && <div role="alert" className="mb-2 break-words text-sm text-destructive">{state.detail}</div>}
         {!showRows && state.kind !== 'ready' && <EmptyState text={state.message} />}
         {showRows ? children : null}
       </div>

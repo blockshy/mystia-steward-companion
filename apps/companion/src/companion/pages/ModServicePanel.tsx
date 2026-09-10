@@ -1,3 +1,4 @@
+import type { FavoriteAvailability } from '@/companion/domain/favorite-availability';
 import { useMemo } from 'react';
 import type { ReactNode } from 'react';
 import { IconX } from '@tabler/icons-react';
@@ -331,6 +332,7 @@ export function ModServicePanel({
   uiTargetSlots,
   favorites,
   favoriteBusyKey,
+  favoriteAvailability,
   favoriteError,
   customRecipes,
   autoPrepBusy,
@@ -368,6 +370,7 @@ export function ModServicePanel({
   rareParticipationEnabled,
   rareParticipationReady,
   rareParticipationReadOnly,
+  rareParticipationReadOnlyReason,
   rareParticipationBusyMutationKey,
   rareParticipationError,
   resolveRareOrderParticipation,
@@ -405,6 +408,7 @@ export function ModServicePanel({
   uiTargetSlots: GameUiTargetSlots;
   favorites: FavoriteData;
   favoriteBusyKey: string;
+  favoriteAvailability: FavoriteAvailability;
   favoriteError: string;
   customRecipes: CustomRecipeData;
   autoPrepBusy: boolean;
@@ -442,6 +446,7 @@ export function ModServicePanel({
   rareParticipationEnabled: boolean;
   rareParticipationReady: boolean;
   rareParticipationReadOnly: boolean;
+  rareParticipationReadOnlyReason: string;
   rareParticipationBusyMutationKey: string | null;
   rareParticipationError: string;
   resolveRareOrderParticipation: (order: NightBusinessOrder) => RareOrderParticipationResolution | null;
@@ -610,6 +615,7 @@ export function ModServicePanel({
             favorites={favorites}
             customRecipes={customRecipes}
             favoriteBusyKey={favoriteBusyKey}
+              favoriteAvailability={favoriteAvailability}
             favoriteError={favoriteError}
             participationEnabled={rareParticipationEnabled}
             participationReady={rareParticipationReady}
@@ -640,6 +646,8 @@ export function ModServicePanel({
               collectionComplete={rareParticipationCollectionComplete}
               businessActive={nightBusinessActive}
               readOnly={rareParticipationReadOnly}
+              readOnlyReason={rareParticipationReadOnlyReason}
+              showDebugDetails={showDebugDetails}
               busyMutationKey={rareParticipationBusyMutationKey}
               error={rareParticipationError}
               onMutateGuest={onMutateRareGuestOrders}
@@ -771,7 +779,7 @@ export function ModServicePanel({
                         <Badge variant="outline">
                           酒水 {order.beverageTag || '无'} ({order.beverageTagId ?? '未读取'})
                         </Badge>
-                        <OrderTraceBadge traceId={order.traceId} />
+                        <OrderTraceBadge traceId={order.traceId} showDebugDetails={showDebugDetails} />
                         {order.specialBusinessRoleLabel && (
                           <Badge variant="secondary">{order.specialBusinessRoleLabel}</Badge>
                         )}
@@ -880,6 +888,7 @@ export function ServiceFocusPage({
   favorites,
   customRecipes,
   favoriteBusyKey,
+  favoriteAvailability,
   favoriteError,
   participationEnabled,
   participationReady,
@@ -908,6 +917,7 @@ export function ServiceFocusPage({
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
+  favoriteAvailability: FavoriteAvailability;
   favoriteError: string;
   participationEnabled: boolean;
   participationReady: boolean;
@@ -964,6 +974,7 @@ export function ServiceFocusPage({
             type="button"
             size="icon-sm"
             aria-label="退出专注模式"
+            density="compact"
             title="退出专注模式"
             data-gamepad-focus-key="service-focus:exit"
             onClick={onExit}
@@ -987,6 +998,7 @@ export function ServiceFocusPage({
         favorites={favorites}
         customRecipes={customRecipes}
         favoriteBusyKey={favoriteBusyKey}
+              favoriteAvailability={favoriteAvailability}
         favoriteError={favoriteError}
         participationEnabled={participationEnabled}
         participationReady={participationReady}
@@ -1016,6 +1028,7 @@ function RareOrderRecommendationList({
   favorites,
   customRecipes,
   favoriteBusyKey,
+  favoriteAvailability,
   favoriteError,
   participationEnabled = false,
   participationReady = true,
@@ -1041,6 +1054,7 @@ function RareOrderRecommendationList({
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
+  favoriteAvailability: FavoriteAvailability;
   favoriteError: string;
   participationEnabled?: boolean;
   participationReady?: boolean;
@@ -1102,10 +1116,10 @@ function RareOrderRecommendationList({
       hasRows={rows.length > 0}
       toolbar={toolbar}
       compact={compact}
-      notice={favoriteError
+      notice={(favoriteError || favoriteAvailability.reason)
         ? (
             <div className="mb-2 border border-destructive/30 px-3 py-2 text-sm text-destructive">
-              {favoriteError}
+              {favoriteError || favoriteAvailability.reason}
             </div>
           )
         : undefined}
@@ -1155,6 +1169,7 @@ function RareOrderRecommendationList({
               customRecipes={customRecipes}
               gamepadOccurrenceKey={`${fillAvailableHeight ? 'service-focus' : 'service'}:order:${orderOccurrenceKey}`}
               favoriteBusyKey={favoriteBusyKey}
+              favoriteAvailability={{ ...favoriteAvailability, canWrite: favoriteAvailability.canWrite && !pending && !updateError }}
               compact={compact}
               recipeLimit={recipeLimit}
               beverageLimit={beverageLimit}
@@ -1381,7 +1396,7 @@ function RareAutoPrepStatus({
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-                <OrderTraceBadge traceId={diagnostic.traceId} />
+                <OrderTraceBadge traceId={diagnostic.traceId} showDebugDetails={showDebugDetails} />
                 <Badge variant={diagnostic.paused ? 'destructive' : 'secondary'}>
                   {diagnostic.paused ? '订单暂停' : '订单可执行'}
                 </Badge>
@@ -1515,7 +1530,7 @@ function NormalAutoPrepStatus({
                 )}
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
-                <OrderTraceBadge traceId={diagnostic.traceId} />
+                <OrderTraceBadge traceId={diagnostic.traceId} showDebugDetails={showDebugDetails} />
                 {diagnostic.manualResolutionRequired && (
                   <Badge variant="destructive">需人工确认</Badge>
                 )}

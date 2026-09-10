@@ -772,7 +772,7 @@ async function auditOverviewConnectionLayout(page, viewport, tab) {
     };
     if (itemCounts.fields !== 2
       || itemCounts.footer !== 2
-      || itemCounts.controls !== 2
+      || itemCounts.controls !== 3
       || itemCounts.metadata !== 2
       || itemCounts.summary !== 3) {
       return { ok: false, reason: `概览连接布局项目数量不符合预期：${JSON.stringify(itemCounts)}。` };

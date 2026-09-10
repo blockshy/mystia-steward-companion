@@ -86,11 +86,14 @@ export function ModMissionListPanel({
   const statusViews = useMemo(
     () => MISSION_STATUS_VIEWS.map((status) => ({
       ...status,
+      countKnown: status.value === 'all'
+        ? availableResult !== null && trackedResult !== null
+        : status.value === 'available' ? availableResult !== null : trackedResult !== null,
       missions: status.value === 'all'
         ? missions
         : missions.filter((mission) => mission.status === status.value),
     })),
-    [missions],
+    [availableResult, missions, trackedResult],
   );
   const activeStatusView = statusViews.find((status) => status.value === statusView)
     ?? statusViews[0];
@@ -122,7 +125,7 @@ export function ModMissionListPanel({
         <EmptyState text="任务列表模块已停用。手动开启总控后才会读取任务数据。" />
       ) : (
         <ListPanel
-          title={`任务列表 (${missions.length})`}
+          title={`任务列表 (${availableResult !== null && trackedResult !== null ? missions.length : '—'})`}
           action={(
             <Button
               type="button"
@@ -145,12 +148,12 @@ export function ModMissionListPanel({
               <div className={DENSE_THREE_COLUMN_GRID}>
                 <InfoLine
                   label="任务轮次"
-                  value={availableResult?.missionGeneration ?? trackedResult?.generation ?? 0}
+                  value={availableResult?.missionGeneration ?? trackedResult?.generation ?? '未读取'}
                   mono
                 />
                 <InfoLine
                   label="来源修订"
-                  value={availableResult?.sourceRevision ?? 0}
+                  value={availableResult?.sourceRevision ?? '未读取'}
                   mono
                 />
                 <InfoLine
@@ -171,6 +174,9 @@ export function ModMissionListPanel({
             )}
             {connected && showTrackedStatus && trackedError && (
               <EmptyRow text={`已追踪任务：${trackedError}`} />
+            )}
+            {connected && hasResult && (availableResult === null || trackedResult === null) && (
+              <EmptyRow text={`已读取 ${missions.length} 条任务；${availableResult === null ? '可接取' : '已追踪'}任务尚未读取成功，数量未知。`} />
             )}
             {connected && hasResult && (
               <Tabs
@@ -200,7 +206,7 @@ export function ModMissionListPanel({
                         className="ml-1 tabular-nums text-xs text-muted-foreground"
                         data-mission-status-tab-count={status.value}
                       >
-                        {status.missions.length}
+                        {status.countKnown ? status.missions.length : '—'}
                       </span>
                     </TabsTrigger>
                   ))}

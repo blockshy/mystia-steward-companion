@@ -51,6 +51,8 @@ const TRAY_ICON_BYTES: &[u8] = include_bytes!("../icons/tray-icon.png");
 const DEFAULT_WINDOW_SWITCH_COOLDOWN_MS: u64 = 800;
 const MIN_WINDOW_SWITCH_COOLDOWN_MS: u64 = 250;
 const MAX_WINDOW_SWITCH_COOLDOWN_MS: u64 = 2000;
+#[cfg(target_os = "windows")]
+const MOUSE_PASSTHROUGH_HOTKEY_STATUS_EVENT: &str = "mouse-passthrough-hotkey-status-changed";
 
 type LocalApiResult<T> = Result<T, LocalApiError>;
 
@@ -137,8 +139,42 @@ struct LaunchConnectionState(Arc<Mutex<LaunchConnection>>);
 struct WindowSwitchState(Arc<Mutex<WindowSwitchGate>>);
 struct CompanionPreferenceState(Arc<Mutex<CompanionPreferences>>);
 struct MousePassthroughState(Arc<Mutex<bool>>);
+struct MousePassthroughHotkeyState(Arc<Mutex<MousePassthroughHotkeyStatus>>);
 #[cfg(desktop)]
 struct TrayPassthroughMenuState(Arc<Mutex<Option<MenuItem<tauri::Wry>>>>);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum HotkeyAvailability {
+    Registering,
+    #[cfg(target_os = "windows")]
+    Available,
+    #[cfg(target_os = "windows")]
+    Unavailable,
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MousePassthroughHotkeyStatus {
+    revision: u64,
+    status: HotkeyAvailability,
+    error_code: Option<u32>,
+}
+
+impl Default for MousePassthroughHotkeyStatus {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            status: if cfg!(target_os = "windows") {
+                HotkeyAvailability::Registering
+            } else {
+                HotkeyAvailability::Unsupported
+            },
+            error_code: None,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct CompanionPreferences {
@@ -488,20 +524,29 @@ fn apply_companion_preferences(
     keep_visible_when_focused: bool,
     always_on_top: bool,
     window_switch_cooldown_ms: u64,
-) {
-    if let Ok(mut preferences) = preference_state.0.lock() {
+) -> Result<(), String> {
+    let state = preference_state.0.clone();
+    with_main_window(&app, move |window| {
+        let mut preferences = state
+            .lock()
+            .map_err(|_| "window preference state unavailable".to_string())?;
+        window
+            .set_always_on_top(always_on_top)
+            .map_err(|error| format!("set always on top failed: {error}"))?;
+        #[cfg(target_os = "windows")]
+        windows_window_verification::verify_always_on_top(
+            window.hwnd().map_err(|error| error.to_string())?.0 as isize,
+            always_on_top,
+        )?;
+        apply_window_transparent_background(window);
         *preferences = CompanionPreferences {
             keep_visible_when_focused,
             window_switch_cooldown_ms: normalize_window_switch_cooldown_ms(
                 window_switch_cooldown_ms,
             ),
         };
-    }
-
-    if let Some(window) = app.get_webview_window("main") {
-        apply_window_transparent_background(&window);
-        let _ = window.set_always_on_top(always_on_top);
-    }
+        Ok(())
+    })
 }
 
 #[tauri::command]
@@ -512,15 +557,16 @@ fn apply_companion_preferences(
     keep_visible_when_focused: bool,
     _always_on_top: bool,
     window_switch_cooldown_ms: u64,
-) {
-    if let Ok(mut preferences) = preference_state.0.lock() {
-        *preferences = CompanionPreferences {
-            keep_visible_when_focused,
-            window_switch_cooldown_ms: normalize_window_switch_cooldown_ms(
-                window_switch_cooldown_ms,
-            ),
-        };
-    }
+) -> Result<(), String> {
+    let mut preferences = preference_state
+        .0
+        .lock()
+        .map_err(|_| "window preference state unavailable".to_string())?;
+    *preferences = CompanionPreferences {
+        keep_visible_when_focused,
+        window_switch_cooldown_ms: normalize_window_switch_cooldown_ms(window_switch_cooldown_ms),
+    };
+    Ok(())
 }
 
 #[tauri::command]
@@ -533,8 +579,25 @@ fn set_mouse_passthrough(
 }
 
 #[tauri::command]
-fn get_mouse_passthrough(mouse_passthrough_state: tauri::State<'_, MousePassthroughState>) -> bool {
-    current_mouse_passthrough(&mouse_passthrough_state.0)
+fn get_mouse_passthrough(
+    mouse_passthrough_state: tauri::State<'_, MousePassthroughState>,
+) -> Result<bool, String> {
+    mouse_passthrough_state
+        .0
+        .lock()
+        .map(|value| *value)
+        .map_err(|_| "mouse passthrough state unavailable".to_string())
+}
+
+#[tauri::command]
+fn get_mouse_passthrough_hotkey_status(
+    state: tauri::State<'_, MousePassthroughHotkeyState>,
+) -> Result<MousePassthroughHotkeyStatus, String> {
+    state
+        .0
+        .lock()
+        .map(|value| *value)
+        .map_err(|_| "mouse passthrough hotkey state unavailable".to_string())
 }
 
 #[tauri::command]
@@ -674,31 +737,104 @@ fn current_companion_preferences(
         .unwrap_or_default()
 }
 
-fn current_mouse_passthrough(mouse_passthrough: &Arc<Mutex<bool>>) -> bool {
-    mouse_passthrough
-        .lock()
-        .map(|current| *current)
-        .unwrap_or(false)
-}
-
 #[cfg(desktop)]
 fn set_mouse_passthrough_internal(
     app: &tauri::AppHandle,
     mouse_passthrough: &Arc<Mutex<bool>>,
     enabled: bool,
 ) -> Result<bool, String> {
-    if let Some(window) = app.get_webview_window("main") {
+    update_mouse_passthrough_internal(app, mouse_passthrough, move |_| enabled)
+}
+
+#[cfg(desktop)]
+fn update_mouse_passthrough_internal(
+    app: &tauri::AppHandle,
+    mouse_passthrough: &Arc<Mutex<bool>>,
+    next: impl FnOnce(bool) -> bool + Send + 'static,
+) -> Result<bool, String> {
+    let state = mouse_passthrough.clone();
+    let app_handle = app.clone();
+    with_main_window(app, move |window| {
+        let mut current = state
+            .lock()
+            .map_err(|_| "mouse passthrough state unavailable".to_string())?;
+        let enabled = next(*current);
         window
             .set_ignore_cursor_events(enabled)
             .map_err(|error| format!("set mouse passthrough failed: {error}"))?;
+        #[cfg(target_os = "windows")]
+        windows_window_verification::verify_mouse_passthrough(
+            window.hwnd().map_err(|error| error.to_string())?.0 as isize,
+            enabled,
+        )?;
+        *current = enabled;
+        update_mouse_passthrough_tray_label(&app_handle, enabled);
+        let _ = app_handle.emit("mouse-passthrough-changed", enabled);
+        Ok(enabled)
+    })
+}
+
+#[cfg(desktop)]
+fn with_main_window<T: Send + 'static>(
+    app: &tauri::AppHandle,
+    operation: impl FnOnce(&WebviewWindow) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let app_handle = app.clone();
+    app.run_on_main_thread(move || {
+        let result = app_handle
+            .get_webview_window("main")
+            .ok_or_else(|| "main window unavailable".to_string())
+            .and_then(|window| operation(&window));
+        let _ = sender.send(result);
+    })
+    .map_err(|error| format!("window operation dispatch failed: {error}"))?;
+    receiver
+        .recv()
+        .map_err(|_| "window operation result unavailable".to_string())?
+}
+
+#[cfg(any(target_os = "windows", feature = "updater-windows-ui-check"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod windows_window_verification {
+    use windows_sys::Win32::Foundation::{GetLastError, SetLastError, HWND};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    };
+
+    fn extended_style(hwnd: isize) -> Result<u32, String> {
+        unsafe {
+            SetLastError(0);
+            let style = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+            let error = GetLastError();
+            if style == 0 && error != 0 {
+                return Err(format!("read window style failed: Win32 error {error}"));
+            }
+            Ok(style as u32)
+        }
     }
 
-    if let Ok(mut current) = mouse_passthrough.lock() {
-        *current = enabled;
+    pub fn verify_mouse_passthrough(hwnd: isize, expected: bool) -> Result<(), String> {
+        let style = extended_style(hwnd)?;
+        let applied = if expected {
+            style & (WS_EX_LAYERED | WS_EX_TRANSPARENT) == WS_EX_LAYERED | WS_EX_TRANSPARENT
+        } else {
+            style & WS_EX_TRANSPARENT == 0
+        };
+        if applied {
+            Ok(())
+        } else {
+            Err("mouse passthrough was not applied to the window".to_string())
+        }
     }
-    update_mouse_passthrough_tray_label(app, enabled);
-    let _ = app.emit("mouse-passthrough-changed", enabled);
-    Ok(enabled)
+
+    pub fn verify_always_on_top(hwnd: isize, expected: bool) -> Result<(), String> {
+        if (extended_style(hwnd)? & WS_EX_TOPMOST != 0) == expected {
+            Ok(())
+        } else {
+            Err("always on top was not applied to the window".to_string())
+        }
+    }
 }
 
 #[cfg(not(desktop))]
@@ -707,9 +843,9 @@ fn set_mouse_passthrough_internal(
     mouse_passthrough: &Arc<Mutex<bool>>,
     _enabled: bool,
 ) -> Result<bool, String> {
-    if let Ok(mut current) = mouse_passthrough.lock() {
-        *current = false;
-    }
+    *mouse_passthrough
+        .lock()
+        .map_err(|_| "mouse passthrough state unavailable".to_string())? = false;
 
     Ok(false)
 }
@@ -738,10 +874,13 @@ fn update_mouse_passthrough_tray_label(app: &tauri::AppHandle, enabled: bool) {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(desktop)]
 fn toggle_mouse_passthrough(app: &tauri::AppHandle, mouse_passthrough: &Arc<Mutex<bool>>) {
-    let enabled = !current_mouse_passthrough(mouse_passthrough);
-    let _ = set_mouse_passthrough_internal(app, mouse_passthrough, enabled);
+    if let Err(error) =
+        update_mouse_passthrough_internal(app, mouse_passthrough, |current| !current)
+    {
+        eprintln!("mouse passthrough toggle failed: {error}");
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -750,9 +889,29 @@ fn start_mouse_passthrough_hotkey_monitor(
     mouse_passthrough: Arc<Mutex<bool>>,
 ) {
     thread::spawn(move || {
-        windows_hotkey::run_f10_hotkey_loop(move || {
-            toggle_mouse_passthrough(&app, &mouse_passthrough);
-        });
+        windows_hotkey::run_f10_hotkey_loop(
+            || toggle_mouse_passthrough(&app, &mouse_passthrough),
+            |result| {
+                if let Err(code) = result {
+                    eprintln!("mouse passthrough F10 hotkey unavailable: Win32 error {code}");
+                }
+                let state = app.state::<MousePassthroughHotkeyState>();
+                let Ok(mut status) = state.0.lock() else {
+                    eprintln!("mouse passthrough hotkey state unavailable");
+                    return;
+                };
+                status.revision += 1;
+                status.status = if result.is_ok() {
+                    HotkeyAvailability::Available
+                } else {
+                    HotkeyAvailability::Unavailable
+                };
+                status.error_code = result.err().filter(|code| *code != 0);
+                if let Err(error) = app.emit(MOUSE_PASSTHROUGH_HOTKEY_STATUS_EVENT, *status) {
+                    eprintln!("mouse passthrough hotkey status event failed: {error}");
+                }
+            },
+        );
     });
 }
 
@@ -1059,7 +1218,13 @@ fn parse_http_response_body(response: &str) -> LocalApiResult<String> {
 fn local_api_http_error_detail(status_code: u16, body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body)
         .ok()
-        .and_then(|value| value.get("error")?.as_str().map(str::trim).map(str::to_string))
+        .and_then(|value| {
+            value
+                .get("error")?
+                .as_str()
+                .map(str::trim)
+                .map(str::to_string)
+        })
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| status_code.to_string())
 }
@@ -1254,7 +1419,6 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
-    let reconnect = MenuItem::with_id(app, "reconnect", "重连游戏", true, None::<&str>)?;
     let toggle_passthrough = MenuItem::with_id(
         app,
         "toggle_passthrough",
@@ -1263,7 +1427,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         None::<&str>,
     )?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &reconnect, &toggle_passthrough, &quit])?;
+    let menu = Menu::with_items(app, &[&show, &toggle_passthrough, &quit])?;
     if let Ok(mut item) = app.state::<TrayPassthroughMenuState>().0.lock() {
         *item = Some(toggle_passthrough.clone());
     }
@@ -1273,7 +1437,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
-            "show" | "reconnect" => {
+            "show" => {
                 if let Some(state) = app.try_state::<MousePassthroughState>() {
                     show_main_window(app, &state.0);
                 } else {
@@ -1282,8 +1446,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             }
             "toggle_passthrough" => {
                 if let Some(state) = app.try_state::<MousePassthroughState>() {
-                    let enabled = !current_mouse_passthrough(&state.0);
-                    let _ = set_mouse_passthrough_internal(app, &state.0, enabled);
+                    toggle_mouse_passthrough(app, &state.0);
                 }
             }
             "quit" => app.exit(0),
@@ -1433,7 +1596,10 @@ pub fn run() {
         .manage(CompanionPreferenceState(Arc::new(Mutex::new(
             CompanionPreferences::default(),
         ))))
-        .manage(MousePassthroughState(Arc::new(Mutex::new(false))));
+        .manage(MousePassthroughState(Arc::new(Mutex::new(false))))
+        .manage(MousePassthroughHotkeyState(Arc::new(Mutex::new(
+            MousePassthroughHotkeyStatus::default(),
+        ))));
 
     #[cfg(desktop)]
     let builder = builder
@@ -1502,6 +1668,7 @@ pub fn run() {
             apply_companion_preferences,
             set_mouse_passthrough,
             get_mouse_passthrough,
+            get_mouse_passthrough_hotkey_status,
             companion_platform
         ])
         .run(tauri::generate_context!())
@@ -1702,6 +1869,7 @@ mod windows_hotkey {
     const HOTKEY_ID: i32 = 0x4D53;
     const VK_F10: Uint = 0x79;
     const WM_HOTKEY: Uint = 0x0312;
+    const MOD_NOREPEAT: Uint = 0x4000;
 
     #[repr(C)]
     struct Point {
@@ -1719,14 +1887,17 @@ mod windows_hotkey {
         pt: Point,
     }
 
-    pub fn run_f10_hotkey_loop<F>(mut on_hotkey: F)
+    pub fn run_f10_hotkey_loop<F, S>(mut on_hotkey: F, mut on_status: S)
     where
-        F: FnMut() + Send + 'static,
+        F: FnMut(),
+        S: FnMut(Result<(), u32>),
     {
         unsafe {
-            if RegisterHotKey(std::ptr::null_mut(), HOTKEY_ID, 0, VK_F10) == 0 {
+            if RegisterHotKey(std::ptr::null_mut(), HOTKEY_ID, MOD_NOREPEAT, VK_F10) == 0 {
+                on_status(Err(GetLastError()));
                 return;
             }
+            on_status(Ok(()));
 
             let mut message = Msg {
                 hwnd: std::ptr::null_mut(),
@@ -1737,14 +1908,24 @@ mod windows_hotkey {
                 pt: Point { x: 0, y: 0 },
             };
 
-            while GetMessageW(&mut message as *mut Msg, std::ptr::null_mut(), 0, 0) > 0 {
+            let stopped_error = loop {
+                let result = GetMessageW(&mut message as *mut Msg, std::ptr::null_mut(), 0, 0);
+                if result <= 0 {
+                    break if result < 0 { GetLastError() } else { 0 };
+                }
                 if message.message == WM_HOTKEY && message.w_param == HOTKEY_ID as usize {
                     on_hotkey();
                 }
-            }
+            };
 
             UnregisterHotKey(std::ptr::null_mut(), HOTKEY_ID);
+            on_status(Err(stopped_error));
         }
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLastError() -> u32;
     }
 
     #[link(name = "user32")]

@@ -155,6 +155,13 @@ export class GamepadFocusManager {
       return true;
     }
 
+    const localBackScope = active?.closest<HTMLElement>('[data-gamepad-back-scope="true"]');
+    const localBack = localBackScope?.querySelector<HTMLButtonElement>('button[data-gamepad-back="true"]');
+    if (localBack && isEligibleFocusable(localBack)) {
+      localBack.click();
+      return true;
+    }
+
     const panel = active?.closest<HTMLElement>(TABS_CONTENT_SELECTOR) ?? null;
     if (panel && this.focusTabForPanel(panel)) return true;
     if (active?.closest('[data-gamepad-scope="content"]') && this.focusActiveTab()) return true;

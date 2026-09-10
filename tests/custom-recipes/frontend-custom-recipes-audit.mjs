@@ -52,6 +52,11 @@ try {
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await activateTab('自定义推荐料理');
   await page.getByText('启用自定义推荐料理', { exact: true }).waitFor();
+  for (const label of ['稀客', '点单料理标签', '基础料理']) {
+    assert(await page.getByRole('combobox', { name: label, exact: true }).count() === 1, `${label}字段没有唯一可访问名称`);
+  }
+  await page.getByPlaceholder('请先选择基础料理', { exact: true }).waitFor();
+  assert(await page.getByRole('button', { name: '新增配方', exact: true }).isDisabled(), '未选择基础料理时允许保存');
 
   const draftEnabled = page.getByLabel('保存后启用');
   await page.getByText('保存后启用', { exact: true }).click();
@@ -109,11 +114,11 @@ try {
 
   await page.getByText('按基础料理', { exact: true }).click();
   await page.getByText('蜂蜜蛋糕', { exact: true }).first().waitFor();
-  assert(await page.getByRole('button', { name: '上移', exact: true }).count() === 0, '基础料理分组仍显示稀客内排序按钮');
+  assert(await page.getByRole('button', { name: /^上移/ }).count() === 0, '基础料理分组仍显示稀客内排序按钮');
   assert(await page.evaluate((key) => localStorage.getItem(key), `${STORAGE_PREFIX}-custom-recipe-group-mode`) === 'recipe', '基础料理分组模式没有持久化');
   await activateTab('概览');
   await activateTab('自定义推荐料理');
-  assert(await page.getByRole('button', { name: '上移', exact: true }).count() === 0, '页签切换后没有恢复基础料理分组');
+  assert(await page.getByRole('button', { name: /^上移/ }).count() === 0, '页签切换后没有恢复基础料理分组');
 
   await page.getByText('按稀客', { exact: true }).click();
   const rumiaGroup = groupSection('露米娅');
@@ -132,14 +137,14 @@ try {
     '稀客分组取消置顶没有更新全部组员',
   );
   const moonRow = page.locator('.steward-data-row').filter({ hasText: '月光团子' });
-  await moonRow.getByRole('button', { name: '置顶', exact: true }).click();
+  await moonRow.getByRole('button', { name: /^置顶/ }).click();
   await waitForRecipes(
     (data) => data.recipes.find((entry) => entry.id === 'mock-custom-1001-all-1206')?.pinToTop === true,
     '单条推荐置顶没有持久化',
   );
 
   const cakeRow = page.locator('.steward-data-row').filter({ hasText: '蜂蜜蛋糕' }).filter({ hasText: '优先级 1' }).last();
-  await cakeRow.getByRole('button', { name: '下移', exact: true }).click();
+  await cakeRow.getByRole('button', { name: /^下移/ }).click();
   await waitForRecipes((data) => {
     const cake = data.recipes.find((entry) => entry.id === 'mock-custom-1001-all-1202');
     const moon = data.recipes.find((entry) => entry.id === 'mock-custom-1001-all-1206');
@@ -158,6 +163,48 @@ try {
   assert(overflow === 0, `640px 视口出现 ${overflow}px 横向溢出`);
   assert(mutationRequests.every((request) => request.method === 'POST'), '自定义料理 mutation 没有全部使用 POST');
   assert(!mutationRequests.some((request) => request.path === '/custom-recipes/toggle'), '前端仍在调用已删除的 toggle 路径');
+
+  for (const scale of [100, 130]) {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate((value) => {
+      document.documentElement.style.setProperty('--companion-font-scale', String(value / 100));
+    }, scale);
+    const rowWidths = await page.locator('[data-custom-recipe-row-content]').evaluateAll((elements) => elements.map((element) => {
+      const content = element.getBoundingClientRect();
+      const row = element.closest('[data-gamepad-row]')?.getBoundingClientRect();
+      return { width: content.width, rowWidth: row?.width ?? 0 };
+    }));
+    assert(rowWidths.length > 0 && rowWidths.every((row) => row.width >= 240 && row.width >= row.rowWidth - 40),
+      `390px/${scale}%自定义正文仍被操作挤压：${JSON.stringify(rowWidths)}`);
+    const editButton = page.locator('[data-gamepad-focus-key="custom-recipe:mock-custom-1001-all-1206:edit"]');
+    await editButton.click();
+    const heading = page.locator('[data-custom-recipe-editor-heading]');
+    await waitFor(() => heading.evaluate((element) => document.activeElement === element), 2_000, '编辑没有聚焦编辑器标题');
+    const headingBox = await heading.boundingBox();
+    assert(headingBox && headingBox.y >= 0 && headingBox.y < 844, '编辑器标题没有滚动到可见区域');
+    await page.getByRole('button', { name: '取消编辑', exact: true }).click();
+    await waitFor(() => editButton.evaluate((element) => document.activeElement === element), 2_000, '取消没有恢复原条目编辑焦点');
+    assert(await page.getByRole('combobox', { name: '基础料理', exact: true }).inputValue() === '', '取消后基础料理仍显示已清空的旧选择');
+    await page.screenshot({ path: `${OUTPUT_DIR}/mobile-custom-recipes-${scale}.png`, fullPage: true });
+  }
+
+  const invalidEntry = {
+    id: 'audit-missing-customer', customerId: 999999, customerName: '失效的稀客',
+    foodTag: null, foodId: 1202, recipeId: 1202, recipeName: '蜂蜜蛋糕',
+    extraIngredientIds: [], enabled: true, pinToTop: false, sortOrder: 0,
+    createdAtUtc: '', updatedAtUtc: '',
+  };
+  await page.route(`${API_URL}/custom-recipes`, (route) => route.fulfill({
+    status: 200, contentType: 'application/json',
+    body: JSON.stringify({ version: 1, enabled: true, recipes: [invalidEntry] }),
+  }));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await activateTab('自定义推荐料理');
+  await page.locator('[data-gamepad-focus-key="custom-recipe:audit-missing-customer:edit"]').click();
+  assert(await page.getByRole('combobox', { name: '稀客', exact: true }).inputValue() === '目录未识别的稀客 #999999',
+    '失效稀客 ID 被自动替换成目录首项。');
+  assert(await page.getByRole('button', { name: '保存配方', exact: true }).isDisabled(), '失效稀客配方仍允许保存');
+  await page.getByText('当前目录未识别稀客 #999999，请明确选择稀客后再保存。', { exact: true }).waitFor();
 
   console.log('自定义推荐料理定向巡检通过：');
   console.log('- 功能总开关：关闭/开启均持久化');

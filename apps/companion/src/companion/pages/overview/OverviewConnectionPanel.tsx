@@ -80,6 +80,9 @@ interface OverviewConnectionPanelProps {
   onApiTokenDraftChange: (value: string) => void;
   onApplyEndpointConnection: () => void;
   onPauseConnection: () => void;
+  onResumeConnection: () => void;
+  onDiscardConnectionDraft: () => void;
+  connectionDraftDirty: boolean;
   onRefresh: () => void;
   apiToken: string;
   connectionPaused: boolean;
@@ -99,6 +102,9 @@ export function OverviewConnectionPanel({
   onApiTokenDraftChange,
   onApplyEndpointConnection,
   onPauseConnection,
+  onResumeConnection,
+  onDiscardConnectionDraft,
+  connectionDraftDirty,
   onRefresh,
   apiToken,
   connectionPaused,
@@ -143,14 +149,14 @@ export function OverviewConnectionPanel({
         <StatusMetric
           metric="runtime"
           label="游戏状态"
-          value={snapshot?.runtimeLoaded ? '已加载' : '未加载'}
+          value={!snapshot ? '未读取' : snapshot.runtimeLoaded ? '已加载' : '未加载'}
           detail={snapshot?.activeSceneName || (snapshot ? '已收到游戏数据' : '暂无游戏数据')}
           tone={snapshot?.runtimeLoaded ? 'good' : 'neutral'}
         />
         <StatusMetric
           metric="business"
           label="经营数据"
-          value={`${night?.activeRareGuests.length ?? 0} 稀客 / ${night?.orders.length ?? 0} 点单`}
+          value={!snapshot ? '未读取' : `${night?.activeRareGuests.length ?? 0} 稀客 / ${night?.orders.length ?? 0} 点单`}
           detail={night?.place || night?.placeLabel || '无经营场景'}
           tone={(night?.orders.length ?? 0) > 0 ? 'good' : 'neutral'}
         />
@@ -211,10 +217,11 @@ export function OverviewConnectionPanel({
             >
               <SwitchField
                 label="连接"
-                checked={!connectionPaused}
+                checked={Boolean(apiToken) && !connectionPaused}
+                disabled={!apiToken}
                 onCheckedChange={(checked) => {
                   if (checked) {
-                    onApplyEndpointConnection();
+                    onResumeConnection();
                   } else {
                     onPauseConnection();
                   }
@@ -222,6 +229,12 @@ export function OverviewConnectionPanel({
                 className="h-8 shrink-0 steward-inline-panel px-2.5"
                 data-gamepad-focus-key="overview:connection:toggle"
               />
+              <Button size="sm" disabled={!apiTokenDraft.trim() || !connectionDraftDirty} onClick={onApplyEndpointConnection}>
+                应用并连接
+              </Button>
+              {connectionDraftDirty && (
+                <Button size="sm" variant="outline" onClick={onDiscardConnectionDraft}>放弃修改</Button>
+              )}
               <Button
                 size="sm"
                 onClick={onRefresh}

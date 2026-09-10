@@ -13,6 +13,7 @@ import {
   UPDATE_STATUS_FAILURE_RETRY_DELAYS_MS,
 } from '../../apps/companion/src/companion/features/updates/update-polling.ts';
 import { getUpdateNoticeContent } from '../../apps/companion/src/companion/features/updates/update-notice-content.ts';
+import { resolveUpdatePresentation } from '../../apps/companion/src/companion/features/updates/update-presentation.ts';
 import { UpdateRequestCoordinator } from '../../apps/companion/src/companion/features/updates/update-request-coordinator.ts';
 import { normalizeProjectReleaseUrl } from '../../apps/companion/src/lib/project-release-url.ts';
 
@@ -144,6 +145,23 @@ const existingHostNotice = getUpdateNoticeContent({
   error: null,
   staged: false,
 });
+const presentationBase = { enabled: true, state: 'available', hasUpdate: true, staged: true, installState: '' };
+for (const [state, label, activity] of [['checking', '检查中', 'check'], ['downloading', '下载中', 'download']]) {
+  assert.deepEqual(resolveUpdatePresentation({ ...presentationBase, state }), { label, activity, failed: false },
+    '缓存的新版本和安装包不得遮蔽当前检查/下载阶段。');
+  assert.equal(getUpdateNoticeContent({ ...presentationBase, state }).kind, state,
+    '其他设备启动的更新活动必须同时显示在通知条。');
+}
+assert.deepEqual(resolveUpdatePresentation({ ...presentationBase, state: 'failed' }),
+  { label: '更新失败', activity: null, failed: true }, '不能把未知更新失败阶段说成检查失败或已下载。');
+assert.equal(resolveUpdatePresentation({ ...presentationBase, state: 'downloading', installState: 'failed' }).activity, 'download',
+  '新的下载活动不能被旧安装失败遮蔽。');
+assert.equal(resolveUpdatePresentation({ ...presentationBase, enabled: false, installState: 'waiting-game' }).label, '等待游戏退出',
+  '更新开关不能遮蔽已经开始的安装。');
+assert.equal(resolveUpdatePresentation(presentationBase, 'install').label, '正在打开安装程序');
+assert.equal(resolveUpdatePresentation(null).label, '等待本地 API');
+assert.equal(resolveUpdatePresentation({ ...presentationBase, installState: 'cancelled' }).label, '已取消安装');
+assert.equal(resolveUpdatePresentation({ ...presentationBase, installState: 'succeeded' }).label, '安装完成');
 assert.equal(existingHostNotice.kind, 'available');
 assert.equal(
   existingHostNotice.detail,

@@ -1,6 +1,6 @@
 # 稀客调度与订单队列
 
-更新日期：2026-09-02
+更新日期：2026-09-10
 
 本文定义“稀客调度名单”和经营中订单队列的唯一运行时契约。订单标识与最终状态见
 [订单捕获与生命周期](runtime-order-lifecycle.md)，会改变游戏状态的事务见[自动化运行时](automation-runtime.md)，
@@ -8,7 +8,7 @@
 
 ## 模块与名单语义
 
-共享配置结构 v3 使用严格布尔值 `rareGuestParticipationModuleEnabled` 控制独立模块，并用
+共享配置使用严格布尔值 `rareGuestParticipationModuleEnabled` 控制独立模块，并用
 `managedRareGuestIds` 保存“需要玩家在经营中手动调度的稀客”。模块默认关闭；配置名单不是允许出现或
 允许推荐的白名单：
 

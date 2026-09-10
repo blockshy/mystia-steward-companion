@@ -126,9 +126,9 @@ function RecommendationMetaBadge({
   }[tone];
 
   return (
-    <span className={composeClassNames('inline-flex max-w-full items-center gap-1 border px-1.5 py-0.5 text-xs', toneClass, className)}>
+    <span className={composeClassNames('inline-flex max-w-full items-start gap-1 border px-1.5 py-0.5 text-xs', toneClass, className)}>
       <span className="shrink-0 font-medium">{label}</span>
-      <span className="min-w-0 truncate" title={value}>{value}</span>
+      <span className="min-w-0 break-words">{value}</span>
     </span>
   );
 }

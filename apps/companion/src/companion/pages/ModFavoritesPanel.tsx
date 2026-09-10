@@ -1,3 +1,4 @@
+import type { FavoriteAvailability } from '@/companion/domain/favorite-availability';
 import { useMemo, useState } from 'react';
 import { IconRefresh, IconTrash } from '@tabler/icons-react';
 
@@ -20,7 +21,8 @@ import type { FavoriteData } from '@/companion/types';
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 
 interface ModFavoritesPanelProps {
-  apiToken: string;
+  favoriteAvailability: FavoriteAvailability;
+  showDebugDetails: boolean;
   favorites: FavoriteData;
   favoriteBusyKey: string;
   favoriteError: string;
@@ -32,7 +34,8 @@ interface ModFavoritesPanelProps {
 }
 
 export function ModFavoritesPanel({
-  apiToken,
+  favoriteAvailability,
+  showDebugDetails,
   favorites,
   favoriteBusyKey,
   favoriteError,
@@ -59,7 +62,7 @@ export function ModFavoritesPanel({
   const recipeCount = favorites.recipes.length;
   const beverageCount = favorites.beverages.length;
   const customerCount = new Set(entries.map((entry) => entry.customerId)).size;
-  const busy = Boolean(favoriteBusyKey);
+  const busy = Boolean(favoriteBusyKey) || !favoriteAvailability.canWrite;
   const hasQuery = Boolean(query.trim());
 
   return (
@@ -78,9 +81,9 @@ export function ModFavoritesPanel({
             <Badge variant="outline">稀客 {customerCount}</Badge>
           </div>
         </div>
-        {!apiToken && (
+        {favoriteAvailability.reason && (
           <div className="border border-border px-3 py-2 text-sm text-muted-foreground">
-            尚未连接 Mod 本地 API，无法读取或修改收藏。
+            {favoriteAvailability.reason}
           </div>
         )}
         {favoriteError && (
@@ -99,7 +102,7 @@ export function ModFavoritesPanel({
             variant="outline"
             leftSection={<IconRefresh size={14} aria-hidden="true" />}
             loading={favoriteRefreshing}
-            disabled={!apiToken || busy || favoriteRefreshing}
+            disabled={!favoriteAvailability.canRefresh}
             data-gamepad-focus-key="favorites:refresh"
             onClick={() => void onRefresh()}
           >
@@ -130,7 +133,7 @@ export function ModFavoritesPanel({
         </div>
 
         {entries.length === 0 && (
-          <EmptyRow text={apiToken ? '暂无料理或酒水收藏' : '连接 Mod 后显示收藏'} />
+          <EmptyRow text={favoriteAvailability.current ? '暂无料理或酒水收藏' : '等待读取当前收藏'} />
         )}
         {entries.length > 0 && filteredEntries.length === 0 && (
           <EmptyRow text={hasQuery ? '没有符合搜索条件的收藏' : '当前分类暂无收藏'} />
@@ -149,13 +152,14 @@ export function ModFavoritesPanel({
                 <div className="flex flex-wrap gap-1.5">
                   {groupRecipeCount > 0 && <Badge variant="outline">料理 {groupRecipeCount}</Badge>}
                   {groupBeverageCount > 0 && <Badge variant="outline">酒水 {groupBeverageCount}</Badge>}
-                  <Badge variant="outline">ID {group.customerId}</Badge>
+                  {(showDebugDetails || group.entries.some((entry) => entry.catalogMissing)) && <Badge variant="outline">ID {group.customerId}</Badge>}
                 </div>
               </div>
               {group.entries.map((entry) => (
                 <FavoriteManagementRow
                   key={`${entry.kind}:${entry.id}`}
                   entry={entry}
+                  showDebugDetails={showDebugDetails}
                   busy={busy}
                   currentBusy={favoriteBusyKey === entry.id}
                   onRemove={() => void (entry.kind === 'recipe'
@@ -172,11 +176,13 @@ export function ModFavoritesPanel({
 }
 
 function FavoriteManagementRow({
+  showDebugDetails,
   entry,
   busy,
   currentBusy,
   onRemove,
 }: {
+  showDebugDetails: boolean;
   entry: FavoriteManagementEntry;
   busy: boolean;
   currentBusy: boolean;
@@ -206,7 +212,7 @@ function FavoriteManagementRow({
           </div>
           <div className="mt-1 text-xs text-muted-foreground">{detail}</div>
           <div className="mt-1 text-xs text-muted-foreground">
-            内容 ID {entry.itemId} · 更新于 {formatFavoriteTimestamp(entry.updatedAtUtc || entry.createdAtUtc)}
+            {(showDebugDetails || entry.catalogMissing) && <>内容 ID {entry.itemId} · </>}更新于 {formatFavoriteTimestamp(entry.updatedAtUtc || entry.createdAtUtc)}
           </div>
         </div>
         <Button

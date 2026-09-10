@@ -59,7 +59,7 @@ export function persistApiToken(apiToken: string) {
 
 export function readStoredTab(): ModTab {
   const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
-  return VALID_MOD_TABS.includes(value as ModTab) ? value as ModTab : 'service';
+  return VALID_MOD_TABS.includes(value as ModTab) ? value as ModTab : readStoredApiToken() ? 'service' : 'overview';
 }
 
 export function persistTab(tab: ModTab) {

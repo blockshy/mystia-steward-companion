@@ -1,13 +1,12 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { IconRefresh } from '@tabler/icons-react';
 import { Button, Card, CardContent, EmptyRow, Input, ListPanel } from '@/components/ui-kit';
-import { writeInventoryBulkQuantity, writeInventoryQuantity } from '@/companion/api';
+import type { InventoryOperationsController } from '@/companion/hooks/useInventoryOperations';
 import {
   formatInventoryQuantity,
   sortInventoryItems,
   type InventorySortMode,
 } from '@/companion/domain/inventory-sorting';
-import { normalizeEditableQuantity } from '@/companion/preferences';
 import type { RuntimeSets } from '@/companion/types';
 import { InventorySortControl, RuntimeUnavailable } from '@/companion/pages/shared';
 import { DENSE_TWO_COLUMN_GRID } from '@/companion/pages/shared-constants';
@@ -15,25 +14,19 @@ import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { BeverageCatalogItem, IngredientCatalogItem } from '@/lib/catalog-types';
 
 export function ModInventoryPanel({
-  endpoint,
-  apiToken,
   runtimeSets,
   runtimeLoaded,
   data,
-  onRefresh,
+  operations,
 }: {
-  endpoint: string;
-  apiToken: string;
   runtimeSets: RuntimeSets | null;
   runtimeLoaded: boolean;
   data: RecommendationDataSet;
-  onRefresh: () => Promise<void>;
+  operations: InventoryOperationsController;
 }) {
   const [search, setSearch] = useState('');
   const [ingredientSortMode, setIngredientSortMode] = useState<InventorySortMode>('name');
   const [beverageSortMode, setBeverageSortMode] = useState<InventorySortMode>('name');
-  const [busyKey, setBusyKey] = useState('');
-  const [message, setMessage] = useState('');
 
   const normalizedSearch = search.trim().toLocaleLowerCase('zh-Hans-CN');
   const ingredientRows = useMemo(
@@ -74,102 +67,68 @@ export function ModInventoryPanel({
     [data.beverages, runtimeSets],
   );
 
-  const applyQuantity = useCallback(async (kind: 'ingredient' | 'beverage', id: number, quantity: number) => {
-    const key = inventoryDraftKey(kind, id);
-    const targetQuantity = normalizeEditableQuantity(quantity);
-    setBusyKey(key);
-    setMessage('');
-
-    try {
-      const result = await writeInventoryQuantity(endpoint, apiToken, kind, id, targetQuantity);
-      if (!result.ok) throw new Error(result.error || '库存修改失败');
-      setMessage(`${kind === 'ingredient' ? '材料' : '酒水'} #${id}: ${result.previousQuantity} -> ${result.quantity}`);
-      await onRefresh();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyKey('');
-    }
-  }, [apiToken, endpoint, onRefresh]);
-
-  const applyBulkQuantity = useCallback(async (
-    kind: 'ingredient' | 'beverage',
-    ids: number[],
-    quantity: number,
-  ) => {
-    const key = inventoryBulkKey(kind);
-    const targetQuantity = normalizeEditableQuantity(quantity);
-    setBusyKey(key);
-    setMessage('');
-
-    try {
-      const result = await writeInventoryBulkQuantity(endpoint, apiToken, kind, ids, targetQuantity);
-      const label = kind === 'ingredient' ? '材料' : '酒水';
-      const suffix = result.failed > 0 && result.errors.length > 0
-        ? `；失败：${result.errors.slice(0, 3).join('；')}`
-        : '';
-      setMessage(`${label}批量设为 ${targetQuantity}：变更 ${result.changed}，未变 ${result.unchanged}，失败 ${result.failed}${suffix}`);
-      await onRefresh();
-    } catch (err) {
-      setMessage(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyKey('');
-    }
-  }, [apiToken, endpoint, onRefresh]);
-
-  if (!runtimeLoaded || !runtimeSets) {
-    return <RuntimeUnavailable />;
-  }
-
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid grid-cols-[minmax(14rem,1fr)_auto] gap-3 p-4 text-sm max-[719px]:grid-cols-1">
+        <CardContent className="grid grid-cols-[minmax(14rem,1fr)_auto] gap-3 text-sm max-[719px]:grid-cols-1">
           <div className="min-w-0">
             <div className="font-semibold">库存数量修改</div>
             <div className="mt-1 text-xs text-muted-foreground">
               修改会直接写入游戏当前库存；请在游戏内保存后再退出。经营中修改可能会和实时消耗同时发生。
             </div>
+            <div className="mt-1 text-xs text-muted-foreground">搜索只改变列表展示；批量修改包含全部已解锁项目。</div>
           </div>
           <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 max-[719px]:justify-start" data-gamepad-axis="x">
             <Button
               size="sm"
               variant="outline"
-              disabled={!apiToken || busyKey !== '' || bulkIngredientIds.length === 0}
+              className="h-auto max-w-full"
+              disabled={!operations.writable || bulkIngredientIds.length === 0}
               data-gamepad-focus-key="inventory:bulk:ingredient"
-              onClick={() => applyBulkQuantity('ingredient', bulkIngredientIds, 99)}
+              onClick={() => void operations.applyBulkQuantity('ingredient', bulkIngredientIds, 99)}
             >
-              材料设为 99
+              <span className="whitespace-normal">全部已解锁材料设为 99（{bulkIngredientIds.length} 项）</span>
             </Button>
             <Button
               size="sm"
               variant="outline"
-              disabled={!apiToken || busyKey !== '' || bulkBeverageIds.length === 0}
+              className="h-auto max-w-full"
+              disabled={!operations.writable || bulkBeverageIds.length === 0}
               data-gamepad-focus-key="inventory:bulk:beverage"
-              onClick={() => applyBulkQuantity('beverage', bulkBeverageIds, 99)}
+              onClick={() => void operations.applyBulkQuantity('beverage', bulkBeverageIds, 99)}
             >
-              酒水设为 99
+              <span className="whitespace-normal">全部已解锁酒水设为 99（{bulkBeverageIds.length} 项）</span>
             </Button>
             <Input
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="搜索名称或 ID"
+              aria-label="搜索库存"
               className="min-w-[10rem] flex-1 basis-[12rem] max-[479px]:basis-full"
             />
-            <Button size="sm" onClick={onRefresh} data-gamepad-focus-key="inventory:refresh">
+            <Button
+              size="sm"
+              onClick={() => void operations.refresh()}
+              disabled={!operations.refreshable}
+              data-gamepad-focus-key="inventory:refresh"
+            >
               <IconRefresh className="size-4" />
               刷新
             </Button>
           </div>
-          {message && (
-            <div className="col-span-full text-xs text-muted-foreground">
-              {message}
+          {operations.message && (
+            <div
+              className="col-span-full text-xs text-muted-foreground"
+              role={operations.phase === 'failed' || operations.phase === 'unconfirmed' || operations.phase === 'partial' ? 'alert' : 'status'}
+              data-inventory-operation-state={operations.phase}
+            >
+              {operations.message}
             </div>
           )}
         </CardContent>
       </Card>
 
-      <div className={DENSE_TWO_COLUMN_GRID}>
+      {runtimeLoaded && runtimeSets ? <div className={DENSE_TWO_COLUMN_GRID}>
         <InventoryEditColumn
           title="材料"
           kind="ingredient"
@@ -177,9 +136,8 @@ export function ModInventoryPanel({
           ownedQty={runtimeSets.ownedIngredientQty}
           sortMode={ingredientSortMode}
           onSortModeChange={setIngredientSortMode}
-          busyKey={busyKey}
-          apiToken={apiToken}
-          onApply={applyQuantity}
+          writable={operations.writable}
+          onApply={operations.applyQuantity}
         />
         <InventoryEditColumn
           title="酒水"
@@ -188,11 +146,10 @@ export function ModInventoryPanel({
           ownedQty={runtimeSets.ownedBeverageQty}
           sortMode={beverageSortMode}
           onSortModeChange={setBeverageSortMode}
-          busyKey={busyKey}
-          apiToken={apiToken}
-          onApply={applyQuantity}
+          writable={operations.writable}
+          onApply={operations.applyQuantity}
         />
-      </div>
+      </div> : <RuntimeUnavailable />}
     </div>
   );
 }
@@ -204,8 +161,7 @@ function InventoryEditColumn<TItem extends IngredientCatalogItem | BeverageCatal
   ownedQty,
   sortMode,
   onSortModeChange,
-  busyKey,
-  apiToken,
+  writable,
   onApply,
 }: {
   title: string;
@@ -214,9 +170,8 @@ function InventoryEditColumn<TItem extends IngredientCatalogItem | BeverageCatal
   ownedQty: Record<number, number>;
   sortMode: InventorySortMode;
   onSortModeChange: (value: InventorySortMode) => void;
-  busyKey: string;
-  apiToken: string;
-  onApply: (kind: 'ingredient' | 'beverage', id: number, quantity: number) => Promise<void>;
+  writable: boolean;
+  onApply: InventoryOperationsController['applyQuantity'];
 }) {
   return (
     <ListPanel
@@ -235,8 +190,7 @@ function InventoryEditColumn<TItem extends IngredientCatalogItem | BeverageCatal
         {items.map((item) => {
           const key = inventoryDraftKey(kind, item.id);
           const quantity = ownedQty[item.id] ?? 0;
-          const editable = Boolean(apiToken) && item.id >= 0 && quantity >= 0;
-          const busy = busyKey === key || busyKey === inventoryBulkKey(kind);
+          const editable = writable && item.id >= 0 && quantity >= 0;
 
           return (
             <div
@@ -256,27 +210,27 @@ function InventoryEditColumn<TItem extends IngredientCatalogItem | BeverageCatal
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={!editable || busy}
+                    disabled={!editable || quantity === 0}
                     data-gamepad-focus-key={`inventory:${key}:sub10`}
-                    onClick={() => onApply(kind, item.id, quantity - 10)}
+                    onClick={() => void onApply(kind, item.id, quantity - 10, item.name)}
                   >
                     -10
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={!editable || busy}
+                    disabled={!editable}
                     data-gamepad-focus-key={`inventory:${key}:add10`}
-                    onClick={() => onApply(kind, item.id, quantity + 10)}
+                    onClick={() => void onApply(kind, item.id, quantity + 10, item.name)}
                   >
                     +10
                   </Button>
                   <Button
                     size="sm"
                     variant="outline"
-                    disabled={!editable || busy}
+                    disabled={!editable || quantity === 99}
                     data-gamepad-focus-key={`inventory:${key}:set99`}
-                    onClick={() => onApply(kind, item.id, 99)}
+                    onClick={() => void onApply(kind, item.id, 99, item.name)}
                   >
                     99
                   </Button>
@@ -305,8 +259,4 @@ function filterInventoryItems<TItem extends IngredientCatalogItem | BeverageCata
 
 function inventoryDraftKey(kind: 'ingredient' | 'beverage', itemId: number) {
   return `${kind}:${itemId}`;
-}
-
-function inventoryBulkKey(kind: 'ingredient' | 'beverage') {
-  return `bulk:${kind}`;
 }

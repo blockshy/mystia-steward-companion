@@ -1,6 +1,6 @@
 # 本地开发与构建
 
-更新日期：2026-09-02
+更新日期：2026-09-10
 
 本文档只说明日常本地开发环境、构建入口和开发服务。测试选择见
 [验证指南](validation-guide.md)，Android 专用环境见
@@ -55,7 +55,7 @@ corepack pnpm toolchain:check
 也不执行全局 `corepack enable`。
 
 Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。唯一的通用 .NET 6 smoke
-入口覆盖三项真实 Harmony/MonoMod 动态补丁探针，以及稀客队列执行许可和经营生命周期两项纯托管 smoke；入口和限制见
+入口覆盖三项真实 Harmony/MonoMod 动态补丁探针，以及本地配置存储、稀客队列执行许可和经营生命周期三项纯托管 smoke；入口和限制见
 [验证指南](validation-guide.md#锁定-net-6-smoke-矩阵)。
 
 ## BepInEx 构建引用

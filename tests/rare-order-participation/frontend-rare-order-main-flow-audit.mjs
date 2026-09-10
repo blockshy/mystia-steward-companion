@@ -158,7 +158,6 @@ assert.ok(queueSource.includes('const groupMutationDisabled = readOnly || busyMu
 assert.ok(queueSource.includes('const actionDisabled = readOnly || busyMutationKey !== null || !identity'));
 assert.ok(queueSource.includes('children={error'));
 assert.ok(!queueSource.includes('moduleEnabled'));
-assert.ok(!queueSource.includes('readOnlyReason'));
 assert.ok(!queueSource.includes('onOpenModule'));
 assert.ok(!queueSource.includes('data-rare-order-participation-read-only'));
 assert.ok(!queueSource.includes('只读'));

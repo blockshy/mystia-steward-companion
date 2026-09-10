@@ -27,6 +27,8 @@ export interface RareOrderParticipationPanelProps {
   collectionComplete: boolean;
   businessActive: boolean;
   readOnly: boolean;
+  readOnlyReason: string;
+  showDebugDetails: boolean;
   busyMutationKey?: string | null;
   error?: string | null;
   onMutateGuest: (
@@ -54,6 +56,8 @@ export function RareOrderParticipationPanel({
   collectionComplete,
   businessActive,
   readOnly,
+  readOnlyReason,
+  showDebugDetails,
   busyMutationKey = null,
   error,
   onMutateGuest,
@@ -139,6 +143,8 @@ export function RareOrderParticipationPanel({
             )
           : undefined}
       />
+
+      {readOnly && readOnlyReason && <div role="status" className="steward-inline-panel p-3 text-sm">{readOnlyReason}</div>}
 
       {!businessActive && (
         <EmptyState text="当前未进入夜间经营，开始经营后这里会显示调度名单内的稀客订单。" />
@@ -240,6 +246,7 @@ export function RareOrderParticipationPanel({
                   row={row}
                   guestName={group.guestName}
                   readOnly={readOnly}
+                  showDebugDetails={showDebugDetails}
                   busyMutationKey={busyMutationKey}
                   onMutateOrder={onMutateOrder}
                   onRunMutation={runMutationInFocusScope}
@@ -265,6 +272,7 @@ function ParticipationOrderRow({
   row,
   guestName,
   readOnly,
+  showDebugDetails,
   busyMutationKey,
   onMutateOrder,
   onRunMutation,
@@ -272,6 +280,7 @@ function ParticipationOrderRow({
   row: ManagedRareOrderRow;
   guestName: string;
   readOnly: boolean;
+  showDebugDetails: boolean;
   busyMutationKey: string | null;
   onMutateOrder: (
     order: RareOrderExactIdentity,
@@ -302,8 +311,8 @@ function ParticipationOrderRow({
         <div className="min-w-0">
           <div className="font-medium">桌 {formatDesk(row.order.deskCode)} · 订单 #{row.order.orderLifecycleSequence}</div>
           <div className="mt-1 flex flex-wrap gap-1.5">
-            <Badge variant="outline">料理 {row.order.foodTag || '无'} ({row.order.foodTagId ?? '未读取'})</Badge>
-            <Badge variant="outline">酒水 {row.order.beverageTag || '无'} ({row.order.beverageTagId ?? '未读取'})</Badge>
+            <Badge variant="outline">料理 {row.order.foodTag || '无'}{showDebugDetails && ` (${row.order.foodTagId ?? '未读取'})`}</Badge>
+            <Badge variant="outline">酒水 {row.order.beverageTag || '无'}{showDebugDetails && ` (${row.order.beverageTagId ?? '未读取'})`}</Badge>
             {row.order.missionRecipePriority && <Badge variant="secondary">任务料理优先</Badge>}
             {row.order.specialBusinessRoleLabel && (
               <Badge variant="secondary">{row.order.specialBusinessRoleLabel}</Badge>
@@ -324,8 +333,8 @@ function ParticipationOrderRow({
       {row.state === 'unavailable' && row.reason && (
         <div className="mt-1 text-xs text-muted-foreground">{row.reason}</div>
       )}
-      {identity && (
-        <div className="mt-1 truncate font-mono text-[0.7rem] text-muted-foreground" title={identity.traceId}>
+      {identity && showDebugDetails && (
+        <div className="mt-1 break-all font-mono text-[0.7rem] text-muted-foreground">
           日志编号 {identity.traceId}
         </div>
       )}

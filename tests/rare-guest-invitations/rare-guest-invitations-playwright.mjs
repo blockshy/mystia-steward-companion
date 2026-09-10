@@ -225,7 +225,8 @@ try {
     'Candidate search incorrectly filtered the current invited list.',
   );
   await page.getByText('用于验证完整展示且不会被搜索隐藏的超长稀客名称', { exact: true }).waitFor();
-  await page.getByRole('button', { name: '邀请全部匹配项 (2)', exact: true }).waitFor();
+  await page.getByRole('button', { name: '邀请当前羁绊范围 2 位', exact: true }).waitFor();
+  await page.getByText(/列表显示 1 位；当前羁绊范围可批量邀请 2 位/).waitFor();
   assert.equal(
     await page.locator('[data-rare-invitation-section="unavailable"] [data-rare-invitation-candidate="1005"]').count(),
     1,
@@ -311,7 +312,7 @@ try {
   await page.getByText('mock invitation candidates loaded', { exact: true }).waitFor();
 
   returnInvitationWriteFailure = true;
-  await page.getByRole('button', { name: /邀请全部匹配项/ }).click();
+  await page.getByRole('button', { name: /邀请当前羁绊范围/ }).click();
   await page.getByText('mock invitation write failed', { exact: true }).waitFor();
   await page.waitForTimeout(800);
   assert.equal(

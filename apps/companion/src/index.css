@@ -908,14 +908,35 @@ html::-webkit-scrollbar-thumb:hover,
   font-variant-numeric: tabular-nums;
 }
 
-.steward-number-input-root .mantine-NumberInput-control {
-  color: var(--foreground);
-  border-inline-start-color: color-mix(in srgb, var(--input) 64%, transparent);
+.steward-number-steppers {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-rows: 1fr 1fr;
+}
+
+.steward-number-steppers button {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  border-inline-start: 1px solid var(--border);
+}
+
+.steward-number-steppers button:disabled { opacity: 0.4; cursor: default; }
+.steward-number-steppers button:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
+
+@media (pointer: coarse) {
+  .steward-button[data-ui-density='standard'] { min-height: 40px; min-width: 40px; }
+  .steward-setting-help-trigger { width: 40px; height: 40px; flex-basis: 40px; }
+  .steward-slider .mantine-Slider-thumb::after { content: ''; position: absolute; inset: -12px; }
 }
 
 @media (hover: hover) {
-  .steward-number-input-root .mantine-NumberInput-control:hover:not(:disabled) {
-    background-color: var(--companion-muted-surface) !important;
+  .steward-number-steppers button:hover:not(:disabled) {
+    background-color: var(--companion-muted-surface);
     color: var(--primary);
   }
 }
@@ -1005,15 +1026,13 @@ html::-webkit-scrollbar-thumb:hover,
     overflow-y: hidden;
     overscroll-behavior-x: contain;
     scroll-padding-inline: 0.25rem;
-    scrollbar-width: none;
-    touch-action: pan-x;
+    scrollbar-width: thin;
+    touch-action: pan-x pan-y;
     -webkit-overflow-scrolling: touch;
   }
 
   .steward-tabs-list[data-scrollable-tabs='true']::-webkit-scrollbar {
-    display: none;
-    width: 0;
-    height: 0;
+    height: 4px;
   }
 
   .steward-tabs-list[data-scrollable-tabs='true'] .steward-tabs-trigger {

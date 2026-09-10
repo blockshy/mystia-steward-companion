@@ -7,6 +7,9 @@ import {
 import { UpdateNoticeBar } from '@/companion/features/updates/UpdateNoticeBar';
 import { useUpdateManager } from '@/companion/features/updates/useUpdateManager';
 import { useCompanionConnection } from '@/companion/hooks/useCompanionConnection';
+import { useLocalApiConnectionSettings } from '@/companion/hooks/useLocalApiConnectionSettings';
+import { useInventoryOperations } from '@/companion/hooks/useInventoryOperations';
+import { useDesktopWindowControls } from '@/companion/hooks/useDesktopWindowControls';
 import { useCompanionDeviceAuthority } from '@/companion/hooks/useCompanionDeviceAuthority';
 import {
   buildAutomationLeaseConnectionKey,
@@ -155,7 +158,6 @@ import {
 } from '@/companion/domain/special-business';
 import { formatDesk } from '@/companion/formatters';
 import {
-  applyCompanionPreferencesToTauri,
   applySharedCompanionPreferences,
   applyCompanionVisualPreferences,
   normalizeCompanionPreferences,
@@ -218,7 +220,7 @@ import type {
   NormalExecutionTargetSelection,
   OrderRecommendationWorkerPayload,
 } from '@/companion/workers/order-recommendations.types';
-import { Badge, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import { Badge, Button, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import {
   buildRecommendationDataIndexes,
   buildRecommendationDataSet,
@@ -1649,14 +1651,35 @@ export function ModWorkbench() {
     applyEndpointConnection,
     applyConnectionDetails,
     pauseConnection,
+    resumeConnection,
+    discardConnectionDraft,
+    connectionDraftDirty,
     refresh,
   } = useCompanionConnection(snapshotRefreshIntervalMs);
   const companionConnected = Boolean(apiToken && !connectionPaused && !error && snapshot);
+  const refreshInventorySnapshot = useCallback(() => refresh(false, true), [refresh]);
+  const inventoryOperations = useInventoryOperations({
+    endpoint: normalizedEndpoint,
+    apiToken,
+    connectionRevision,
+    connected: companionConnected,
+    runtimeReady: Boolean(snapshot?.runtimeLoaded && snapshot.recommendationState),
+    onRefresh: refreshInventorySnapshot,
+  });
+  const connectionSettings = useLocalApiConnectionSettings({
+    endpoint: normalizedEndpoint,
+    apiToken,
+    connectionRevision,
+    connected: companionConnected,
+    active: tab === 'settings' && settingsTab === 'connection',
+    onConnectionConfigApplied: applyConnectionDetails,
+  });
   const {
     favorites,
     favoriteError,
     favoriteBusyKey,
     favoriteRefreshing,
+    favoriteAvailability,
     refreshFavorites,
     toggleRecipeFavorite,
     toggleBeverageFavorite,
@@ -5211,64 +5234,12 @@ export function ModWorkbench() {
     applyCompanionVisualPreferences(companionPreferences);
   }, [companionPreferences]);
 
-  useEffect(() => {
-    void applyCompanionPreferencesToTauri(
-      companionPreferences.focusSwitchBehavior,
-      companionPreferences.alwaysOnTop,
-      companionPreferences.focusSwitchCooldownMs,
-      companionPreferences.mousePassthroughEnabled,
-    );
-  }, [
-    companionPreferences.alwaysOnTop,
-    companionPreferences.focusSwitchBehavior,
-    companionPreferences.focusSwitchCooldownMs,
-    companionPreferences.mousePassthroughEnabled,
-  ]);
-
-  useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
-
-    let disposed = false;
-    let unlisten: (() => void) | undefined;
-    import('@tauri-apps/api/event')
-      .then(async ({ listen }) => {
-        unlisten = await listen<boolean>('mouse-passthrough-changed', (event) => {
-          if (disposed) return;
-          const mousePassthroughEnabled = Boolean(event.payload);
-          setCompanionPreferences((current) => (
-            current.mousePassthroughEnabled === mousePassthroughEnabled
-              ? current
-              : normalizeCompanionPreferences({ ...current, mousePassthroughEnabled })
-          ));
-        });
-      })
-      .catch(() => {
-        // 浏览器开发模式和旧版伴随窗口不一定暴露该事件。
-      });
-
-    return () => {
-      disposed = true;
-      unlisten?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (isTauriRuntime()) return undefined;
-
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'F10') return;
-      event.preventDefault();
-      updateLocalCompanionPreferences({
-        mousePassthroughEnabled: !companionPreferences.mousePassthroughEnabled,
-      });
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [
-    companionPreferences.mousePassthroughEnabled,
-    updateLocalCompanionPreferences,
-  ]);
+  const desktopWindowControls = useDesktopWindowControls({
+    enabled: isTauriRuntime() && companionPlatform === 'desktop',
+    focusSwitchBehavior: companionPreferences.focusSwitchBehavior,
+    alwaysOnTop: companionPreferences.alwaysOnTop,
+    focusSwitchCooldownMs: companionPreferences.focusSwitchCooldownMs,
+  });
 
   const handleAutomationDisabled = useCallback(() => {
     retainRareAutomationExecutionStates(rareOrderStatesRef.current);
@@ -5365,10 +5336,10 @@ export function ModWorkbench() {
   });
 
   const mousePassthroughSafetyNotice = companionPlatform === 'desktop'
-    && companionPreferences.mousePassthroughEnabled
+    && desktopWindowControls.mousePassthroughEnabled
     ? (
         <Badge variant="secondary" data-mouse-passthrough-safety="true">
-          鼠标穿透中 · F10 解除
+          鼠标穿透中 · {desktopWindowControls.hotkeyStatus?.status === 'available' ? 'F10 解除' : '请用 F8、RS Click 或托盘解除'}
         </Badge>
       )
     : null;
@@ -5386,6 +5357,7 @@ export function ModWorkbench() {
         favorites={favorites}
         customRecipes={customRecipes}
         favoriteBusyKey={favoriteBusyKey}
+        favoriteAvailability={favoriteAvailability}
         favoriteError={favoriteError}
         participationEnabled={rareOrderParticipation.participationActive}
         participationReady={rareOrderParticipation.projectionReady}
@@ -5450,6 +5422,15 @@ export function ModWorkbench() {
           </TabsTrigger>
         </TabsList>
 
+        {!companionConnected && tab !== 'overview' && (
+          <div role="status" className="steward-inline-panel flex flex-wrap items-center gap-2 p-3 text-sm">
+            <span className="min-w-0 flex-1 break-words">
+              {!apiToken ? '请先配置 API 地址和 Token 连接 Mod。' : connectionPaused ? '自动连接已暂停，已有数据为上次读取结果。' : error || '正在确认 Mod 连接。'}
+            </span>
+            <Button size="sm" onClick={() => setTab('overview')}>查看连接</Button>
+          </div>
+        )}
+
         <TabsContent value="overview" data-gamepad-scope="content">
           {tab === 'overview' && (
             <ModOverviewPanel
@@ -5459,6 +5440,10 @@ export function ModWorkbench() {
               onApiTokenDraftChange={setApiTokenDraft}
               onApplyEndpointConnection={applyEndpointConnection}
               onPauseConnection={pauseConnection}
+              onResumeConnection={resumeConnection}
+              onDiscardConnectionDraft={discardConnectionDraft}
+              connectionDraftDirty={connectionDraftDirty}
+              supportsDesktopWindowControls={companionPlatform === 'desktop'}
               onRefresh={() => void refresh(true)}
               apiToken={apiToken}
               connectionPaused={connectionPaused}
@@ -5502,6 +5487,7 @@ export function ModWorkbench() {
               <TabsContent value="normal" className="space-y-4">
                 {recommendationTab === 'normal' && (
                   <ModNormalPanel
+                    connectionRevision={connectionRevision}
                     runtime={runtime}
                     runtimeSets={runtimeSets}
                     selectedPlace={selectedPlace}
@@ -5517,6 +5503,7 @@ export function ModWorkbench() {
               <TabsContent value="rare" className="space-y-4">
                 {recommendationTab === 'rare' && (
                   <ModRarePanel
+                    connectionRevision={connectionRevision}
                     runtime={runtime}
                     runtimeSets={runtimeSets}
                     selectedPlace={selectedPlace}
@@ -5528,6 +5515,7 @@ export function ModWorkbench() {
                     favorites={favorites}
                     customRecipes={customRecipes}
                     favoriteBusyKey={favoriteBusyKey}
+                    favoriteAvailability={favoriteAvailability}
                     favoriteError={favoriteError}
                     preferences={companionPreferences}
                     active
@@ -5581,7 +5569,8 @@ export function ModWorkbench() {
               <TabsContent value="favorites" className="space-y-4">
                 {recommendationTab === 'favorites' && (
                   <ModFavoritesPanel
-                    apiToken={apiToken}
+                    favoriteAvailability={favoriteAvailability}
+                    showDebugDetails={companionPreferences.showDebugDetails}
                     favorites={favorites}
                     favoriteBusyKey={favoriteBusyKey}
                     favoriteError={favoriteError}
@@ -5619,6 +5608,7 @@ export function ModWorkbench() {
               favorites={favorites}
               customRecipes={customRecipes}
               favoriteBusyKey={favoriteBusyKey}
+              favoriteAvailability={favoriteAvailability}
               favoriteError={favoriteError}
               autoPrepBusy={autoPrepBusy}
               autoPrepMessage={autoPrepMessage}
@@ -5666,6 +5656,7 @@ export function ModWorkbench() {
               rareParticipationEnabled={rareOrderParticipation.participationActive}
               rareParticipationReady={rareOrderParticipation.projectionReady}
               rareParticipationReadOnly={rareOrderParticipation.readOnly}
+              rareParticipationReadOnlyReason={rareOrderParticipation.readOnlyReason}
               rareParticipationBusyMutationKey={rareOrderParticipation.busyMutationKey}
               rareParticipationError={rareOrderParticipation.error}
               resolveRareOrderParticipation={rareOrderParticipation.resolveOrder}
@@ -5779,14 +5770,10 @@ export function ModWorkbench() {
               <TabsContent value="inventory" className="space-y-4">
                 {extensionTab === 'inventory' && (
                   <ModInventoryPanel
-                    endpoint={normalizedEndpoint}
-                    apiToken={apiToken}
+                    operations={inventoryOperations}
                     runtimeSets={runtimeSets}
                     runtimeLoaded={snapshot?.runtimeLoaded ?? false}
                     data={recommendationData}
-                    onRefresh={async () => {
-                      await refresh(true);
-                    }}
                   />
                 )}
               </TabsContent>
@@ -5815,7 +5802,8 @@ export function ModWorkbench() {
               deviceAuthority={companionDeviceAuthority}
               onLocalPreferenceChange={updateLocalCompanionPreferences}
               onSharedPreferenceChange={updateSharedCompanionPreferences}
-              onConnectionConfigApplied={applyConnectionDetails}
+              connectionSettings={connectionSettings}
+              desktopWindowControls={desktopWindowControls}
               onSettingsTabChange={setSettingsTab}
               onThemeModeChange={setThemeMode}
               onServiceFocusCompactChange={setServiceFocusCompact}

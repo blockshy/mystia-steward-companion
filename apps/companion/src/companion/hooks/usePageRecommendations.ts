@@ -1,229 +1,129 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   PageRecommendationPayload,
   PageRecommendationResult,
   PageRecommendationWorkerRequest,
-  PageRecommendationWorkerRuntimePayload,
   PageRecommendationWorkerResponse,
 } from '@/companion/workers/page-recommendations.types';
 import { buildRecommendationDataSignature } from '@/lib/recommendation-data';
 
-interface PageRecommendationState {
+interface RequestContext {
+  payload: PageRecommendationPayload;
+  dataSignature: string;
+  selectionKey: string;
+}
+
+interface ResultState {
+  source: RequestContext | null;
   result: PageRecommendationResult | null;
-  pending: boolean;
-  isCurrent: boolean;
+  settled: RequestContext | null;
   error: string | null;
 }
 
-const INITIAL_STATE: PageRecommendationState = {
-  result: null,
-  pending: false,
-  isCurrent: true,
-  error: null,
-};
-const DATA_CACHE_MISS_MESSAGE = '推荐数据集尚未初始化';
-
-export function usePageRecommendations(payload: PageRecommendationPayload | null): PageRecommendationState {
-  const [state, setState] = useState<PageRecommendationState>(INITIAL_STATE);
-  const workerRef = useRef<Worker | null>(null);
-  const requestSequenceRef = useRef(0);
-  const stateVersionRef = useRef(0);
-  const activeRequestIdRef = useRef<number | null>(null);
-  const activeRequestRef = useRef<PageRecommendationWorkerRequest | null>(null);
-  const queuedRequestRef = useRef<PageRecommendationWorkerRequest | null>(null);
-  const postedDataSignatureRef = useRef('');
-  const payloadRef = useRef(payload);
-  const workerEnabled = payload !== null;
+/** 结果始终携带发起请求的上下文，不会在选择改变后重新归属到另一个客人。 */
+export function usePageRecommendations(payload: PageRecommendationPayload | null, connectionRevision: number) {
+  const data = payload?.data;
+  const dataSignature = useMemo(() => data ? buildRecommendationDataSignature(data) : '', [data]);
+  const context = useMemo<RequestContext | null>(() => payload ? {
+    payload,
+    dataSignature,
+    selectionKey: JSON.stringify(payload.kind === 'normal'
+      ? [connectionRevision, dataSignature, payload.kind, payload.selectedPlace]
+      : [connectionRevision, dataSignature, payload.kind, payload.selectedCustomer.id, payload.foodTag, payload.beverageTag]),
+  } : null, [payload, connectionRevision, dataSignature]);
+  const [state, setState] = useState<ResultState>({ source: null, result: null, settled: null, error: null });
+  const [retryRevision, setRetryRevision] = useState(0);
+  const [workerFailure, setWorkerFailure] = useState<string | null>(null);
+  const runnerRef = useRef<((context: RequestContext) => void) | null>(null);
+  const enabled = context !== null;
 
   useEffect(() => {
-    payloadRef.current = payload;
-  }, [payload]);
-
-  const createRequest = useCallback((nextPayload: PageRecommendationPayload): PageRecommendationWorkerRequest => {
-    requestSequenceRef.current += 1;
-    const dataSignature = buildRecommendationDataSignature(nextPayload.data);
-    const includeData = postedDataSignatureRef.current !== dataSignature;
-    return {
-      requestId: requestSequenceRef.current,
-      payload: buildRuntimePayload(nextPayload, dataSignature, includeData),
-    };
-  }, []);
-
-  const postRequest = useCallback((worker: Worker, request: PageRecommendationWorkerRequest) => {
-    activeRequestIdRef.current = request.requestId;
-    activeRequestRef.current = request;
+    if (!enabled) return;
+    let worker: Worker;
     try {
-      worker.postMessage(request);
+      worker = new Worker(new URL('../workers/page-recommendations.worker.ts', import.meta.url), { type: 'module' });
     } catch (error) {
-      activeRequestIdRef.current = null;
-      activeRequestRef.current = null;
-      throw error;
+      setWorkerFailure(`无法启动后台推荐计算：${String(error)}`);
+      runnerRef.current = null;
+      return;
     }
-  }, []);
+    setWorkerFailure(null);
+    let disposed = false;
+    let failed = false;
+    let sequence = 0;
+    let postedDataSignature = '';
+    let active: { requestId: number; context: RequestContext; dataSignature: string } | null = null;
+    let queued: RequestContext | null = null;
 
-  useEffect(() => {
-    if (!workerEnabled) {
-      workerRef.current?.terminate();
-      workerRef.current = null;
-      activeRequestIdRef.current = null;
-      activeRequestRef.current = null;
-      queuedRequestRef.current = null;
-      postedDataSignatureRef.current = '';
-      return undefined;
-    }
-
-    const worker = new Worker(new URL('../workers/page-recommendations.worker.ts', import.meta.url), {
-      type: 'module',
-    });
-    workerRef.current = worker;
-
+    const post = (next: RequestContext) => {
+      const dataSignature = next.dataSignature;
+      const { data, ...rest } = next.payload;
+      const request: PageRecommendationWorkerRequest = {
+        requestId: ++sequence,
+        payload: { ...rest, dataSignature, ...(postedDataSignature === dataSignature ? {} : { data }) },
+      };
+      active = { requestId: request.requestId, context: next, dataSignature };
+      try {
+        worker.postMessage(request);
+      } catch (error) {
+        active = null;
+        postedDataSignature = '';
+        setState((current) => ({ ...current, settled: next, error: String(error) }));
+      }
+    };
+    runnerRef.current = (next) => {
+      if (failed) return;
+      if (active) queued = next;
+      else post(next);
+    };
     worker.onmessage = (event: MessageEvent<PageRecommendationWorkerResponse>) => {
       const response = event.data;
-      if (response.requestId !== activeRequestIdRef.current) return;
-
-      const activeRequest = activeRequestRef.current;
-      activeRequestIdRef.current = null;
-      activeRequestRef.current = null;
-      let queuedRequest = queuedRequestRef.current;
-      queuedRequestRef.current = null;
-      const hasQueuedRequest = queuedRequest !== null;
-      let queueError: string | null = null;
-
+      if (disposed || !active || response.requestId !== active.requestId) return;
+      const completed = active;
+      active = null;
       if (response.ok) {
-        if (activeRequest?.payload.data) {
-          postedDataSignatureRef.current = activeRequest.payload.dataSignature;
-        }
-      } else if (activeRequest?.payload.data || isDataCacheMiss(response.error)) {
-        postedDataSignatureRef.current = '';
-        queuedRequest = payloadRef.current ? createRequest(payloadRef.current) : null;
+        postedDataSignature = completed.dataSignature;
+        setState({ source: completed.context, result: response.result, settled: completed.context, error: null });
+      } else {
+        postedDataSignature = '';
+        setState((current) => ({ ...current, settled: completed.context, error: response.error }));
       }
-
-      if (queuedRequest) {
-        try {
-          postRequest(worker, queuedRequest);
-        } catch (error) {
-          queueError = error instanceof Error ? error.message : String(error);
-        }
-      }
-
-      if (response.ok) {
-        setState({
-          result: response.result,
-          pending: hasQueuedRequest && !queueError,
-          isCurrent: !hasQueuedRequest || queueError !== null,
-          error: queueError,
-        });
-        return;
-      }
-
-      setState((current) => ({
-        result: current.result,
-        pending: queuedRequest !== null && !queueError,
-        isCurrent: queuedRequest === null || queueError !== null,
-        error: queueError ?? response.error,
-      }));
+      const next = queued;
+      queued = null;
+      if (next) post(next);
     };
-
     worker.onerror = (event) => {
-      const message = event.message || '后台推荐计算失败。';
-      activeRequestIdRef.current = null;
-      activeRequestRef.current = null;
-      queuedRequestRef.current = null;
-      postedDataSignatureRef.current = '';
-      setState({
-        result: null,
-        pending: false,
-        isCurrent: true,
-        error: message,
-      });
-    };
-
-    return () => {
+      if (disposed) return;
+      failed = true;
       worker.terminate();
-      workerRef.current = null;
-      activeRequestIdRef.current = null;
-      activeRequestRef.current = null;
-      queuedRequestRef.current = null;
-      postedDataSignatureRef.current = '';
+      active = null;
+      queued = null;
+      postedDataSignature = '';
+      setWorkerFailure(event.message || '后台推荐计算失败。');
     };
-  }, [createRequest, postRequest, workerEnabled]);
+    return () => {
+      disposed = true;
+      runnerRef.current = null;
+      worker.terminate();
+    };
+  }, [enabled, retryRevision]);
 
   useEffect(() => {
-    const stateVersion = stateVersionRef.current + 1;
-    stateVersionRef.current = stateVersion;
-    const scheduleCurrentState = (
-      buildNextState: (current: PageRecommendationState) => PageRecommendationState,
-    ) => {
-      queueMicrotask(() => {
-        if (stateVersionRef.current !== stateVersion) return;
-        setState(buildNextState);
-      });
-    };
+    if (context) runnerRef.current?.(context);
+  }, [context, retryRevision]);
 
-    if (!payload) {
-      activeRequestIdRef.current = null;
-      activeRequestRef.current = null;
-      queuedRequestRef.current = null;
-      scheduleCurrentState(() => INITIAL_STATE);
-      return;
-    }
-
-    const worker = workerRef.current;
-    if (!worker) {
-      scheduleCurrentState(() => ({
-        result: null,
-        pending: false,
-        isCurrent: true,
-        error: '后台推荐计算尚未初始化。',
-      }));
-      return;
-    }
-
-    const request = createRequest(payload);
-    if (activeRequestIdRef.current === null) {
-      try {
-        postRequest(worker, request);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        scheduleCurrentState((current) => ({
-          result: current.result,
-          pending: false,
-          isCurrent: true,
-          error: message,
-        }));
-        return;
-      }
-    } else {
-      queuedRequestRef.current = request;
-    }
-
-    scheduleCurrentState((current) => {
-      const requestStillPending = activeRequestIdRef.current === request.requestId
-        || queuedRequestRef.current?.requestId === request.requestId;
-      if (!requestStillPending) return current;
-      return {
-        result: current.result,
-        pending: true,
-        isCurrent: false,
-        error: null,
-      };
-    });
-  }, [createRequest, payload, postRequest]);
-
-  return state;
-}
-
-function buildRuntimePayload(
-  payload: PageRecommendationPayload,
-  dataSignature: string,
-  includeData: boolean,
-): PageRecommendationWorkerRuntimePayload {
-  const { data, ...rest } = payload;
-  return includeData
-    ? { ...rest, data, dataSignature }
-    : { ...rest, dataSignature };
-}
-
-function isDataCacheMiss(error: string): boolean {
-  return error.includes(DATA_CACHE_MISS_MESSAGE);
+  const sameSelection = Boolean(context && state.source?.selectionKey === context.selectionKey);
+  const error = context ? workerFailure || (state.settled === context ? state.error : null) : null;
+  const isCurrent = Boolean(context && state.source === context && state.settled === context && !error);
+  return {
+    result: sameSelection ? state.result : null,
+    pending: Boolean(context && !workerFailure && state.settled !== context),
+    isCurrent,
+    error,
+    retry: () => {
+      setWorkerFailure(null);
+      setState((current) => ({ ...current, settled: null, error: null }));
+      setRetryRevision((current) => current + 1);
+    },
+  };
 }

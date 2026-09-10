@@ -156,7 +156,11 @@ function RareGuestRosterPanel({
 
         <RosterSection
           title={`可添加 (${sections.available.length})`}
-          emptyText={query ? '没有匹配的可添加稀客。' : '当前游戏稀客目录为空。'}
+          emptyText={query.trim()
+            ? '没有匹配的可添加稀客。'
+            : customers.length === 0
+              ? '当前游戏稀客目录为空。'
+              : '目录中的稀客均已加入调度名单。'}
           rows={sections.available}
           currentOrderCounts={currentOrderCounts}
           disabled={disabled}

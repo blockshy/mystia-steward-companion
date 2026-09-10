@@ -46,7 +46,7 @@ export const NormalOrderDetailCard = memo(function NormalOrderDetailCard({
             {order.guestName || '普客'}
           </span>
           <span className="font-normal text-muted-foreground">桌 {formatDesk(order.deskCode)}</span>
-          <OrderTraceBadge traceId={order.traceId} />
+          <OrderTraceBadge traceId={order.traceId} showDebugDetails={showDebugDetails} />
         </div>
       )}
       subtitle={<>原订单：料理 {originalFoodText} / 酒水 {originalBeverageText}</>}

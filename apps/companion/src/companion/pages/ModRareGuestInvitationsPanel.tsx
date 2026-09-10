@@ -331,7 +331,8 @@ function RareGuestInvitationPanel({
               </div>
               <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                 <p className="min-w-0 flex-1 break-words text-xs text-muted-foreground">
-                  搜索只改变下方列表展示；羁绊筛选同时决定批量邀请范围。
+                  列表显示 {visibleCandidateEntries.length} 位；当前羁绊范围可批量邀请 {batchEligibleEntries.length} 位。
+                  搜索只过滤列表，不改变批量邀请范围。
                 </p>
                 <Button
                   type="button"
@@ -342,7 +343,7 @@ function RareGuestInvitationPanel({
                   data-gamepad-clickable="true"
                   data-gamepad-focus-key="rare-invitations:invite-all"
                 >
-                  {isAllBusy ? '邀请中...' : `邀请全部匹配项 (${batchEligibleEntries.length})`}
+                  {isAllBusy ? '邀请中...' : `邀请当前羁绊范围 ${batchEligibleEntries.length} 位`}
                 </Button>
               </div>
             </section>

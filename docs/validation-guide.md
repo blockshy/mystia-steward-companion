@@ -1,6 +1,6 @@
 # 验证指南
 
-更新日期：2026-09-02
+更新日期：2026-09-10
 
 本文档负责回答“改动后应运行哪些验证”。它只记录测试入口、选择规则和平台边界；每项测试的完整断言、
 fixtures 和禁止路径以 `tests/` 下的源码为准，业务契约不在这里重复维护。
@@ -52,7 +52,10 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 | 连接恢复 | `corepack pnpm audit:connection-recovery` |
 | 主设备与生效配置 | `corepack pnpm audit:device-authority`、`corepack pnpm audit:device-authority:ui` |
 | 字号与缩放 | `corepack pnpm audit:font-scale` |
-| 设置与帮助 | `corepack pnpm audit:settings-help` |
+| 设置与帮助 | `corepack pnpm audit:settings-help`、`corepack pnpm audit:settings-lifecycle` |
+| 连接草稿、推荐归属与断线操作 | `corepack pnpm audit:ui-lifecycle` |
+| 库存修改占用与结果确认 | `corepack pnpm audit:inventory-ui` |
+| 桌面窗口请求与实际状态 | `corepack pnpm audit:desktop-window` |
 | 订单状态与展示 | `corepack pnpm audit:service-orders` |
 | 更新协议的前端视图 | `corepack pnpm audit:updates`、`corepack pnpm audit:updates:ui` |
 | 游戏界面目标发布 | `corepack pnpm audit:ui-pinning` |
@@ -132,7 +135,8 @@ Windows 可在支持的运行时直接执行，Linux 必须改用后文的锁定
 dotnet run --project tests/local-api-listener-lifecycle/LocalApiListenerLifecycleSmoke.csproj -c Release
 dotnet run --project tests/local-api-client-handlers/LocalApiClientHandlersSmoke.csproj -c Release
 dotnet run --project tests/local-api-method-matrix/LocalApiMethodMatrixSmoke.csproj -c Release
-dotnet run --project tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
+dotnet build tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
+corepack pnpm test:dotnet6 local-api-storage
 dotnet run --project tests/main-thread-command/MainThreadCommandSmoke.csproj -c Release
 dotnet run --project tests/snapshot-signature/SnapshotSignatureSmoke.csproj -c Release
 dotnet run --project tests/update-protocol/UpdateProtocolSmoke.csproj -c Release
@@ -226,18 +230,20 @@ corepack pnpm audit:gamepad
 
 ## 锁定 .NET 6 smoke 矩阵
 
-前三个测试会安装真实 Harmony/MonoMod 动态补丁；后两个分别固定纯托管稀客队列状态/执行许可和经营生命周期边界在产品目标框架上的行为：
+前三个测试会安装真实 Harmony/MonoMod 动态补丁；其余固定稀客队列状态/执行许可、经营生命周期及本地 API 存储在产品目标框架上的行为：
 
 - `tests/automation-cooking-job/`；
 - `tests/ui-pinning-runtime/`；
 - `tests/runtime-target-recipe-variant/`。
 - `tests/runtime-rare-guest-participation/`。
 - `tests/night-business-lifecycle/`。
+- `tests/local-api-storage/`（锁定 SDK 10 先构建，锁定 .NET 6 容器以 `--no-build` 运行）。
 
 Linux .NET 10 CoreCLR 上的真实探针可能原生崩溃。统一使用仓库锁定的通用 .NET 6 SDK 容器入口；
-不带参数时执行全部五项 smoke：
+不带参数时执行完整矩阵；存储专项可单独用 `corepack pnpm test:dotnet6 local-api-storage`：
 
 ```bash
+dotnet build tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
 corepack pnpm test:dotnet6
 ```
 

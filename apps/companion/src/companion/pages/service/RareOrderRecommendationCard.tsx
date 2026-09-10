@@ -1,3 +1,4 @@
+import type { FavoriteAvailability } from '@/companion/domain/favorite-availability';
 import { Badge, EmptyRow } from '@/components/ui-kit';
 import {
   beverageFavoriteKey,
@@ -38,6 +39,7 @@ export function RareOrderRecommendationCard({
   dataIndexes,
   favorites,
   favoriteBusyKey,
+  favoriteAvailability,
   compact = false,
   recipeLimit = MAX_RECOMMENDATION_ROWS,
   beverageLimit = MAX_RECOMMENDATION_ROWS,
@@ -56,6 +58,7 @@ export function RareOrderRecommendationCard({
   customRecipes: CustomRecipeData;
   gamepadOccurrenceKey: string;
   favoriteBusyKey: string;
+  favoriteAvailability: FavoriteAvailability;
   participationEnabled?: boolean;
   participation?: RareOrderParticipationResolution | null;
   compact?: boolean;
@@ -157,6 +160,7 @@ export function RareOrderRecommendationCard({
                 favorite={findRecipeFavorite(favorites, item.customer.id, item.order.foodTag, recipe)}
                 favoriteKey={recipeFavoriteKey(item.customer.id, item.order.foodTag, recipe)}
                 favoriteBusyKey={favoriteBusyKey}
+              favoriteAvailability={favoriteAvailability}
                 compact={compact}
                 gamepadOccurrenceKey={gamepadOccurrenceKey}
                 onToggleFavorite={() => onToggleRecipeFavorite(item.customer, item.order.foodTag, recipe)}
@@ -178,6 +182,7 @@ export function RareOrderRecommendationCard({
                 favorite={findBeverageFavorite(favorites, item.customer.id, item.order.beverageTag, beverage)}
                 favoriteKey={beverageFavoriteKey(item.customer.id, item.order.beverageTag, beverage)}
                 favoriteBusyKey={favoriteBusyKey}
+              favoriteAvailability={favoriteAvailability}
                 compact={compact}
                 gamepadOccurrenceKey={gamepadOccurrenceKey}
                 onToggleFavorite={() => onToggleBeverageFavorite(item.customer, item.order.beverageTag, beverage)}

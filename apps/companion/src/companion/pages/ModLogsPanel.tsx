@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { IconArchive, IconFolderOpen, IconPower, IconRefresh, IconTerminal2 } from '@tabler/icons-react';
-import { Button, Card, CardContent, InfoLine, NumberInput } from '@/components/ui-kit';
+import { Button, Card, CardContent, InfoLine, Input } from '@/components/ui-kit';
 import {
   exportDiagnosticPackage,
   openLogFolder,
@@ -13,7 +13,6 @@ import { isLoopbackLocalApiEndpoint } from '@/companion/local-api-endpoint';
 import { MINIMUM_MULTICOLUMN_GRID_CLASS } from '@/companion/pages/shared-constants';
 import type { DiagnosticPackageResponse, LocalApiLogSettings } from '@/companion/types';
 
-const DEFAULT_AGGREGATE_LOG_MAX_FILE_COUNT = 30;
 const MIN_AGGREGATE_LOG_MAX_FILE_COUNT = 1;
 const MAX_AGGREGATE_LOG_MAX_FILE_COUNT = 9999;
 
@@ -25,6 +24,8 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
   const [loading, setLoading] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [consoleActionLoading, setConsoleActionLoading] = useState(false);
+  const [maxCountDraft, setMaxCountDraft] = useState<{ identity: string; value: string } | null>(null);
+  const [saveFeedback, setSaveFeedback] = useState('');
   const refreshGenerationRef = useRef(0);
   const refreshAbortControllerRef = useRef<AbortController | null>(null);
   const mutationGenerationRef = useRef(0);
@@ -128,12 +129,12 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
   }, [apiToken, connectionIdentity, endpoint, invalidateSettingsRefresh]);
 
   const setAggregateLogMaxFileCount = useCallback(async (value: number) => {
-    if (!apiToken || mutationInFlightRef.current) return;
+    if (!apiToken || mutationInFlightRef.current || settings === null || refreshError) return;
+    if (!Number.isSafeInteger(value)
+      || value < MIN_AGGREGATE_LOG_MAX_FILE_COUNT
+      || value > MAX_AGGREGATE_LOG_MAX_FILE_COUNT) return;
 
-    const aggregateLogMaxFileCount = Math.min(
-      MAX_AGGREGATE_LOG_MAX_FILE_COUNT,
-      Math.max(MIN_AGGREGATE_LOG_MAX_FILE_COUNT, Math.trunc(value)),
-    );
+    const aggregateLogMaxFileCount = value;
     const requestIdentity = connectionIdentity;
     const mutationGeneration = mutationGenerationRef.current + 1;
     const actionGeneration = actionGenerationRef.current + 1;
@@ -145,6 +146,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
     const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
     setLoading(false);
     setActionLoading(true);
+    setSaveFeedback('');
     try {
       const nextSettings = await writeLogSettings(
         endpoint,
@@ -157,6 +159,8 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
         return;
       }
       setSettings(nextSettings);
+      setMaxCountDraft(null);
+      setSaveFeedback(`文件上限已保存为 ${nextSettings.aggregateModLogMaxFileCount}。`);
       setRefreshError('');
       setActionError('');
     } catch (err) {
@@ -174,7 +178,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
         setActionLoading(false);
       }
     }
-  }, [apiToken, connectionIdentity, endpoint, invalidateSettingsRefresh]);
+  }, [apiToken, connectionIdentity, endpoint, invalidateSettingsRefresh, refreshError, settings]);
 
   const setConsoleVisible = useCallback(async (visible: boolean) => {
     if (!apiToken || mutationInFlightRef.current) return;
@@ -305,6 +309,8 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
     setLoading(false);
     setActionLoading(false);
     setConsoleActionLoading(false);
+    setMaxCountDraft(null);
+    setSaveFeedback('');
     if (!apiToken) return undefined;
 
     refreshLogSettings();
@@ -322,7 +328,17 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
   const aggregatePath = settings?.aggregateModLogPath || '';
   const aggregateDirectory = settings?.aggregateModLogDirectory || '';
   const aggregateEnabled = settings?.aggregateModLogEnabled ?? false;
-  const aggregateMaxFileCount = settings?.aggregateModLogMaxFileCount ?? DEFAULT_AGGREGATE_LOG_MAX_FILE_COUNT;
+  const aggregateMaxFileCount = settings?.aggregateModLogMaxFileCount ?? null;
+  const maxCountText = maxCountDraft?.identity === connectionIdentity
+    ? maxCountDraft.value
+    : aggregateMaxFileCount === null ? '' : String(aggregateMaxFileCount);
+  const maxCountValue = /^[0-9]+$/.test(maxCountText) ? Number(maxCountText) : NaN;
+  const maxCountValid = Number.isSafeInteger(maxCountValue)
+    && maxCountValue >= MIN_AGGREGATE_LOG_MAX_FILE_COUNT
+    && maxCountValue <= MAX_AGGREGATE_LOG_MAX_FILE_COUNT;
+  const settingsWritable = Boolean(apiToken && settings && !refreshError && !actionLoading && !consoleActionLoading);
+  const maxCountDirty = maxCountDraft?.identity === connectionIdentity
+    && maxCountValue !== aggregateMaxFileCount;
   const consoleSupported = settings?.bepInExConsoleSupported ?? false;
   const consoleControlLocal = isLoopbackLocalApiEndpoint(endpoint);
   const consoleConfiguredVisible = settings?.bepInExConsoleConfiguredVisible ?? false;
@@ -335,7 +351,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
   return (
     <div className="space-y-4">
       <Card>
-        <CardContent className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
+        <CardContent className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-start">
           <div className="min-w-0">
             <div className="text-sm font-semibold">Mod 总日志</div>
             <div className="mt-1 truncate text-xs text-muted-foreground" title={error || aggregatePath || endpoint}>
@@ -347,11 +363,11 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               size="sm"
               variant={aggregateEnabled ? 'default' : 'outline'}
               onClick={() => setAggregateLogEnabled(!aggregateEnabled)}
-              disabled={!apiToken || actionLoading || consoleActionLoading}
+              disabled={!settingsWritable}
               data-gamepad-focus-key="logs:toggle-aggregate"
             >
               <IconPower className="size-4" />
-              {aggregateEnabled ? '关闭总日志' : '开启总日志'}
+              {settings === null ? '等待读取总日志配置' : aggregateEnabled ? '关闭总日志' : '开启总日志'}
             </Button>
             <Button
               size="sm"
@@ -387,8 +403,14 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
         </CardContent>
       </Card>
 
+      {settings && refreshError && (
+        <p className="text-xs text-muted-foreground" role="status">
+          以下为上次确认的配置；当前读取失败，请刷新后再修改。
+        </p>
+      )}
+
       <Card>
-        <CardContent className="grid gap-3 p-4 min-[520px]:grid-cols-[minmax(0,1fr)_auto] min-[520px]:items-center">
+        <CardContent className="grid gap-3 min-[520px]:grid-cols-[minmax(0,1fr)_auto] min-[520px]:items-center">
           <div className="min-w-0">
             <div className="text-sm font-semibold">BepInEx 控制台</div>
             <div className="mt-1 truncate text-xs text-muted-foreground" title={consoleStatus}>
@@ -401,6 +423,7 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
               variant={consoleVisible ? 'default' : 'outline'}
               disabled={!apiToken
                 || settings === null
+                || Boolean(refreshError)
                 || !consoleSupported
                 || !consoleControlLocal
                 || actionLoading
@@ -418,24 +441,55 @@ export function ModLogsPanel({ endpoint, apiToken }: { endpoint: string; apiToke
       </Card>
 
       <Card>
-        <CardContent className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-x-4 gap-y-3 p-4 text-sm min-[640px]:grid-cols-2`}>
+        <CardContent className={`${MINIMUM_MULTICOLUMN_GRID_CLASS} grid grid-cols-1 gap-x-4 gap-y-3 text-sm min-[640px]:grid-cols-2`}>
           <InfoLine label="本地 API 授权" value={apiToken ? '已接收' : '未收到'} />
-          <InfoLine label="总日志" value={aggregateEnabled ? '开启' : '关闭'} />
-          <InfoLine label="启动自动显示" value={consoleConfiguredVisible ? '开启' : '关闭'} />
+          <InfoLine label="总日志" value={settings === null ? '未读取' : aggregateEnabled ? '开启' : '关闭'} />
+          <InfoLine label="启动自动显示" value={settings === null ? '未读取' : consoleConfiguredVisible ? '开启' : '关闭'} />
           <InfoLine label="控制台窗口" value={consoleWindowLabel} />
-          <InfoLine label="单文件大小" value={formatBytes(settings?.aggregateModLogMaxFileBytes ?? 10 * 1024 * 1024)} />
-          <InfoLine label="总容量上限" value={formatBytes(settings?.aggregateModLogMaxTotalBytes ?? 300 * 1024 * 1024)} />
-          <label className="flex items-center justify-between gap-3 text-sm">
-            <span className="min-w-0 text-muted-foreground">文件上限</span>
-            <NumberInput
-              min={MIN_AGGREGATE_LOG_MAX_FILE_COUNT}
-              max={MAX_AGGREGATE_LOG_MAX_FILE_COUNT}
-              value={aggregateMaxFileCount}
-              onValueChange={setAggregateLogMaxFileCount}
-              disabled={!apiToken || actionLoading || consoleActionLoading}
-              className="h-8 w-20"
-            />
-          </label>
+          <InfoLine label="单文件大小" value={settings ? formatBytes(settings.aggregateModLogMaxFileBytes) : '未读取'} />
+          <InfoLine label="总容量上限" value={settings ? formatBytes(settings.aggregateModLogMaxTotalBytes) : '未读取'} />
+          <form
+            className="min-w-0 space-y-1.5"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (settingsWritable && maxCountValid && maxCountDirty) void setAggregateLogMaxFileCount(maxCountValue);
+            }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <label htmlFor="logs-max-file-count" className="text-muted-foreground">文件上限</label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="logs-max-file-count"
+                  inputMode="numeric"
+                  value={maxCountText}
+                  onChange={(event) => {
+                    setMaxCountDraft({ identity: connectionIdentity, value: event.currentTarget.value });
+                    setSaveFeedback('');
+                  }}
+                  disabled={!settingsWritable}
+                  placeholder={settings ? undefined : '未读取'}
+                  aria-invalid={Boolean(maxCountDraft && !maxCountValid)}
+                  aria-describedby="logs-max-file-count-hint"
+                  data-gamepad-focus-key="logs:max-file-count"
+                  className="w-20"
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  variant="outline"
+                  disabled={!settingsWritable || !maxCountValid || !maxCountDirty}
+                  loading={actionLoading && Boolean(maxCountDraft)}
+                  data-gamepad-focus-key="logs:save-max-file-count"
+                >
+                  保存
+                </Button>
+              </div>
+            </div>
+            <p id="logs-max-file-count-hint" className="text-xs text-muted-foreground">
+              输入 1–9999 的整数，按 Enter 或保存后生效。
+            </p>
+            {saveFeedback && <p className="text-xs text-muted-foreground" role="status">{saveFeedback}</p>}
+          </form>
           <InfoLine label="写入范围" value="BepInEx / 自动化 / 经营诊断 / 游戏数据" />
           <InfoLine label="总日志目录" value={aggregateDirectory || '未知'} mono />
           <InfoLine label="总日志文件" value={aggregatePath || '未知'} mono />

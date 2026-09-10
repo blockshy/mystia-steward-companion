@@ -15,6 +15,7 @@ import {
   recipeFavoriteKey,
 } from '@/companion/domain/favorites';
 import { getConnectionRetryDelayMs } from '@/companion/connection-recovery';
+import { buildFavoriteAvailability } from '@/companion/domain/favorite-availability';
 import type {
   FavoriteData,
   FavoriteMutationResponse,
@@ -44,6 +45,7 @@ export function useFavorites({
   const [favoriteRefreshing, setFavoriteRefreshing] = useState(false);
   const [favoriteRefreshFailureCount, setFavoriteRefreshFailureCount] = useState(0);
   const [favoriteRefreshRequired, setFavoriteRefreshRequired] = useState(true);
+  const [confirmedConnectionIdentity, setConfirmedConnectionIdentity] = useState('');
   const mutationBusyRef = useRef(false);
   const mutationGenerationRef = useRef(0);
   const activeMutationGenerationRef = useRef<number | null>(null);
@@ -55,6 +57,11 @@ export function useFavorites({
   const connectionIdentityRef = useRef(connectionIdentity);
   const previousResourceIdentityRef = useRef(resourceIdentity);
   connectionIdentityRef.current = connectionIdentity;
+  const favoriteAvailability = buildFavoriteAvailability({
+    authorized: Boolean(apiToken), connected,
+    confirmed: confirmedConnectionIdentity === connectionIdentity && !favoriteRefreshRequired,
+    busy: Boolean(favoriteBusyKey), refreshing: favoriteRefreshing, readError: favoriteReadError,
+  });
 
   useEffect(() => {
     const resourceIdentityChanged = previousResourceIdentityRef.current !== resourceIdentity;
@@ -75,6 +82,7 @@ export function useFavorites({
 
   useEffect(() => {
     if (connected) return;
+    setConfirmedConnectionIdentity('');
     refreshGenerationRef.current += 1;
     refreshAbortControllerRef.current?.abort();
     refreshAbortControllerRef.current = null;
@@ -112,6 +120,7 @@ export function useFavorites({
       if (refreshGeneration !== refreshGenerationRef.current
         || requestConnectionIdentity !== connectionIdentityRef.current) return;
       setFavorites(normalizeFavoriteData(data));
+      setConfirmedConnectionIdentity(requestConnectionIdentity);
       setFavoriteReadError('');
       setFavoriteRefreshFailureCount(0);
       setFavoriteRefreshRequired(false);
@@ -137,7 +146,7 @@ export function useFavorites({
     errorMessage: string,
     mutation: () => Promise<FavoriteMutationResponse>,
   ) => {
-    if (!apiToken || !connected || mutationBusyRef.current) return false;
+    if (!favoriteAvailability.canWrite || mutationBusyRef.current) return false;
     mutationBusyRef.current = true;
     const mutationGeneration = ++mutationGenerationRef.current;
     activeMutationGenerationRef.current = mutationGeneration;
@@ -156,6 +165,7 @@ export function useFavorites({
         || requestConnectionIdentity !== connectionIdentityRef.current) return false;
       if (!response.ok) throw new Error(response.error || errorMessage);
       setFavorites(normalizeFavoriteData(response.favorites));
+      setConfirmedConnectionIdentity(requestConnectionIdentity);
       setFavoriteReadError('');
       setFavoriteMutationError('');
       setFavoriteRefreshFailureCount(0);
@@ -164,7 +174,10 @@ export function useFavorites({
     } catch (err) {
       if (mutationGeneration === mutationGenerationRef.current
         && requestConnectionIdentity === connectionIdentityRef.current) {
-        setFavoriteMutationError(err instanceof Error ? err.message : String(err));
+        const detail = err instanceof Error ? err.message : String(err);
+        setFavoriteMutationError(`${detail} 本次修改结果需要重新读取确认，不会自动重试修改。`);
+        setConfirmedConnectionIdentity('');
+        setFavoriteRefreshRequired(true);
       }
       return false;
     } finally {
@@ -174,7 +187,7 @@ export function useFavorites({
         if (mountedRef.current) setFavoriteBusyKey('');
       }
     }
-  }, [apiToken, connected]);
+  }, [favoriteAvailability.canWrite]);
 
   const toggleRecipeFavorite = useCallback<ToggleRecipeFavorite>(async (customer, foodTag, recipe) => {
     if (!apiToken || !foodTag) return;
@@ -257,6 +270,7 @@ export function useFavorites({
     || (favoriteReadError ? `收藏数据同步失败：${favoriteReadError}` : '');
 
   return {
+    favoriteAvailability,
     favorites,
     favoriteError,
     favoriteBusyKey,

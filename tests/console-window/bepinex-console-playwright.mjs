@@ -12,7 +12,8 @@ const STORAGE_PREFIX = 'mystia-steward-companion';
 await mkdir(OUTPUT_DIR, { recursive: true });
 await setMockConsoleVisibility(false);
 
-const browser = await chromium.launch({ headless: true });
+const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH?.trim();
+const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const page = await browser.newPage({ viewport: { width: 640, height: 760 } });
 const pageErrors = [];
 const consoleErrors = [];
@@ -32,6 +33,7 @@ try {
   await page.addInitScript(installAbortInsensitiveLogSettingsFetch);
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => Boolean(navigator.getGamepads?.()[0]?.connected));
+  await page.locator('[data-gamepad-tab-value="overview"]').click();
   await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10000 });
   await page.locator('[data-gamepad-tab-value="logs"]').click();
 
@@ -124,8 +126,12 @@ try {
     fullPage: true,
   });
 
-  const endpointInput = page.locator('input').first();
-  assert.equal(await endpointInput.inputValue(), API_URL);
+  const endpointInput = page.locator('[data-overview-connection-endpoint]');
+  await page.route('http://192.168.1.20:32145/**', async (route) => {
+    const requested = new URL(route.request().url());
+    const response = await route.fetch({ url: `${API_URL}${requested.pathname}${requested.search}` });
+    await route.fulfill({ response });
+  });
   const staleConnectionSettings = {
     ...await readMockLogSettings(),
     bepInExConsoleConfiguredVisible: true,
@@ -136,8 +142,11 @@ try {
   await delayNextLogSettingsFetch(staleConnectionSettings, 700);
   await refreshButton.click();
   await page.waitForTimeout(100);
+  await page.locator('[data-gamepad-tab-value="overview"]').click();
+  assert.equal(await endpointInput.inputValue(), API_URL);
   await endpointInput.fill('http://192.168.1.20:32145');
   await endpointInput.press('Enter');
+  await page.locator('[data-gamepad-tab-value="logs"]').click();
   await page.getByText('仅可在游戏电脑本机控制 BepInEx 控制台。', { exact: true })
     .waitFor({ state: 'visible' });
   await page.waitForTimeout(800);

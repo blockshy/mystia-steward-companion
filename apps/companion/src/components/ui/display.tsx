@@ -31,10 +31,10 @@ function StatusCard({
 
   return (
     <Card className="steward-status-card">
-      <CardContent className="px-3 py-2.5">
+      <CardContent>
         <div className="text-xs text-muted-foreground">{label}</div>
         <div className={composeClassNames('mt-0.5 text-base font-semibold', toneClass)}>{value}</div>
-        <div className="mt-0.5 truncate text-xs text-muted-foreground" title={detail}>{detail}</div>
+        <div className="mt-0.5 break-words text-xs text-muted-foreground">{detail}</div>
       </CardContent>
     </Card>
   );
@@ -64,7 +64,7 @@ function InfoLine({
     <div className={composeClassNames('min-w-0', className)}>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div
-        className={composeClassNames('mt-1 truncate text-sm', mono ? 'font-mono text-xs' : 'font-medium')}
+        className={composeClassNames('mt-1 break-words text-sm', mono ? 'font-mono text-xs' : 'font-medium')}
         title={textTitle(value)}
       >
         {value}
@@ -104,7 +104,7 @@ function ListPanel({
     : {};
 
   return (
-    <Card className={composeClassNames('steward-list-panel min-w-0', className)}>
+    <Card padding={0} className={composeClassNames('steward-list-panel min-w-0', className)}>
       <CardContent className="flex min-h-0 min-w-0 flex-1 flex-col p-0">
         <div
           className="steward-panel-header flex flex-wrap items-center justify-between gap-3 px-3 py-2"

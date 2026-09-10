@@ -11,6 +11,7 @@ import {
 import ReactMarkdown from 'react-markdown';
 
 import type { UpdateManager } from '@/companion/features/updates/useUpdateManager';
+import { resolveUpdatePresentation, type UpdatePresentation } from '@/companion/features/updates/update-presentation';
 import { formatBytes } from '@/companion/formatters';
 import type { UpdateReleaseInfo, UpdateStatusResponse } from '@/companion/types';
 import {
@@ -29,10 +30,8 @@ import {
 
 export function UpdateSettingsPanel({ updateManager }: { updateManager: UpdateManager }) {
   const status = updateManager.status;
-  const remoteBusy = status?.state === 'checking'
-    || status?.state === 'downloading'
-    || isActiveUpdateInstallState(status?.installState ?? '');
-  const actionBusy = Boolean(updateManager.busy) || remoteBusy;
+  const presentation = resolveUpdatePresentation(status, updateManager.busy);
+  const actionBusy = presentation.activity !== null;
   const errorDetail = updateManager.error || status?.error || '';
   const installDetail = errorDetail ? '' : status?.installMessage || '';
   const releases = status?.availableReleases ?? [];
@@ -44,8 +43,8 @@ export function UpdateSettingsPanel({ updateManager }: { updateManager: UpdateMa
           <CardHeader>
             <CardTitle className="flex flex-wrap items-center gap-2">
               <span>版本状态</span>
-              <Badge variant={status?.hasUpdate ? 'default' : 'outline'}>
-                {formatUpdateState(status)}
+              <Badge variant={presentation.failed ? 'destructive' : status?.hasUpdate ? 'default' : 'outline'}>
+                {presentation.label}
               </Badge>
             </CardTitle>
             <CardDescription>
@@ -83,7 +82,14 @@ export function UpdateSettingsPanel({ updateManager }: { updateManager: UpdateMa
               </div>
             )}
 
-            <UpdateActions manager={updateManager} status={status} actionBusy={actionBusy} />
+            {presentation.activity && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+                <IconRefresh size={15} className="shrink-0 animate-spin" aria-hidden="true" />
+                {presentation.label}。活动由所连接的游戏主机执行，完成后会自动刷新状态。
+              </div>
+            )}
+
+            <UpdateActions manager={updateManager} status={status} presentation={presentation} actionBusy={actionBusy} />
           </CardContent>
         </Card>
 
@@ -100,7 +106,7 @@ export function UpdateSettingsPanel({ updateManager }: { updateManager: UpdateMa
             <StatusLine label="安装包大小" value={status?.packageSize ? formatBytes(status.packageSize) : '未知'} />
             <StatusLine
               label="连续检查失败"
-              value={(status?.consecutiveFailures ?? 0) > 0 ? `${status?.consecutiveFailures} 次` : '无'}
+              value={!status ? '未读取' : status.consecutiveFailures > 0 ? `${status.consecutiveFailures} 次` : '无'}
             />
           </CardContent>
         </Card>
@@ -118,28 +124,31 @@ export function UpdateSettingsPanel({ updateManager }: { updateManager: UpdateMa
 function UpdateActions({
   manager,
   status,
+  presentation,
   actionBusy,
 }: {
   manager: UpdateManager;
   status: UpdateStatusResponse | null;
+  presentation: UpdatePresentation;
   actionBusy: boolean;
 }) {
   const canDownload = Boolean(status?.enabled && status.hasUpdate && !status.staged && !actionBusy);
   const canInstall = Boolean(status?.enabled && status.staged && !actionBusy);
-  const primaryAction = canInstall || status?.staged
+  const primaryKind = presentation.activity ?? (status?.staged ? 'install' : status?.hasUpdate ? 'download' : 'check');
+  const primaryAction = primaryKind === 'install'
     ? {
         label: '打开安装程序',
         icon: <IconPackageImport size={15} />,
-        loading: manager.busy === 'install',
+        loading: presentation.activity === 'install',
         disabled: !manager.connected || Boolean(manager.busy) || !canInstall,
         run: manager.install,
         focusKey: 'settings:updates:install',
       }
-    : status?.hasUpdate
+    : primaryKind === 'download'
       ? {
           label: '下载更新',
           icon: <IconDownload size={15} />,
-          loading: manager.busy === 'download',
+          loading: presentation.activity === 'download',
           disabled: !manager.connected || Boolean(manager.busy) || !canDownload,
           run: manager.download,
           focusKey: 'settings:updates:download',
@@ -147,7 +156,7 @@ function UpdateActions({
       : {
           label: '检查更新',
           icon: <IconRefresh size={15} />,
-          loading: manager.busy === 'check',
+          loading: presentation.activity === 'check',
           disabled: !manager.connected || Boolean(manager.busy) || actionBusy,
           run: manager.check,
           focusKey: 'settings:updates:check',
@@ -166,7 +175,7 @@ function UpdateActions({
       >
         {primaryAction.label}
       </Button>
-      {status?.hasUpdate && !status.staged && (
+      {status?.hasUpdate && !status.staged && primaryKind !== 'check' && (
         <Button
           type="button"
           size="sm"
@@ -325,11 +334,7 @@ function ReleaseNotes({ markdown }: { markdown: string }) {
           pre: ({ children }) => (
             <pre className="my-2 max-w-full overflow-x-auto bg-muted p-3 text-xs">{children}</pre>
           ),
-          a: ({ children, title }) => (
-            <span className="underline decoration-dotted underline-offset-2" title={title ?? undefined}>
-              {children}
-            </span>
-          ),
+          a: ({ children }) => <span>{children}</span>,
           img: ({ alt }) => <span className="text-muted-foreground">[图片：{alt || '未命名'}]</span>,
         }}
       >
@@ -363,40 +368,6 @@ function StatusLine({ label, value }: { label: string; value: string }) {
       <span className="min-w-0 break-words text-right text-foreground">{value}</span>
     </div>
   );
-}
-
-function formatUpdateState(status: UpdateStatusResponse | null): string {
-  if (!status) return '等待本地 API';
-  if (!status.enabled) return '已关闭';
-  switch (status.installState) {
-    case 'waiting': return '更新程序已打开';
-    case 'preparing': return '正在准备安装';
-    case 'closing-companion': return '正在关闭伴随窗口';
-    case 'waiting-game': return '等待游戏退出';
-    case 'terminating-game': return '正在关闭游戏';
-    case 'game-closed': return '游戏已退出';
-    case 'backing-up': return '正在备份';
-    case 'installing': return '正在安装';
-    case 'verifying': return '正在校验';
-    case 'succeeded': return '安装完成';
-    case 'failed': return '安装失败';
-    case 'cancelled': return '已取消安装';
-  }
-  if (status.staged) return '已下载';
-  if (status.hasUpdate) return '有新版本';
-  switch (status.state) {
-    case 'checking': return '检查中';
-    case 'downloading': return '下载中';
-    case 'current': return '已是最新';
-    case 'installed': return '安装完成';
-    case 'failed': return '检查失败';
-    case 'disabled': return '已关闭';
-    default: return '未检查';
-  }
-}
-
-function isActiveUpdateInstallState(state: UpdateStatusResponse['installState']): boolean {
-  return state !== '' && state !== 'succeeded' && state !== 'failed' && state !== 'cancelled';
 }
 
 function formatUpdateDateTime(value: string | null | undefined): string {

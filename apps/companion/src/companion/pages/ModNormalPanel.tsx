@@ -1,3 +1,4 @@
+import { PageRecommendationStatus } from '@/companion/pages/PageRecommendationStatus';
 import { useMemo } from 'react';
 import { TagPillGroup } from '@/components/recommendation/TagPillGroup';
 import { EmptyRow, EmptyState, ListPanel } from '@/components/ui-kit';
@@ -16,6 +17,7 @@ export function ModNormalPanel({
   detectedPlace,
   data,
   active,
+  connectionRevision,
   onPlaceChange,
   onFollowDetectedPlace,
 }: {
@@ -25,6 +27,7 @@ export function ModNormalPanel({
   detectedPlace: PlaceName | null;
   data: RecommendationDataSet;
   active: boolean;
+  connectionRevision: number;
   onPlaceChange: (place: PlaceName) => void;
   onFollowDetectedPlace: () => void;
 }) {
@@ -44,7 +47,7 @@ export function ModNormalPanel({
       : null),
     [active, data, runtime, selectedPlace],
   );
-  const pageRecommendations = usePageRecommendations(recommendationPayload);
+  const pageRecommendations = usePageRecommendations(recommendationPayload, connectionRevision);
   const normalResult = pageRecommendations.result?.kind === 'normal'
     ? pageRecommendations.result
     : null;
@@ -67,6 +70,7 @@ export function ModNormalPanel({
       />
 
       {!selectedPlace && <EmptyState text="请选择地区后查看普客推荐" />}
+      <PageRecommendationStatus pending={pageRecommendations.pending} error={pageRecommendations.error} retained={Boolean(pageRecommendations.result)} onRetry={pageRecommendations.retry} />
 
       {selectedPlace && (
         <div className={DENSE_TWO_COLUMN_GRID}>

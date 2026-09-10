@@ -1,3 +1,5 @@
+import { PageRecommendationStatus } from '@/companion/pages/PageRecommendationStatus';
+import type { FavoriteAvailability } from '@/companion/domain/favorite-availability';
 import { useEffect, useMemo } from 'react';
 import { Card, CardContent, EmptyRow, EmptyState, ListPanel, SelectBox } from '@/components/ui-kit';
 import {
@@ -38,9 +40,11 @@ export function ModRarePanel({
   favorites,
   customRecipes,
   favoriteBusyKey,
+  favoriteAvailability,
   favoriteError,
   preferences,
   active,
+  connectionRevision,
   onPlaceChange,
   onFollowDetectedPlace,
   onRareCustomerChange,
@@ -60,9 +64,11 @@ export function ModRarePanel({
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
   favoriteBusyKey: string;
+  favoriteAvailability: FavoriteAvailability;
   favoriteError: string;
   preferences: CompanionPreferences;
   active: boolean;
+  connectionRevision: number;
   onPlaceChange: (place: PlaceName) => void;
   onFollowDetectedPlace: () => void;
   onRareCustomerChange: (customerId: number | null) => void;
@@ -143,7 +149,7 @@ export function ModRarePanel({
       selectedCustomer,
     ],
   );
-  const pageRecommendations = usePageRecommendations(recommendationPayload);
+  const pageRecommendations = usePageRecommendations(recommendationPayload, connectionRevision);
   const rareResult = pageRecommendations.result?.kind === 'rare'
     ? pageRecommendations.result
     : null;
@@ -177,7 +183,7 @@ export function ModRarePanel({
       {selectedPlace && selectedCustomer && (
         <>
           <Card>
-            <CardContent className={`${DENSE_THREE_COLUMN_GRID} p-4 text-sm`} data-gamepad-axis="x">
+            <CardContent className={`${DENSE_THREE_COLUMN_GRID} text-sm`} data-gamepad-axis="x">
               <div>
                 <div className="mb-1 text-xs text-muted-foreground">稀客</div>
                 <SelectBox
@@ -215,6 +221,8 @@ export function ModRarePanel({
               </div>
             </CardContent>
           </Card>
+          <PageRecommendationStatus pending={pageRecommendations.pending} error={pageRecommendations.error} retained={Boolean(pageRecommendations.result)} onRetry={pageRecommendations.retry} />
+          {favoriteAvailability.reason && <div role="status" className="text-sm text-muted-foreground">{favoriteAvailability.reason}</div>}
           {favoriteError && (
             <div className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
               {favoriteError}
@@ -257,6 +265,7 @@ export function ModRarePanel({
                     favorite={findRecipeFavorite(favorites, selectedCustomer.id, foodTag, recipe)}
                     favoriteKey={recipeFavoriteKey(selectedCustomer.id, foodTag, recipe)}
                     favoriteBusyKey={favoriteBusyKey}
+                    favoriteAvailability={{ ...favoriteAvailability, canWrite: favoriteAvailability.canWrite && pageRecommendations.isCurrent }}
                     gamepadOccurrenceKey={`rare:${selectedCustomer.id}:${foodTag}:recipes`}
                     onToggleFavorite={() => onToggleRecipeFavorite(selectedCustomer, foodTag, recipe)}
                   />
@@ -281,6 +290,7 @@ export function ModRarePanel({
                     favorite={findBeverageFavorite(favorites, selectedCustomer.id, beverageTag, beverage)}
                     favoriteKey={beverageFavoriteKey(selectedCustomer.id, beverageTag, beverage)}
                     favoriteBusyKey={favoriteBusyKey}
+                    favoriteAvailability={{ ...favoriteAvailability, canWrite: favoriteAvailability.canWrite && pageRecommendations.isCurrent }}
                     gamepadOccurrenceKey={`rare:${selectedCustomer.id}:${beverageTag}:beverages`}
                     onToggleFavorite={() => onToggleBeverageFavorite(selectedCustomer, beverageTag, beverage)}
                   />

@@ -295,6 +295,24 @@ try {
   await page.getByText('游戏端更新 v1.2.1 安装失败', { exact: true }).waitFor();
   await notice.getByText('模拟安装失败，请重新打开安装程序。', { exact: true }).waitFor();
   await page.screenshot({ path: `${outputDir}/install-failed-minimum.png`, fullPage: true });
+  for (const [state, label, buttonLabel] of [
+    ['checking', '检查中', '检查更新'],
+    ['downloading', '下载中', '下载更新'],
+  ]) {
+    await page.unroute('**/updates/status');
+    await page.route('**/updates/status', (route) => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify(createUpdateStatus({ state, staged: true })),
+    }));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await activateUpdateSettings(page);
+    await page.getByText(label, { exact: true }).waitFor();
+    const activityButton = page.getByRole('button', { name: buttonLabel, exact: true });
+    assert.equal(await activityButton.getAttribute('data-loading'), 'true', '远端活动没有显示对应加载状态');
+    assert.equal(await activityButton.isDisabled(), true, '远端活动期间仍允许冲突操作');
+    await notice.getByText(`游戏端更新 v1.2.1：${label}`, { exact: true }).waitFor();
+    await page.screenshot({ path: `${outputDir}/remote-${state}.png`, fullPage: true });
+  }
 } finally {
   await page.close();
   await browser.close();

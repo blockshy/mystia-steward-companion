@@ -1,14 +1,11 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useMemo, useState } from 'react';
 import { IconAlertTriangle, IconCopy, IconCrown, IconDeviceDesktop, IconDeviceMobile, IconKey, IconRefresh, IconTrash } from '@tabler/icons-react';
 import { Button, Dialog, InfoLine, Input, ListPanel, MultiSelectBox, NumberInput, SettingHelpField, SettingHelpProvider, Slider, SwitchField, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
-import {
-  readLocalApiConnectionConfig,
-  regenerateLocalApiToken,
-  writeLocalApiConnectionConfig,
-} from '@/companion/api';
 import { buildInventorySelectOptions, type InventorySortMode } from '@/companion/domain/inventory-sorting';
 import type { UpdateManager } from '@/companion/features/updates/useUpdateManager';
 import type { CompanionDeviceAuthorityController } from '@/companion/hooks/useCompanionDeviceAuthority';
+import type { LocalApiConnectionSettingsController } from '@/companion/hooks/useLocalApiConnectionSettings';
+import type { useDesktopWindowControls } from '@/companion/hooks/useDesktopWindowControls';
 import { ModHelpPanel } from '@/companion/pages/ModHelpPanel';
 import {
   DEFAULT_FONT_SCALE_PERCENT,
@@ -72,9 +69,10 @@ export function ModSettingsPanel({
   settingsTab,
   updateManager,
   deviceAuthority,
+  connectionSettings,
+  desktopWindowControls,
   onLocalPreferenceChange,
   onSharedPreferenceChange,
-  onConnectionConfigApplied,
   onSettingsTabChange,
   onThemeModeChange,
   onServiceFocusCompactChange,
@@ -90,23 +88,34 @@ export function ModSettingsPanel({
   settingsTab: SettingsTab;
   updateManager: UpdateManager;
   deviceAuthority: CompanionDeviceAuthorityController;
+  connectionSettings: LocalApiConnectionSettingsController;
+  desktopWindowControls: ReturnType<typeof useDesktopWindowControls>;
   onLocalPreferenceChange: (next: Partial<LocalCompanionPreferences>) => void;
   onSharedPreferenceChange: (next: Partial<SharedCompanionPreferences>) => void;
-  onConnectionConfigApplied: (endpoint: string, apiToken: string) => void;
   onSettingsTabChange: (tab: SettingsTab) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
   onServiceFocusCompactChange: (value: boolean) => void;
   supportsDesktopWindowControls: boolean;
 }) {
-  const [connectionConfig, setConnectionConfig] = useState<LocalApiConnectionConfig | null>(null);
-  const [connectionLanEnabled, setConnectionLanEnabled] = useState(false);
-  const [connectionLanHost, setConnectionLanHost] = useState('auto');
-  const [connectionBusy, setConnectionBusy] = useState<'refresh' | 'apply' | 'token' | 'copy' | null>(null);
-  const [connectionError, setConnectionError] = useState('');
-  const [connectionTokenVisible, setConnectionTokenVisible] = useState(false);
-  const [tokenResetDialogOpen, setTokenResetDialogOpen] = useState(false);
+  const {
+    config: connectionConfig,
+    lanEnabled: connectionLanEnabled,
+    lanHost: connectionLanHost,
+    busy: connectionBusy,
+    error: connectionError,
+    hostDirty: hostDraftDirty,
+    dirty: connectionDraftDirty,
+  } = connectionSettings;
+  const connectionIdentity = JSON.stringify([endpoint, apiToken]);
+  const [copyResult, setCopyResult] = useState<{ identity: string; message: string } | null>(null);
+  const copyFeedback = copyResult?.identity === connectionIdentity ? copyResult.message : '';
+  const [visibleTokenIdentity, setVisibleTokenIdentity] = useState<string | null>(null);
+  const connectionTokenVisible = visibleTokenIdentity === connectionIdentity;
+  const [tokenResetIdentity, setTokenResetIdentity] = useState<string | null>(null);
+  const tokenResetDialogOpen = tokenResetIdentity === connectionIdentity;
+  const setTokenResetDialogOpen = (opened: boolean) => setTokenResetIdentity(opened ? connectionIdentity : null);
   const [primaryDeviceCandidateId, setPrimaryDeviceCandidateId] = useState('');
-  const [deviceLabelDraft, setDeviceLabelDraft] = useState('');
+  const [deviceLabelEdit, setDeviceLabelEdit] = useState<{ identity: string; label: string } | null>(null);
   const [ingredientExclusionSortMode, setIngredientExclusionSortMode] = useState<InventorySortMode>('name');
   const [beverageExclusionSortMode, setBeverageExclusionSortMode] = useState<InventorySortMode>('name');
   const ingredientOptions = useMemo(
@@ -126,24 +135,21 @@ export function ModSettingsPanel({
     [beverageExclusionSortMode, data.beverages, runtimeSets?.ownedBeverageQty],
   );
   const currentDevice = deviceAuthority.state?.devices.find((device) => device.isCurrent) ?? null;
+  const deviceLabelIdentity = JSON.stringify([connectionIdentity, currentDevice?.deviceId, currentDevice?.label]);
+  const deviceLabelDraft = deviceLabelEdit?.identity === deviceLabelIdentity
+    ? deviceLabelEdit.label : currentDevice?.label ?? '';
   const primaryDevice = deviceAuthority.state?.devices.find((device) => device.isPrimary) ?? null;
   const primaryDeviceCandidate = deviceAuthority.state?.devices.find(
     (device) => device.deviceId === primaryDeviceCandidateId,
   ) ?? null;
   const sharedSettingsDisabled = !deviceAuthority.profileEditWritable;
-  const sharedSettingsDisabledReason = deviceAuthority.profileTransactionPhase === 'posting'
-    ? '主设备共享配置正在保存；Mod 确认前暂停继续编辑。'
-    : deviceAuthority.profileTransactionPhase === 'reconciling'
+  const sharedSettingsDisabledReason = deviceAuthority.profileTransactionPhase === 'reconciling'
       ? '共享配置保存结果尚未确定；重新读取 Mod 当前状态前保持只读。'
       : !deviceAuthority.ready
     ? '正在确认共享功能配置的主设备；确认前保持只读。'
     : !deviceAuthority.currentDeviceIsPrimary
       ? `共享功能配置由主设备“${primaryDevice?.label || '其他设备'}”管理；切换到主设备后才能修改。`
       : '设备配置操作正在进行；完成前共享功能设置保持只读。';
-
-  useEffect(() => {
-    setDeviceLabelDraft(currentDevice?.label ?? '');
-  }, [currentDevice?.deviceId, currentDevice?.label]);
 
   const updateExclusions = useCallback((next: Partial<CompanionPreferences['recommendationExclusions']>) => {
     onSharedPreferenceChange({
@@ -198,124 +204,15 @@ export function ModSettingsPanel({
         });
   }, [onSharedPreferenceChange]);
 
-  const applyConnectionConfigState = useCallback((nextConfig: LocalApiConnectionConfig) => {
-    setConnectionConfig(nextConfig);
-    setConnectionLanEnabled(nextConfig.lanEnabled);
-    setConnectionLanHost(nextConfig.lanBindHost || 'auto');
-    setConnectionError(nextConfig.error ?? nextConfig.lanError ?? '');
-  }, []);
-
-  const refreshConnectionConfig = useCallback(async () => {
-    if (!apiToken) {
-      setConnectionConfig(null);
-      setConnectionError('未收到 Mod API Token。');
-      return;
-    }
-
-    const abortController = new AbortController();
-    const timeoutId = window.setTimeout(() => abortController.abort(), 2800);
-    setConnectionBusy('refresh');
-    try {
-      const nextConfig = await readLocalApiConnectionConfig(endpoint, apiToken, abortController.signal);
-      applyConnectionConfigState(nextConfig);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setConnectionError(message.includes('403') ? '连接配置只能在游戏所在设备的本机窗口中修改。' : message);
-    } finally {
-      window.clearTimeout(timeoutId);
-      setConnectionBusy(null);
-    }
-  }, [apiToken, applyConnectionConfigState, endpoint]);
-
-  const submitConnectionConfig = useCallback(async (next: { lanEnabled: boolean; lanBindHost: string }) => {
-    if (!apiToken || connectionBusy) return null;
-
-    setConnectionBusy('apply');
-    try {
-      const nextConfig = await writeLocalApiConnectionConfig(endpoint, apiToken, {
-        lanEnabled: next.lanEnabled,
-        lanBindHost: next.lanBindHost,
-      });
-      applyConnectionConfigState(nextConfig);
-      if (nextConfig.localEndpoint && nextConfig.token) {
-        onConnectionConfigApplied(nextConfig.localEndpoint, nextConfig.token);
-      }
-      return nextConfig;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setConnectionError(message.includes('403') ? '连接配置只能在游戏所在设备的本机窗口中修改。' : message);
-      throw err;
-    } finally {
-      setConnectionBusy(null);
-    }
-  }, [
-    apiToken,
-    applyConnectionConfigState,
-    connectionBusy,
-    endpoint,
-    onConnectionConfigApplied,
-  ]);
-
-  const applyConnectionConfig = useCallback(() => {
-    void submitConnectionConfig({
-      lanEnabled: connectionLanEnabled,
-      lanBindHost: connectionLanHost,
-    }).catch(() => undefined);
-  }, [connectionLanEnabled, connectionLanHost, submitConnectionConfig]);
-
-  const toggleConnectionLanEnabled = useCallback((lanEnabled: boolean) => {
-    const previousLanEnabled = connectionConfig?.lanEnabled ?? connectionLanEnabled;
-    setConnectionLanEnabled(lanEnabled);
-    void submitConnectionConfig({
-      lanEnabled,
-      lanBindHost: connectionLanHost,
-    }).catch(() => {
-      setConnectionLanEnabled(previousLanEnabled);
-    });
-  }, [connectionConfig?.lanEnabled, connectionLanEnabled, connectionLanHost, submitConnectionConfig]);
-
-  const regenerateConnectionToken = useCallback(async () => {
-    if (!apiToken || connectionBusy) return;
-
-    setConnectionBusy('token');
-    try {
-      const nextConfig = await regenerateLocalApiToken(endpoint, apiToken);
-      applyConnectionConfigState(nextConfig);
-      if (nextConfig.localEndpoint && nextConfig.token) {
-        onConnectionConfigApplied(nextConfig.localEndpoint, nextConfig.token);
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setConnectionError(message.includes('403') ? 'Token 只能在游戏所在设备的本机窗口中重置。' : message);
-    } finally {
-      setConnectionBusy(null);
-    }
-  }, [apiToken, applyConnectionConfigState, connectionBusy, endpoint, onConnectionConfigApplied]);
-
   const copyConnectionText = useCallback(async (value: string, fallbackMessage: string) => {
-    if (!value || connectionBusy) return;
-    setConnectionBusy('copy');
+    if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      setConnectionError('');
+      setCopyResult({ identity: connectionIdentity, message: '已复制。' });
     } catch {
-      setConnectionError(fallbackMessage);
-    } finally {
-      setConnectionBusy(null);
+      setCopyResult({ identity: connectionIdentity, message: fallbackMessage });
     }
-  }, [connectionBusy]);
-
-  useEffect(() => {
-    if (settingsTab !== 'connection') return;
-    refreshConnectionConfig();
-  }, [refreshConnectionConfig, settingsTab]);
-
-  const hostDraftDirty = connectionConfig
-    ? normalizeLanHostDraft(connectionLanHost) !== normalizeLanHostDraft(connectionConfig.lanBindHost)
-    : false;
-  const connectionDraftDirty = connectionConfig
-    ? connectionLanEnabled !== connectionConfig.lanEnabled || hostDraftDirty
-    : false;
+  }, [connectionIdentity, setCopyResult]);
   const lanEndpoints = connectionConfig?.lanEndpoints ?? [];
   const lanEndpointStatus = connectionBusy === 'apply' && connectionLanEnabled
     ? '应用中'
@@ -400,10 +297,18 @@ export function ModSettingsPanel({
                   <SwitchControl
                     label="鼠标穿透锁定"
                     helpId="window-mouse-passthrough"
-                    description="开启后伴随窗口会忽略鼠标点击，点击会落到下方游戏或其他窗口；按 F10、F8、RS Click 或使用托盘菜单可恢复操作。"
-                    checked={preferences.mousePassthroughEnabled}
-                    onCheckedChange={(mousePassthroughEnabled) => onLocalPreferenceChange({ mousePassthroughEnabled })}
+                    description="开启后鼠标点击会落到下方窗口；F10 可用时可用它解除，也可按 F8、RS Click 或使用托盘恢复。"
+                    checked={desktopWindowControls.mousePassthroughEnabled}
+                    disabled={!desktopWindowControls.ready || desktopWindowControls.busy}
+                    onCheckedChange={(enabled) => { void desktopWindowControls.setMousePassthrough(enabled); }}
                   />
+                  <div role="status" className="text-xs text-muted-foreground" data-desktop-hotkey-status="true">
+                    {desktopWindowControls.hotkeyStatus?.status === 'available' ? 'F10 快捷键可用。'
+                      : desktopWindowControls.hotkeyStatus?.status === 'unavailable' ? `F10 注册失败（系统错误 ${desktopWindowControls.hotkeyStatus.errorCode ?? '未知'}）；请检查快捷键占用，或使用 F8、RS Click 和托盘恢复窗口。`
+                        : desktopWindowControls.hotkeyStatus?.status === 'registering' ? '正在注册 F10 快捷键。'
+                          : '当前环境未提供桌面 F10 快捷键。'}
+                  </div>
+                  {desktopWindowControls.error && <div role="alert" className="break-words text-xs text-destructive">{desktopWindowControls.error}</div>}
                 </>
               ) : (
                 <div className="steward-inline-panel px-3 py-2 text-xs text-muted-foreground">
@@ -471,7 +376,7 @@ export function ModSettingsPanel({
           <div className="space-y-4">
             <div className="grid gap-2 text-sm">
               <InfoLine label="本机地址" value={connectionConfig?.localEndpoint || endpoint} mono />
-              <InfoLine label="端口" value={String(connectionConfig?.port ?? 32145)} />
+              <InfoLine label="端口" value={connectionConfig ? String(connectionConfig.port) : '未读取'} />
               <InfoLine label="LAN 状态" value={lanStatusLabel} />
               <InfoLine label="LAN 地址" value={lanEndpointStatus} />
             </div>
@@ -481,15 +386,15 @@ export function ModSettingsPanel({
               helpId="connection-lan-enabled"
               description="允许同一可信局域网中的 Windows 或 Android 伴随窗口连接本机 Mod API。本机回环地址始终保留；不要通过公网端口映射暴露此接口。"
               checked={connectionLanEnabled}
-              onCheckedChange={toggleConnectionLanEnabled}
-              disabled={!apiToken || Boolean(connectionBusy)}
+              onCheckedChange={(enabled) => void connectionSettings.setLanEnabled(enabled)}
+              disabled={!connectionSettings.writable}
             />
 
             <SettingHelpField
               id="connection-lan-bind-host"
               label="LAN 监听地址"
               description="修改监听地址后需要点击应用。填写 auto 会监听活动网卡的私网 IPv4，也可以填写本机活动网卡上的一个明确地址；本机回环地址始终保留。"
-              disabledControl={!connectionLanEnabled || !apiToken || Boolean(connectionBusy)}
+              disabledControl={!connectionLanEnabled || !connectionSettings.writable}
             >
               {({ helpTrigger, descriptionId }) => (
                 <div className="grid gap-1 text-sm">
@@ -502,9 +407,9 @@ export function ModSettingsPanel({
                   <Input
                     id="settings-lan-bind-host"
                     value={connectionLanHost}
-                    onChange={(event) => setConnectionLanHost(event.target.value)}
+                    onChange={(event) => connectionSettings.setLanHost(event.target.value)}
                     placeholder="auto"
-                    disabled={!connectionLanEnabled || !apiToken || Boolean(connectionBusy)}
+                    disabled={!connectionLanEnabled || !connectionSettings.writable}
                     inputClassName="font-mono"
                     aria-describedby={descriptionId}
                   />
@@ -552,7 +457,7 @@ export function ModSettingsPanel({
                 </div>
               ) : (
                 <div className="border-y border-border/50 py-2 text-xs text-muted-foreground">
-                  {hostDraftDirty ? '应用监听地址后生成连接地址。' : '开启局域网连接后生成可用地址。'}
+                  {!connectionConfig ? '等待确认局域网连接配置。' : hostDraftDirty ? '应用监听地址后生成连接地址。' : '开启局域网连接后生成可用地址。'}
                 </div>
               )}
             </div>
@@ -574,9 +479,9 @@ export function ModSettingsPanel({
                 variant="outline"
                 leftSection={<IconRefresh size={14} />}
                 loading={connectionBusy === 'refresh'}
-                disabled={!apiToken || Boolean(connectionBusy)}
+                disabled={!connectionSettings.refreshable}
                 data-gamepad-focus-key="settings:connection:refresh"
-                onClick={refreshConnectionConfig}
+                onClick={() => void connectionSettings.refresh()}
               >
                 刷新
               </Button>
@@ -584,9 +489,9 @@ export function ModSettingsPanel({
                 type="button"
                 size="sm"
                 variant="outline"
-                disabled={!apiToken || Boolean(connectionBusy) || !connectionDraftDirty}
+                disabled={!connectionSettings.writable || !connectionDraftDirty}
                 data-gamepad-focus-key="settings:connection:apply"
-                onClick={applyConnectionConfig}
+                onClick={() => void connectionSettings.apply()}
               >
                 应用
               </Button>
@@ -606,7 +511,7 @@ export function ModSettingsPanel({
                 size="sm"
                 variant="outline"
                 data-gamepad-focus-key="settings:connection:toggle-token-visibility"
-                onClick={() => setConnectionTokenVisible((current) => !current)}
+                onClick={() => setVisibleTokenIdentity(connectionTokenVisible ? null : connectionIdentity)}
               >
                 {connectionTokenVisible ? '隐藏 Token' : '显示 Token'}
               </Button>
@@ -616,7 +521,7 @@ export function ModSettingsPanel({
                 variant="outline"
                 leftSection={<IconKey size={14} />}
                 loading={connectionBusy === 'token'}
-                disabled={!apiToken || Boolean(connectionBusy)}
+                disabled={!connectionSettings.writable}
                 aria-controls="token-reset-dialog"
                 aria-expanded={tokenResetDialogOpen}
                 aria-haspopup="dialog"
@@ -628,8 +533,14 @@ export function ModSettingsPanel({
               </Button>
             </div>
 
+            {connectionSettings.status && (
+              <p className="text-xs text-muted-foreground" role="status" data-connection-settings-status>
+                {connectionSettings.status}
+              </p>
+            )}
+            {copyFeedback && <p className="text-xs text-muted-foreground" role="status">{copyFeedback}</p>}
             {connectionError && (
-              <div className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <div role="alert" className="border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
                 {connectionError}
               </div>
             )}
@@ -654,7 +565,7 @@ export function ModSettingsPanel({
                     value={deviceLabelDraft}
                     maxLength={48}
                     disabled={Boolean(deviceAuthority.busy)}
-                    onChange={(event) => setDeviceLabelDraft(event.target.value)}
+                    onChange={(event) => setDeviceLabelEdit({ identity: deviceLabelIdentity, label: event.target.value })}
                   />
                 </label>
                 <Button
@@ -799,7 +710,12 @@ export function ModSettingsPanel({
           checked={serviceFocusCompact}
           onCheckedChange={onServiceFocusCompactChange}
         />
-        {sharedSettingsDisabled && <SharedSettingsAuthorityNotice reason={sharedSettingsDisabledReason} />}
+        <SharedSettingsStatus
+          authority={deviceAuthority}
+          focusKey="settings:recommendation:open-connection"
+          disabledReason={sharedSettingsDisabledReason}
+          onOpenConnection={() => onSettingsTabChange('connection')}
+        />
         <fieldset disabled={sharedSettingsDisabled} className="m-0 min-w-0 border-0 p-0 disabled:opacity-65">
         <div className={DENSE_TWO_COLUMN_GRID}>
           <ListPanel title="推荐设置">
@@ -869,6 +785,7 @@ export function ModSettingsPanel({
                       {helpTrigger}
                     </div>
                     <NumberInput
+                      aria-label="同基础料理显示"
                       id="settings-recipe-variant-limit"
                       min={MIN_RECIPE_VARIANT_LIMIT_PER_BASE}
                       max={MAX_RECIPE_VARIANT_LIMIT_PER_BASE}
@@ -990,7 +907,12 @@ export function ModSettingsPanel({
           </div>
         </div>
 
-        {sharedSettingsDisabled && <SharedSettingsAuthorityNotice reason={sharedSettingsDisabledReason} />}
+        <SharedSettingsStatus
+          authority={deviceAuthority}
+          focusKey="settings:experimental:open-connection"
+          disabledReason={sharedSettingsDisabledReason}
+          onOpenConnection={() => onSettingsTabChange('connection')}
+        />
         <fieldset disabled={sharedSettingsDisabled} className="m-0 min-w-0 border-0 p-0 disabled:opacity-65">
         <div className={DENSE_TWO_COLUMN_GRID}>
           <ListPanel title="自动化总控">
@@ -1358,10 +1280,11 @@ export function ModSettingsPanel({
             type="button"
             size="sm"
             variant="destructive"
+            disabled={!connectionSettings.writable}
             data-gamepad-focus-key="settings:connection:reset-token:confirm"
             onClick={() => {
               setTokenResetDialogOpen(false);
-              void regenerateConnectionToken();
+              void connectionSettings.regenerateToken();
             }}
           >
             重置 Token
@@ -1372,10 +1295,41 @@ export function ModSettingsPanel({
   );
 }
 
-function SharedSettingsAuthorityNotice({ reason }: { reason: string }) {
+function SharedSettingsStatus({ authority, disabledReason, onOpenConnection, focusKey }: {
+  authority: CompanionDeviceAuthorityController;
+  disabledReason: string;
+  onOpenConnection: () => void;
+  focusKey: string;
+}) {
+  const phase = authority.profileTransactionPhase;
+  const message = authority.error
+    ? `共享配置未确认：${authority.error}`
+    : phase === 'reconciling'
+      ? '保存结果尚未确定，正在确认 Mod 当前配置；确认前不执行新修改。'
+      : phase === 'posting'
+        ? '正在保存共享配置；未确认的修改尚未生效，可以继续编辑。'
+        : phase === 'debouncing'
+          ? '修改待保存；Mod 确认前仍使用上次已确认配置。'
+          : !authority.profileEditWritable
+            ? disabledReason
+            : '当前共享配置已确认。';
+  const needsAttention = Boolean(authority.error) || !authority.profileEditWritable;
   return (
-    <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
-      {reason}
+    <div
+      className={authority.error
+        ? 'border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive'
+        : 'steward-inline-panel px-3 py-2 text-xs text-muted-foreground'}
+      role={authority.error ? 'alert' : 'status'}
+      data-shared-settings-status={authority.error ? 'error' : phase || (needsAttention ? 'read-only' : 'confirmed')}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0 flex-1">{message}</span>
+        {needsAttention && (
+          <Button type="button" variant="outline" size="xs" data-gamepad-focus-key={focusKey} onClick={onOpenConnection}>
+            前往连接设置
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1567,11 +1521,6 @@ function TargetHighlightColorField({
 function clampWeight(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.trunc(value)));
-}
-
-function normalizeLanHostDraft(value: string): string {
-  const normalized = value.trim().toLowerCase();
-  return normalized || 'auto';
 }
 
 function maskToken(value: string): string {
