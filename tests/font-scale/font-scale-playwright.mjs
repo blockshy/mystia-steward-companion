@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { PAGE_CATALOG } from '../ui-layout/page-catalog.mjs';
 import { inspectMinimumNestedTabsLayout } from '../ui-layout/nested-tabs-layout.mjs';
 import { inspectMinimumPrimaryTabsLayout } from '../ui-layout/primary-tabs-layout.mjs';
 
@@ -16,26 +17,11 @@ const primaryTabs = [
   'overview',
   'recommendations',
   'service',
+  'automation',
   'extensions',
-  'logs',
   'settings',
 ];
-const pages = [
-  { value: 'overview', topValue: 'overview' },
-  { value: 'normal', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '普客' },
-  { value: 'rare', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '稀客' },
-  { value: 'custom-recipes', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '自定义推荐料理' },
-  { value: 'favorites', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '收藏管理' },
-  { value: 'service', topValue: 'service' },
-  { value: 'missions', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
-  { value: 'rare-invitations', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
-  { value: 'rare-participation', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客调度' },
-  { value: 'inventory', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
-  { value: 'logs', topValue: 'logs' },
-  { value: 'settings', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
-  { value: 'connection', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '连接' },
-  { value: 'help', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
-];
+const pages = PAGE_CATALOG;
 
 const profiles = [
   { name: 'desktop-default', width: 1280, height: 900, scale: 100, allTabs: false },
@@ -248,7 +234,7 @@ async function assertMobileOverviewTabsLayout(page, profile) {
       singleRow: rects.every((rect) => Math.abs(rect.top - rects[0].top) <= 2),
     };
   });
-  assert.deepEqual(result.labels, ['连接', '状态', '库存', '快捷键'], `${profile.name}: overview tab order drifted`);
+  assert.deepEqual(result.labels, ['客户端', '主机网络', '设备共享', '运行状态'], `${profile.name}: overview tab order drifted`);
   assert.equal(result.scrollable, true, `${profile.name}: overview tabs must opt in to horizontal scrolling`);
   assert.equal(result.overflows, true, `${profile.name}: overview tabs must expose horizontal scrolling at 390px`);
   assert.equal(result.singleRow, true, `${profile.name}: overview tabs must stay on one row`);
@@ -376,36 +362,25 @@ async function auditOpenSelect(page, profile) {
 }
 
 async function auditSettingsSections(page, profile) {
-  const sections = [
-    { key: 'window', label: '窗口' },
-    { key: 'connection', label: '连接' },
-    { key: 'recommendation', label: '推荐' },
-    { key: 'experimental', label: '实验性功能' },
-    { key: 'updates', label: '更新' },
-  ];
-
-  for (const section of sections) {
-    await activateControl(page, page.getByRole('tab', { name: section.label, exact: true }));
-    if (section.key === 'connection') await page.waitForTimeout(400);
-    if (section.key === 'updates') {
-      await page.locator('[data-gamepad-focus-key="settings:updates:check"]').waitFor();
+  for (const key of ['settings', 'network', 'rules', 'automation-config', 'game-ui', 'input', 'updates']) {
+    const entry = pages.find((candidate) => candidate.value === key);
+    await activatePage(page, entry);
+    if (key === 'network') await page.waitForTimeout(400);
+    if (key === 'updates') await page.locator('[data-gamepad-focus-key="settings:updates:check"]').waitFor();
+    if (profile.width === 640 && (key === 'settings' || key === 'rules')) {
+      await assertMinimumSettingSegmentedControls(page, profile, { key: key === 'settings' ? 'window' : 'recommendation' });
     }
-    if (profile.width === 640 && (section.key === 'window' || section.key === 'recommendation')) {
-      await assertMinimumSettingSegmentedControls(page, profile, section);
-    }
-    const auditKey = `settings-${section.key}`;
-    await assertNoDocumentOverflow(page, profile, auditKey);
-    await assertControlLayout(page, profile, auditKey);
-    await captureProfileScreenshot(page, profile, `${profile.name}-${auditKey}.png`);
+    await assertNoDocumentOverflow(page, profile, key);
+    await assertControlLayout(page, profile, key);
+    await captureProfileScreenshot(page, profile, `${profile.name}-${key}.png`);
   }
-
-  await activateControl(page, page.getByRole('tab', { name: '窗口', exact: true }));
+  await activatePage(page, pages.find((entry) => entry.value === 'settings'));
 }
 
 async function assertMinimumSettingSegmentedControls(page, profile, section) {
   const expectedLabels = section.key === 'window'
     ? ['焦点切换', '主题']
-    : ['经营中订单排序', '预算处理', '权重方案'];
+    : ['预算处理', '权重方案'];
   const result = await page.locator('.steward-settings-segmented-control:visible').evaluateAll(
     (controls) => controls.map((control) => {
       const field = control.parentElement;

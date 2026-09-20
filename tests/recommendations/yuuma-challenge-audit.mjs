@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { readSourceGroup } from './source-groups.mjs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
   logLevel: 'silent',
 });
@@ -889,7 +890,6 @@ function buildRecommendations({
     { version: 1, recipes: [], beverages: [] },
     customRecipeData,
     preferences,
-    [],
     specialBusinessContext
       ? { ...specialBusinessContext, ...specialBusinessOverrides }
       : null,
@@ -1000,11 +1000,11 @@ async function assertSourceContracts() {
     readFile(new URL('apps/companion/src/companion/domain/special-business/rules/yuyuko.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readSourceGroup('workbench'),
     readFile(new URL('apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/recommendation-engine/types.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readSourceGroup('orderWorker'),
     readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/yuuma.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/wacky.ts', root), 'utf8'),
@@ -1041,8 +1041,8 @@ async function assertSourceContracts() {
   assert.match(companionTypes, /interface NormalBusinessOrder[\s\S]*runtimeGuestId: number \| null/);
   assert.match(companionTypes, /interface NormalOrderExecutionTarget[\s\S]*allowYuumaControlledProgression: boolean/);
   assert.match(companionTypes, /interface AutomationCookingJobSnapshot[\s\S]*allowYuumaControlledProgression: boolean/);
-  assert.match(worker, /item\.target\?\.allowYuumaControlledProgression \? 1 : 0/,
-    'The worker result signature must change when a Yuuma target switches execution policy.');
+  assert.equal(worker.includes('buildResultSignature'), false,
+    'A changed Yuuma execution policy must be published as a complete new result, not deduplicated by a partial signature.');
   assert.match(yuumaNormalTarget, /preserveTwoTagSpecialTargetReachability: true/,
     'Only the Yuuma strict-first selector must request reachability-preserving ingredient search.');
   assert.equal(wackyNormalTarget.includes('preserveTwoTagSpecialTargetReachability'), false,

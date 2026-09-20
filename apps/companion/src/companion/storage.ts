@@ -5,6 +5,7 @@ import {
 import type {
   CustomRecipeGroupMode,
   ModTab,
+  SettingsTab,
   RareGuestInvitationScope,
 } from '@/companion/types';
 
@@ -31,8 +32,8 @@ const VALID_MOD_TABS: ModTab[] = [
   'overview',
   'recommendations',
   'service',
+  'automation',
   'extensions',
-  'logs',
   'settings',
 ];
 
@@ -57,13 +58,20 @@ export function persistApiToken(apiToken: string) {
   localStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
-export function readStoredTab(): ModTab {
+export function readStoredNavigation(): { tab: ModTab; settingsTab: SettingsTab } {
   const value = readMigratedStorage(TAB_STORAGE_KEY, LEGACY_TAB_STORAGE_KEY, '');
-  return VALID_MOD_TABS.includes(value as ModTab) ? value as ModTab : readStoredApiToken() ? 'service' : 'overview';
+  if (value === 'logs' || value === 'settings:logs') {
+    if (value === 'logs') localStorage.setItem(TAB_STORAGE_KEY, 'settings:logs');
+    return { tab: 'settings', settingsTab: 'logs' };
+  }
+  return {
+    tab: VALID_MOD_TABS.includes(value as ModTab) ? value as ModTab : readStoredApiToken() ? 'service' : 'overview',
+    settingsTab: 'window',
+  };
 }
 
-export function persistTab(tab: ModTab) {
-  localStorage.setItem(TAB_STORAGE_KEY, tab);
+export function persistNavigation(tab: ModTab, settingsTab: SettingsTab) {
+  localStorage.setItem(TAB_STORAGE_KEY, tab === 'settings' && settingsTab === 'logs' ? 'settings:logs' : tab);
 }
 
 export function readStoredMissionListModuleEnabled(): boolean {

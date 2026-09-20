@@ -166,6 +166,14 @@ export function useGameUiTargetPublisher({
     // A successful context-clear POST advances this value so current targets are
     // reconciled again even when no recommendation input changed in the meantime.
     void contextClearRevision;
+    if (!connectionReady) {
+      // Authority readiness reports revision 0 while disconnected. It is not a
+      // new confirmed identity: stop dispatch, then reconcile the full context
+      // and current source orders once the connection is authoritative again.
+      state.desired = null;
+      clearRetry(state);
+      return;
+    }
     const connectionKey = [
       endpoint,
       apiToken,
@@ -187,7 +195,7 @@ export function useGameUiTargetPublisher({
       clearRetry(state);
     }
 
-    if (!connectionReady || !businessActive || businessGeneration <= 0) {
+    if (!businessActive || businessGeneration <= 0) {
       state.desired = null;
       state.lastCurrentTargets = { rare: null, normal: null };
       clearRetry(state);

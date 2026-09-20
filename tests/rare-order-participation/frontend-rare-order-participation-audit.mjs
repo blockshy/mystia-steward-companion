@@ -8,7 +8,7 @@ import { createServer } from 'vite';
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
   logLevel: 'error',
 });
@@ -615,17 +615,14 @@ const extensionMarkup = renderToStaticMarkup(React.createElement(
   }),
 ));
 for (const expectedText of [
-  '参与随时启用/暂停的稀客列表',
-  '名单内稀客的每一笔新订单都默认暂停',
+  '调度名单 · 1 名稀客',
   '副设备只读',
-  '当前 2 笔',
 ]) {
   assert.ok(extensionMarkup.includes(expectedText), `Extension panel is missing reviewed text: ${expectedText}`);
 }
 assert.ok(extensionMarkup.includes('启用稀客调度模块'));
-assert.ok(extensionMarkup.includes('placeholder="输入姓名、ID或地区"'));
-assert.ok(extensionMarkup.includes('data-gamepad-focus-key="extensions:rare-participation:guest:10:remove"'));
-assert.match(extensionMarkup, /<button[^>]*data-disabled="true"[^>]*extensions:rare-participation:guest:10:remove/);
+assert.ok(extensionMarkup.includes('aria-expanded="false"'), 'Scheduling roster should start collapsed after the queue.');
+assert.ok(!extensionMarkup.includes('data-rare-guest-participation-roster="true"'), 'Collapsed roster controls must not remain focusable.');
 
 const root = new URL('../../', import.meta.url);
 const extensionSource = await readFile(

@@ -21,6 +21,7 @@ import {
   estimateKoishiBrokenShieldFeedScore,
   isKoishiFeedPlanSustainable,
 } from '@/recommendation-engine/koishi-feed';
+import { isIngredientAvailable, resolveRecipeIngredientAvailability } from '@/recommendation-engine/ingredient-availability';
 import type {
   BeverageCandidate,
   ConditionResult,
@@ -200,7 +201,7 @@ export function buildRareFoodCandidates(
   if (requiredExtraIngredients == null
     || requiredExtraIngredients.some((ingredient) => forbiddenExtraIngredientIds.has(ingredient.id))) return [];
   const usableIngredients = [...context.availableIngredientIds]
-    .filter((id) => !isIngredientExcluded(id, context))
+    .filter((id) => isIngredientAvailable(id, context))
     .filter((id) => !forbiddenExtraIngredientIds.has(id))
     .map((id) => ingredientsById.get(id))
     .filter((ingredient): ingredient is IngredientCatalogItem => Boolean(ingredient));
@@ -208,7 +209,7 @@ export function buildRareFoodCandidates(
   const candidates: FoodCandidate[] = [];
   for (const recipe of data.recipes) {
     if (!context.availableRecipeIds.has(recipe.id)) continue;
-    if (!hasAvailableBaseIngredients(recipe, ingredientsByName, context)) continue;
+    if (!resolveRecipeIngredientAvailability(recipe, ingredientsByName, context).available) continue;
     if (context.filterMissingCookers && !isCookerAvailable(recipe, context)) continue;
     candidates.push(...buildFoodCandidatesForRecipe(
       recipe,
@@ -258,9 +259,9 @@ export function diagnoseRareFoodCandidateSearch(
     if (!unlocked) continue;
     requiredTagReachableUnlockedRecipeCount += 1;
 
-    const baseIngredientsAvailable = hasAvailableBaseIngredients(recipe, ingredientsByName, context);
-    if (!baseIngredientsAvailable) {
-      for (const ingredientName of findUnavailableBaseIngredientNames(recipe, ingredientsByName, context)) {
+    const baseIngredients = resolveRecipeIngredientAvailability(recipe, ingredientsByName, context);
+    if (!baseIngredients.available) {
+      for (const ingredientName of baseIngredients.missingIngredientNames) {
         missingIngredientNames.add(ingredientName);
       }
       continue;
@@ -468,9 +469,7 @@ function resolveRequiredExtraIngredients(
   const ingredients: IngredientCatalogItem[] = [];
   for (const id of requiredIds) {
     const ingredient = ingredientsById.get(id);
-    if (!ingredient
-      || !context.availableIngredientIds.has(id)
-      || isIngredientExcluded(id, context)) return null;
+    if (!ingredient || !isIngredientAvailable(id, context)) return null;
     ingredients.push(ingredient);
   }
   return ingredients;
@@ -575,36 +574,6 @@ function resolvePlanBucket(
     return results.some((result) => result.status === 'warn') ? 'tradeoff' : 'complete';
   }
   return 'preference';
-}
-
-function hasAvailableBaseIngredients(
-  recipe: RecipeCatalogItem,
-  ingredientsByName: Map<string, IngredientCatalogItem>,
-  context: RecommendationRuntimeContext,
-): boolean {
-  return recipe.ingredients.every((name) => {
-    const ingredient = ingredientsByName.get(name);
-    return ingredient !== undefined
-      && context.availableIngredientIds.has(ingredient.id)
-      && !isIngredientExcluded(ingredient.id, context);
-  });
-}
-
-function findUnavailableBaseIngredientNames(
-  recipe: RecipeCatalogItem,
-  ingredientsByName: Map<string, IngredientCatalogItem>,
-  context: RecommendationRuntimeContext,
-): string[] {
-  return [...new Set(recipe.ingredients.filter((name) => {
-    const ingredient = ingredientsByName.get(name);
-    return ingredient === undefined
-      || !context.availableIngredientIds.has(ingredient.id)
-      || isIngredientExcluded(ingredient.id, context);
-  }))];
-}
-
-function isIngredientExcluded(id: number, context: RecommendationRuntimeContext): boolean {
-  return context.disabledIngredientIds.has(id) || context.excludedIngredientIds.has(id);
 }
 
 function isCookerAvailable(recipe: RecipeCatalogItem, context: RecommendationRuntimeContext): boolean {

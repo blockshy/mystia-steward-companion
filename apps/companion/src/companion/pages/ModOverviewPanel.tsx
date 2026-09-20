@@ -1,11 +1,10 @@
-import { useMemo, useState } from 'react';
-import { Card, CardContent, InfoLine, ListPanel, Metric, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
+import type { ReactNode } from 'react';
+import { Card, CardContent, InfoLine, ListPanel, Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui-kit';
 import { formatPerformanceMs } from '@/companion/formatters';
 import type { LocalApiSnapshot, NightBusinessContext, OverviewTab, RecommendationStateSnapshot } from '@/companion/types';
 import { OverviewConnectionPanel } from '@/companion/pages/overview/OverviewConnectionPanel';
-import { LowStockColumn } from '@/companion/pages/shared';
-import { buildLowStockEntries, DENSE_FOUR_COLUMN_GRID, DENSE_TWO_COLUMN_GRID, DENSE_TWO_COLUMN_GRID_TIGHT } from '@/companion/pages/shared-constants';
-import type { buildRecommendationDataIndexes, RecommendationDataSet } from '@/lib/recommendation-data';
+import { DENSE_TWO_COLUMN_GRID_TIGHT } from '@/companion/pages/shared-constants';
+import type { RecommendationDataSet } from '@/lib/recommendation-data';
 
 const OVERVIEW_TAB_TRIGGER_CLASS = 'min-w-[6rem] flex-none min-[640px]:min-w-0 min-[640px]:flex-1';
 
@@ -19,7 +18,10 @@ export function ModOverviewPanel({
   onResumeConnection,
   onDiscardConnectionDraft,
   connectionDraftDirty,
-  supportsDesktopWindowControls,
+  overviewTab,
+  onOverviewTabChange,
+  networkPanel,
+  devicesPanel,
   onRefresh,
   apiToken,
   connectionPaused,
@@ -30,7 +32,6 @@ export function ModOverviewPanel({
   runtime,
   night,
   data,
-  indexes,
   error,
   lastConnectedAt,
   showDebugDetails,
@@ -44,7 +45,10 @@ export function ModOverviewPanel({
   onResumeConnection: () => void;
   onDiscardConnectionDraft: () => void;
   connectionDraftDirty: boolean;
-  supportsDesktopWindowControls: boolean;
+  overviewTab: OverviewTab;
+  onOverviewTabChange: (tab: OverviewTab) => void;
+  networkPanel: ReactNode;
+  devicesPanel: ReactNode;
   onRefresh: () => void;
   apiToken: string;
   connectionPaused: boolean;
@@ -55,24 +59,14 @@ export function ModOverviewPanel({
   runtime: RecommendationStateSnapshot | null;
   night: NightBusinessContext | null;
   data: RecommendationDataSet;
-  indexes: ReturnType<typeof buildRecommendationDataIndexes>;
   error: string;
   lastConnectedAt: Date | null;
   showDebugDetails: boolean;
 }) {
-  const ownedIngredientEntries = useMemo(
-    () => buildLowStockEntries(runtime?.ownedIngredientQty ?? {}, indexes.ingredientNameById),
-    [indexes.ingredientNameById, runtime?.ownedIngredientQty],
-  );
-  const ownedBeverageEntries = useMemo(
-    () => buildLowStockEntries(runtime?.ownedBeverageQty ?? {}, indexes.beverageNameById),
-    [indexes.beverageNameById, runtime?.ownedBeverageQty],
-  );
-  const [overviewTab, setOverviewTab] = useState<OverviewTab>('connection');
 
   return (
     <div className="space-y-4">
-      <Tabs value={overviewTab} onValueChange={(value) => setOverviewTab(value as OverviewTab)} className="space-y-4">
+      <Tabs value={overviewTab} onValueChange={(value) => onOverviewTabChange(value as OverviewTab)} className="space-y-4">
         <TabsList
           scrollable
           className="grid h-9 w-full grid-cols-4"
@@ -83,16 +77,16 @@ export function ModOverviewPanel({
             className={OVERVIEW_TAB_TRIGGER_CLASS}
             data-gamepad-clickable="true"
           >
-            连接
+            客户端
+          </TabsTrigger>
+          <TabsTrigger value="network" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            主机网络
+          </TabsTrigger>
+          <TabsTrigger value="devices" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
+            设备共享
           </TabsTrigger>
           <TabsTrigger value="status" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-            状态
-          </TabsTrigger>
-          <TabsTrigger value="inventory" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-            库存
-          </TabsTrigger>
-          <TabsTrigger value="actions" className={OVERVIEW_TAB_TRIGGER_CLASS} data-gamepad-clickable="true">
-            快捷键
+            运行状态
           </TabsTrigger>
         </TabsList>
 
@@ -119,6 +113,9 @@ export function ModOverviewPanel({
             snapshot={snapshot}
           />
         </TabsContent>
+
+        <TabsContent value="network">{overviewTab === 'network' && networkPanel}</TabsContent>
+        <TabsContent value="devices">{overviewTab === 'devices' && devicesPanel}</TabsContent>
 
         <TabsContent value="status" className="space-y-4">
           <Card>
@@ -151,36 +148,6 @@ export function ModOverviewPanel({
           </ListPanel>
         </TabsContent>
 
-        <TabsContent value="inventory" className="space-y-4">
-          <Card>
-            <CardContent className={`${DENSE_FOUR_COLUMN_GRID} text-sm`}>
-              <Metric label="可用料理" value={runtime?.availableRecipeIds.length ?? '未读取'} />
-              <Metric label="可用酒水" value={runtime?.availableBeverageIds.length ?? '未读取'} />
-              <Metric label="可用食材" value={runtime?.availableIngredientIds.length ?? '未读取'} />
-              <Metric label="明星店" value={!runtime ? '未读取' : runtime.famousShopEnabled ? '开启' : '关闭'} />
-            </CardContent>
-          </Card>
-
-          <ListPanel title="低库存概览">
-            <div className={DENSE_TWO_COLUMN_GRID}>
-              <LowStockColumn title="材料" entries={ownedIngredientEntries} />
-              <LowStockColumn title="酒水" entries={ownedBeverageEntries} />
-            </div>
-          </ListPanel>
-        </TabsContent>
-
-        <TabsContent value="actions" className="space-y-4">
-          <ListPanel title="快捷键">
-            <div className={`${DENSE_TWO_COLUMN_GRID_TIGHT} text-sm`}>
-              {supportsDesktopWindowControls && <InfoLine label="F8" value="在游戏与独立窗口之间切换焦点或重新显示伴随窗口" />}
-              {supportsDesktopWindowControls && <InfoLine label="F10" value="注册成功后切换鼠标穿透；状态见设置中的窗口选项" />}
-              {supportsDesktopWindowControls && <InfoLine label="RS Click" value="手柄默认在游戏与独立窗口之间切换" />}
-              <InfoLine label="手柄导航" value="左摇杆/十字键移动，A 确认，B 关闭/返回，X 收藏，Y 专注模式，LB/RB 切页，LT/RT 滚动" />
-              <InfoLine label="专注模式" value="Y 进入专注模式或切换精简模式，X 收藏当前推荐项" />
-              {supportsDesktopWindowControls && <InfoLine label="窗口关闭" value="关闭按钮会隐藏到托盘；托盘菜单可重新显示或退出" />}
-            </div>
-          </ListPanel>
-        </TabsContent>
       </Tabs>
     </div>
   );

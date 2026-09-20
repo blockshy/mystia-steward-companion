@@ -4,7 +4,7 @@ import { createServer } from 'vite';
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
   logLevel: 'silent',
 });
@@ -16,6 +16,7 @@ let preferencesModule;
 let automationModule;
 let gameUiModule;
 let dataModule;
+let runtimeContextModule;
 try {
   [
     registryModule,
@@ -26,6 +27,7 @@ try {
     automationModule,
     gameUiModule,
     dataModule,
+    runtimeContextModule,
   ] = await Promise.all([
     vite.ssrLoadModule('/src/companion/domain/special-business/registry.ts'),
     vite.ssrLoadModule('/src/recommendation-engine/index.ts'),
@@ -35,6 +37,7 @@ try {
     vite.ssrLoadModule('/src/companion/domain/automation.ts'),
     vite.ssrLoadModule('/src/companion/domain/game-ui-targets.ts'),
     vite.ssrLoadModule('/src/lib/recommendation-data.ts'),
+    vite.ssrLoadModule('/src/companion/domain/recommendation-runtime-context.ts'),
   ]);
 } finally {
   await vite.close();
@@ -48,9 +51,9 @@ const { buildRareFoodCandidates } = recommendationModule;
 const { buildCustomFoodCandidates } = customRecipeModule;
 const {
   buildOrderRecommendations,
-  buildRecommendationRuntimeContext,
   createRecommendationCacheStore,
 } = serviceModule;
+const { buildRecommendationRuntimeContext } = runtimeContextModule;
 const { normalizeCompanionPreferences } = preferencesModule;
 const { selectOrderPreparationCandidates } = automationModule;
 const { buildRareGameUiTarget } = gameUiModule;
@@ -378,7 +381,6 @@ const recommendationResult = buildOrderRecommendations(
   { version: 1, recipes: [], beverages: [] },
   { version: 1, enabled: true, recipes: [] },
   preferences,
-  [],
   specialBusiness,
   [],
   data,
@@ -445,7 +447,6 @@ const storyRecommendationResult = buildOrderRecommendations(
   { version: 1, recipes: [], beverages: [] },
   { version: 1, enabled: true, recipes: [] },
   preferences,
-  [],
   storySpecialBusiness,
   [],
   data,

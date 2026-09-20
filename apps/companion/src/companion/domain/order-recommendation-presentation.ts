@@ -52,7 +52,7 @@ export function buildOrderRecommendationPresentation({
       updateError: null,
     };
   }
-  const updating = orders.length > 0 && (pending || (!isCurrent && !retainedAfterError));
+  const updating = orders.length > 0 && (pending || (!isCurrent && !retainedAfterError && !error));
 
   const currentOrdersByIdentity = groupOrdersByIdentity(orders);
   const recommendationByIdentity = groupRowsByIdentity(recommendations, (item) => item.order);

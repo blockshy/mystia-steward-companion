@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium } from 'playwright';
+import { PAGE_CATALOG } from '../tests/ui-layout/page-catalog.mjs';
 import { inspectMinimumNestedTabsLayout } from '../tests/ui-layout/nested-tabs-layout.mjs';
 import { inspectMinimumPrimaryTabsLayout } from '../tests/ui-layout/primary-tabs-layout.mjs';
 
@@ -23,22 +24,7 @@ const viewports = [
   { name: 'minimum', width: 640, height: 760 },
 ];
 
-const tabs = [
-  { value: 'overview', label: '概览' },
-  { value: 'normal', label: '推荐料理 · 普客', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '普客' },
-  { value: 'rare', label: '推荐料理 · 稀客', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '稀客' },
-  { value: 'custom-recipes', label: '推荐料理 · 自定义推荐料理', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '自定义推荐料理' },
-  { value: 'favorites', label: '推荐料理 · 收藏管理', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '收藏管理' },
-  { value: 'service', label: '经营中' },
-  { value: 'missions', label: '扩展功能 · 任务列表', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
-  { value: 'rare-invitations', label: '扩展功能 · 稀客邀请', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
-  { value: 'rare-participation', label: '扩展功能 · 稀客调度', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客调度' },
-  { value: 'inventory', label: '扩展功能 · 修改', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '修改' },
-  { value: 'logs', label: '日志' },
-  { value: 'settings', label: '设置 · 窗口', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '窗口' },
-  { value: 'connection', label: '设置 · 连接', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '连接' },
-  { value: 'help', label: '设置 · 帮助', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
-];
+const tabs = PAGE_CATALOG.map((entry) => ({ ...entry, label: `${entry.topValue} · ${entry.innerLabel}` }));
 
 const hoverTargets = [
   {
@@ -112,6 +98,7 @@ const report = buildReport();
 await writeFile(path.join(OUTPUT_DIR, 'report.md'), report);
 console.log(report);
 console.log(`\nScreenshots and report written to ${OUTPUT_DIR}`);
+if (issues.length > 0) process.exitCode = 1;
 
 async function ensureSecondaryAuditDevice(page) {
   await page.evaluate(async ({ apiUrl, apiToken }) => {
@@ -349,8 +336,10 @@ async function isServiceSummaryTriggerFocused(trigger) {
 }
 
 async function auditDeviceAuthorityLayout(page, viewport, tab) {
-  if (tab.value !== 'connection') return;
+  if (tab.value !== 'devices') return;
 
+  // The fixture registers outside the UI; wait for the next authoritative read.
+  await page.locator('[data-device-authority-device="ui-audit-device-0002"]').waitFor({ timeout: 10000 });
   await page.locator('[data-device-authority-content]').waitFor({ timeout: 5_000 }).catch(() => {});
   const result = await page.evaluate(() => {
     const content = document.querySelector('[data-device-authority-content]');
@@ -482,8 +471,7 @@ async function auditServiceDiagnosticsPlacement(page, viewport, tab) {
     });
   }
 
-  const serviceViewControl = page.locator('[data-slot="segmented-control"]').filter({ hasText: '诊断' }).first();
-  await serviceViewControl.locator('label').filter({ hasText: /^诊断$/ }).click();
+  await page.locator('[data-service-tabs]').getByRole('tab', { name: '诊断', exact: true }).click();
   for (const title of ['当前稀客', '当前稀客点单', '预计厨具占用']) {
     if (!(await page.getByText(title, { exact: true }).count())) {
       issues.push({
@@ -495,7 +483,7 @@ async function auditServiceDiagnosticsPlacement(page, viewport, tab) {
     }
   }
 
-  await serviceViewControl.locator('label').filter({ hasText: /^自动化$/ }).click();
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'automation-runtime'));
   if (await page.getByText('预计厨具占用', { exact: true }).count()) {
     issues.push({
       viewport: viewport.name,
@@ -504,7 +492,7 @@ async function auditServiceDiagnosticsPlacement(page, viewport, tab) {
       message: '自动化视图仍重复显示预计厨具占用。',
     });
   }
-  await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'service'));
 }
 
 async function auditRareGuestInvitationLayout(page, viewport, tab) {
@@ -917,33 +905,16 @@ async function auditMinimumPrimaryTabsLayout(page, viewport, tab) {
 }
 
 async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
-  const windowTab = page.getByRole('tab', { name: '窗口', exact: true }).first();
-  const recommendationTab = page.getByRole('tab', { name: '推荐', exact: true }).first();
-  const experimentalTab = page.getByRole('tab', { name: '实验性功能', exact: true }).first();
-  if (!(await windowTab.count()) || !(await recommendationTab.count()) || !(await experimentalTab.count())) {
-    issues.push({
-      viewport: viewport.name,
-      tab: tab.label,
-      component: 'SettingsRecommendation',
-      message: '未找到设置页窗口、推荐或实验性功能分栏入口。',
-    });
-    return;
-  }
-
-  await windowTab.click();
-  await page.waitForTimeout(100);
-  await auditMinimumSettingSegmentedControls(page, viewport, tab, '窗口', ['焦点切换', '主题']);
-
-  await recommendationTab.click();
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'settings'));
+  await auditMinimumSettingSegmentedControls(page, viewport, tab, '外观窗口', ['焦点切换', '主题']);
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'service'));
+  await page.getByRole('button', { name: '订单显示', exact: true }).click();
+  await page.locator('.steward-settings-segmented-control:visible').first().waitFor();
+  await auditMinimumSettingSegmentedControls(page, viewport, tab, '订单显示', ['经营中订单排序']);
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'rules'));
   await page.waitForTimeout(200);
-  await auditMinimumMulticolumnGrids(page, viewport, { ...tab, label: `${tab.label} 推荐` });
-  await auditMinimumSettingSegmentedControls(
-    page,
-    viewport,
-    tab,
-    '推荐',
-    ['经营中订单排序', '预算处理', '权重方案'],
-  );
+  await auditMinimumMulticolumnGrids(page, viewport, { ...tab, label: '推荐规则' });
+  await auditMinimumSettingSegmentedControls(page, viewport, tab, '推荐规则', ['预算处理', '权重方案']);
 
   const result = await page.evaluate(() => {
     const visibleContent = Array.from(document.querySelectorAll('[data-slot="tabs-content"]'))
@@ -951,7 +922,7 @@ async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
         && node.getAttribute('data-state') === 'active'
         && node.textContent?.includes('推荐权重'));
     const scope = visibleContent instanceof HTMLElement ? visibleContent : document.body;
-    const rows = Array.from(scope.querySelectorAll('.steward-data-row'))
+    const rows = Array.from(scope.querySelectorAll('[data-recommendation-weight-row]'))
       .filter((node) => node instanceof HTMLElement && node.querySelector('[data-slot="slider"]'));
 
     if (rows.length === 0) {
@@ -1010,13 +981,12 @@ async function auditMinimumRecommendationSettingsLayout(page, viewport, tab) {
   await page.screenshot({ path: screenshotPath, fullPage: true });
   screenshots.push({ tab: `${tab.label} 推荐`, viewport: viewport.name, path: screenshotPath });
 
-  await auditMissionRecipePriorityToggle(page, viewport, tab, recommendationTab);
+  await auditMissionRecipePriorityToggle(page, viewport, tab);
 
-  await activateTab(page, { value: 'settings', label: '设置' });
-  await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'automation-config'));
   await page.waitForTimeout(200);
   await auditMinimumMulticolumnGrids(page, viewport, { ...tab, label: `${tab.label} 实验性功能` });
-  for (const title of ['自动化总控', '游戏界面辅助', '稀客自动化设置', '普客自动化设置']) {
+  for (const title of ['自动化总控', '稀客自动化设置', '普客自动化设置']) {
     if (!(await page.getByText(title, { exact: true }).count())) {
       issues.push({
         viewport: viewport.name,
@@ -1051,7 +1021,7 @@ async function auditMissionRecipePriorityMarker(page, viewport, tab) {
   }
 }
 
-async function auditMissionRecipePriorityToggle(page, viewport, tab, recommendationTab) {
+async function auditMissionRecipePriorityToggle(page, viewport, tab) {
   const storageKey = `${STORAGE_PREFIX}-mission-recipe-priority`;
   const field = page.locator('label.steward-switch-field').filter({ hasText: '任务料理置顶' }).first();
   const input = field.locator('input[type="checkbox"]').first();
@@ -1098,8 +1068,7 @@ async function auditMissionRecipePriorityToggle(page, viewport, tab, recommendat
     });
   }
 
-  await activateTab(page, { value: 'settings', label: '设置' });
-  await recommendationTab.click();
+  await activateTab(page, PAGE_CATALOG.find((entry) => entry.value === 'rules'));
   const restoredField = page.locator('label.steward-switch-field').filter({ hasText: '任务料理置顶' }).first();
   await restoredField.click();
   await page.waitForFunction((key) => localStorage.getItem(key) === '1', storageKey);

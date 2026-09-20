@@ -192,7 +192,7 @@ assert.ok(workbenchSource.includes('runtimeDaySceneReady={snapshot?.runtimeDaySc
 assert.ok(workbenchSource.includes('invitationContextReady={rareGuestInvitationContextReady}'));
 assert.ok(workbenchSource.includes('data-gamepad-tab-value="extensions"'));
 assert.ok(workbenchSource.includes('data-extension-tabs="true"'));
-assert.ok(workbenchSource.includes('<TabsTrigger value="rare-invitations"'));
+assert.match(workbenchSource, /<TabsTrigger\s+value="rare-invitations"/);
 assert.ok(workbenchSource.includes('<TabsContent value="rare-invitations"'));
 assert.doesNotMatch(workbenchSource, /data-gamepad-tab-value="(?:missions|rare-invitations|inventory)"/);
 assert.ok(workbenchSource.includes('<ModRareGuestInvitationsPanel'));
@@ -210,7 +210,8 @@ assert.ok(panelSource.includes('control={moduleControl}'));
 assert.ok(panelSource.includes('const sourceEntries = inviteAllResult?.candidates ?? [];'));
 assert.ok(panelSource.includes('...inviteAllResult.existingInvited,'));
 assert.ok(panelSource.includes('const batchEligibleEntries = availableEntries'));
-assert.ok(panelSource.includes('搜索只改变下方列表展示；羁绊筛选同时决定批量邀请范围。'));
+assert.ok(panelSource.includes('当前羁绊范围可批量邀请 {batchEligibleEntries.length} 位。'));
+assert.ok(panelSource.includes('搜索只过滤列表，不改变批量邀请范围。'));
 assert.ok(panelSource.includes('kind="available"'));
 assert.ok(panelSource.includes('kind="unavailable"'));
 assert.ok(panelSource.includes('data-gamepad-focus-key="rare-invitations:invite-all"'));

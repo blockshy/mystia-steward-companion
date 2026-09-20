@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readSourceGroup } from './source-groups.mjs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 import {
@@ -10,7 +11,7 @@ import {
 const root = new URL('../../', import.meta.url);
 const vite = await createServer({
   configFile: new URL('../../apps/companion/vite.config.ts', import.meta.url).pathname,
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
   logLevel: 'silent',
 });
@@ -709,16 +710,16 @@ async function assertSourceContracts() {
     worker,
     gameUiTargets,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
+    readSourceGroup('service'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/types.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readSourceGroup('workbench'),
     readFile(new URL('apps/companion/src/recommendation-engine/mission-recipe-priority.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/preferences.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/pages/ModSettingsPanel.tsx', root), 'utf8'),
+    readSourceGroup('recommendationSettings'),
     readFile(new URL('apps/companion/src/companion/pages/shared.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readSourceGroup('orderWorker'),
     readFile(new URL('apps/companion/src/companion/domain/game-ui-targets.ts', root), 'utf8'),
   ]);
 
@@ -816,8 +817,8 @@ async function assertSourceContracts() {
   assert.ok(
     service.includes('missionTarget: isMissionRecipeExecutionPlan(plan, sortContext)')
       && shared.includes('recipe.missionTarget && <Badge variant="secondary">任务目标</Badge>')
-      && worker.includes('recipe.missionTarget ? 1 : 0'),
-    'The matching primary row must expose a visible task-target marker included in the worker result signature.',
+      && !worker.includes('buildResultSignature'),
+    'The matching primary row must expose a task marker, and no partial signature may suppress updated Worker facts.',
   );
   assert.ok(service.includes('order.automationAllowed !== false'),
     'Per-order automation policy must gate favorite-only primary normalization.');
@@ -880,10 +881,7 @@ async function assertSourceContracts() {
     'The recommendation worker input signature must include mission-priority preference changes.',
   );
   assert.ok(
-    workbench.includes(
-      'prioritizeMissionRecipe: companionPreferences.missionRecipePriorityEnabled\n'
-        + '            && !snapshot?.specialBusiness?.active',
-    ),
+    /prioritizeMissionRecipe:\s*companionPreferences\.missionRecipePriorityEnabled\s*&&\s*!snapshot\?\.specialBusiness\?\.active/.test(workbench),
     'The global game target selector must receive the persisted mission-pinning preference only in ordinary business.',
   );
   assert.ok(
@@ -892,9 +890,9 @@ async function assertSourceContracts() {
     'Rare and normal list pinning must remain independently controlled.',
   );
   assert.ok(
-    workbench.includes('recipeVariantEnabled: companionPreferences.rareGameUiPinningEnabled')
+    /recipeVariantEnabled:\s*companionPreferences\.rareGameUiPinningEnabled/.test(workbench)
       && workbench.includes('&& companionPreferences.rareRecipeVariantEnabled')
-      && workbench.includes('recipeVariantEnabled: companionPreferences.normalGameUiPinningEnabled')
+      && /recipeVariantEnabled:\s*companionPreferences\.normalGameUiPinningEnabled/.test(workbench)
       && workbench.includes('&& companionPreferences.normalRecipeVariantEnabled')
       && workbench.includes('seatHighlightEnabled: companionPreferences.rareSeatHighlightEnabled')
       && workbench.includes('seatHighlightEnabled: companionPreferences.normalSeatHighlightEnabled')

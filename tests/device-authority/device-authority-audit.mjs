@@ -305,7 +305,7 @@ function requestHeaders(client, authorityRevision, json) {
 async function verifyFrontendSharedProfileBoundaries() {
   const vite = await createServer({
     configFile: 'apps/companion/vite.config.ts',
-    server: { middlewareMode: true, hmr: false },
+    server: { middlewareMode: true, hmr: false, watch: null },
     appType: 'custom',
   });
   try {
@@ -631,7 +631,10 @@ async function verifySharedProfileContract() {
     readFile('mods/bepinex/src/LocalApi/CompanionDeviceAuthorityStore.cs', 'utf8'),
     readFile('apps/companion/src/companion/hooks/useCompanionDeviceAuthority.ts', 'utf8'),
     readFile('apps/companion/src/companion/ModWorkbench.tsx', 'utf8'),
-    readFile('apps/companion/src/companion/pages/ModSettingsPanel.tsx', 'utf8'),
+    Promise.all([
+      readFile('apps/companion/src/companion/pages/settings/WindowSettingsPanel.tsx', 'utf8'),
+      readFile('apps/companion/src/companion/pages/settings/RecommendationSettingsPanel.tsx', 'utf8'),
+    ]).then((sources) => sources.join('\n')),
   ]);
   const interfaceBody = requireBlock(
     typescriptSource,
@@ -728,7 +731,7 @@ async function verifySharedProfileContract() {
     !workbenchSource.includes('const updateCompanionPreferences = useCallback')
       && settingsSource.includes('onLocalPreferenceChange: (next: Partial<LocalCompanionPreferences>)')
       && settingsSource.includes('onSharedPreferenceChange: (next: Partial<SharedCompanionPreferences>)'),
-    'The removed untyped preference mutation path must not remain in the settings composition root.',
+    'Local appearance and shared recommendation settings must retain separate typed mutation commands.',
   );
 }
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
+import { readAutomationSources } from '../helpers/automation-source.mjs';
 
 const root = new URL('../../', import.meta.url);
 const vite = await createServer({
@@ -424,7 +425,7 @@ async function assertSourceContracts() {
   ] = await Promise.all([
     readFile(new URL('apps/companion/src/companion/domain/cookers.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readAutomationSources(),
     readFile(new URL('apps/companion/src/companion/hooks/useCompanionConnection.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
@@ -586,7 +587,7 @@ async function assertSourceContracts() {
   );
   assert.match(
     workbench,
-    /const cookerReservationByOrderKey = new Map<string, CookerControllerReservation>\(\);[\s\S]*toCookerControllerReservation\(reservation\)[\s\S]*cookerReservationByOrderKey\.set\(orderKey, exactReservation\);[\s\S]*completeFirstNormalOrder\([\s\S]*requestPreferences\.autoNormalStartCooking\s*\? cookerReservationByOrderKey\.get\(orderKey\) \?\? null\s*: null,/,
+    /const cookerReservationByOrderKey = new Map<string, CookerControllerReservation>\(\);[\s\S]*toCookerControllerReservation\(reservation\)[\s\S]*cookerReservationByOrderKey\.set\(orderKey, exactReservation\);[\s\S]*completeFirstNormalOrder\([\s\S]*requestPreferences\.autoNormalStartCooking\s*\? \(?cookerReservationByOrderKey\.get\(orderKey\) \?\? null\)?\s*: null,/,
     'Normal scheduling must retain each first-pass reservation by order key and reuse it for that order request.',
   );
 

@@ -38,7 +38,8 @@ try {
   await page.request.post(`${apiUrl}/logs/config?aggregateLogMaxFiles=30`, {
     headers: { 'X-Mystia-Steward-Companion-Token': apiToken },
   });
-  await top('日志');
+  await top('设置');
+  await page.locator('[data-settings-tabs]').getByRole('tab', { name: '日志', exact: true }).click();
   const count = page.getByRole('textbox', { name: '文件上限', exact: true });
   await page.waitForFunction(() => document.querySelector('#logs-max-file-count')?.value === '30');
   const posts = [];
@@ -104,7 +105,8 @@ try {
   assert.equal(await desktopItem.evaluate((element) => document.activeElement === element), true);
   assert.equal(await page.locator('[data-help-detail-title]').textContent(), '常用快捷键');
 
-  await page.getByRole('tab', { name: '连接', exact: true }).click();
+  await top('概览');
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '主机网络', exact: true }).click();
   const lanSwitch = page.locator('[data-setting-help-id="connection-lan-enabled"] input[type="checkbox"]');
   await waitEnabled(lanSwitch);
 
@@ -134,6 +136,7 @@ try {
   await page.locator('[data-gamepad-focus-key="settings:connection:reset-token:confirm"]').click();
   await tokenResetReady;
   await top('概览');
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '客户端', exact: true }).click();
   const connectionToggle = page.locator('[data-gamepad-focus-key="overview:connection:toggle"]');
   const connectionStatus = page.locator('[data-overview-connection-status-metric="connection"]');
   await connectionToggle.click();
@@ -158,7 +161,8 @@ try {
   assert.ok(snapshotTokens.every((token) => token === regeneratedToken), '恢复只使用已确认的新 Token');
   page.off('request', observeSnapshot);
   await top('设置');
-  await page.getByRole('tab', { name: '连接', exact: true }).click();
+  await top('概览');
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '主机网络', exact: true }).click();
   await waitEnabled(lanSwitch);
 
   // A settings write remains owned after leaving the page. Applying a new
@@ -182,13 +186,16 @@ try {
   };
   page.on('request', countConfigReads);
   await top('概览');
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '客户端', exact: true }).click();
   await page.locator('[data-overview-connection-token]').press('Enter');
   await top('设置');
-  await page.getByRole('tab', { name: '连接', exact: true }).click();
+  await top('概览');
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '主机网络', exact: true }).click();
   assert.equal(await lanSwitch.isDisabled(), true, '同地址重连和设置页重挂载不能提前解除旧写占用');
   assert.equal(configReadsDuringWrite, 0, '旧写处理期间不读取可能尚未确认的配置');
   page.off('request', countConfigReads);
   await top('概览');
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '客户端', exact: true }).click();
   await page.locator('[data-overview-connection-token]').fill('replacement-token');
   await page.locator('[data-overview-connection-token]').press('Enter');
   releaseWrite();

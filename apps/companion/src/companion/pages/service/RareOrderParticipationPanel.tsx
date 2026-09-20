@@ -43,7 +43,7 @@ export interface RareOrderParticipationPanelProps {
 }
 
 /**
- * “经营中 · 稀客队列”独立 Tab 内容。
+ * “经营 · 稀客调度”中的当前订单队列。
  *
  * 分组按规范的 guestId 展示，但操作参数是当前状态中的全部订单实例。新订单在
  * 下一次状态更新中仍默认暂停，不会被过去的稀客级点击意外启用。
@@ -150,7 +150,7 @@ export function RareOrderParticipationPanel({
         <EmptyState text="当前未进入夜间经营，开始经营后这里会显示调度名单内的稀客订单。" />
       )}
       {businessActive && managedCount === 0 && (
-        <EmptyState text="稀客调度名单为空。请先在“扩展功能 → 稀客调度”中添加稀客。" />
+        <EmptyState text="稀客调度名单为空。请在下方“调度名单”中添加稀客。" />
       )}
       {businessActive && managedCount > 0 && groups.length === 0 && (
         <EmptyState text="当前订单中没有调度名单内的稀客。" />

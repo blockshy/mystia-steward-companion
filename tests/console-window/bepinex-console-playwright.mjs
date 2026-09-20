@@ -35,7 +35,8 @@ try {
   await page.waitForFunction(() => Boolean(navigator.getGamepads?.()[0]?.connected));
   await page.locator('[data-gamepad-tab-value="overview"]').click();
   await page.waitForFunction(() => document.body.innerText.includes('1.0.5'), null, { timeout: 10000 });
-  await page.locator('[data-gamepad-tab-value="logs"]').click();
+  await page.locator('[data-gamepad-tab-value="settings"]').click();
+  await page.locator('[data-settings-tabs]').getByRole('tab', { name: '日志', exact: true }).click();
 
   const showButton = page.getByRole('button', { name: '显示控制台', exact: true });
   await assertButtonReady(showButton, 'logs:toggle-bepinex-console');
@@ -146,7 +147,8 @@ try {
   assert.equal(await endpointInput.inputValue(), API_URL);
   await endpointInput.fill('http://192.168.1.20:32145');
   await endpointInput.press('Enter');
-  await page.locator('[data-gamepad-tab-value="logs"]').click();
+  await page.locator('[data-gamepad-tab-value="settings"]').click();
+  await page.locator('[data-settings-tabs]').getByRole('tab', { name: '日志', exact: true }).click();
   await page.getByText('仅可在游戏电脑本机控制 BepInEx 控制台。', { exact: true })
     .waitFor({ state: 'visible' });
   await page.waitForTimeout(800);

@@ -16,19 +16,18 @@ export type ModTab =
   | 'overview'
   | 'recommendations'
   | 'service'
+  | 'automation'
   | 'extensions'
-  | 'logs'
   | 'settings';
-export type OverviewTab = 'connection' | 'status' | 'inventory' | 'actions';
-export type RecommendationTab = 'normal' | 'rare' | 'custom-recipes' | 'favorites';
-export type ExtensionTab = 'missions' | 'rare-invitations' | 'rare-participation' | 'inventory';
+export type OverviewTab = 'connection' | 'network' | 'devices' | 'status';
+export type RecommendationTab = 'normal' | 'rare' | 'custom-recipes' | 'favorites' | 'rules';
+export type ExtensionTab = 'missions' | 'rare-invitations' | 'inventory';
 export type SettingsTab =
   | 'window'
-  | 'connection'
-  | 'recommendation'
-  | 'experimental'
+  | 'input'
   | 'updates'
-  | 'help';
+  | 'help'
+  | 'logs';
 export type RareGuestInvitationScope = 'current' | 'all';
 export type TrackedMissionStatus = 'unverified' | 'tracking' | 'fulfilled';
 export type TrackedMissionRuntimeStatus =

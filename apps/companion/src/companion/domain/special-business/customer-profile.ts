@@ -5,10 +5,12 @@ export function resolveExactSpecialBusinessCustomer(
   data: RecommendationDataSet,
   canonicalGuestId: number,
 ): RareCustomerCatalogItem | null {
-  const profile = data.rareCustomerProfiles.find(
+  if (!Number.isSafeInteger(canonicalGuestId) || canonicalGuestId < 0) return null;
+  const profiles = data.rareCustomerProfiles.filter(
     (candidate) => candidate.id === canonicalGuestId,
   );
-  if (!profile) return null;
+  if (profiles.length !== 1) return null;
+  const profile = profiles[0];
 
   return {
     id: profile.id,

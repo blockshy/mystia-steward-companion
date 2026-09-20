@@ -35,7 +35,7 @@ const preferencesSource = readFileSync('apps/companion/src/companion/preferences
 const apiSource = readFileSync('apps/companion/src/companion/api.ts', 'utf8');
 const targetsSource = readFileSync('apps/companion/src/companion/domain/game-ui-targets.ts', 'utf8');
 const publisherSource = readFileSync('apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', 'utf8');
-const settingsSource = readFileSync('apps/companion/src/companion/pages/ModSettingsPanel.tsx', 'utf8');
+const settingsSource = readFileSync('apps/companion/src/companion/pages/settings/GameUiSettingsPanel.tsx', 'utf8');
 const helpContentSource = readFileSync('apps/companion/src/data/help-content.json', 'utf8');
 assert(
   /rareRecipeVariantEnabled:\s*readStoredBoolean\([^,]+,\s*false\)/.test(preferencesSource)
@@ -81,7 +81,7 @@ assert(
 );
 assert(
   settingsSource.includes('data-experimental-risk-notice="true"')
-    && settingsSource.includes('自动化和加料料理选项会直接改变游戏状态，存在一定风险。'),
+    && settingsSource.includes('加料料理选项会直接改变游戏状态，存在一定风险。'),
   '实验性功能页面必须集中显示风险提示',
 );
 assert(
@@ -615,8 +615,8 @@ try {
     '酒水单独送达时错误清空了仍未送达的料理和厨具目标',
   );
 
-  await page.locator('[data-gamepad-tab-value="settings"]').first().click();
-  await page.getByRole('tab', { name: '实验性功能', exact: true }).first().click();
+  await page.locator('[data-gamepad-tab-value="service"]').first().click();
+  await page.getByRole('tab', { name: '游戏辅助', exact: true }).first().click();
   const pinningSwitchLabel = page.getByText('稀客游戏界面置顶推荐', { exact: true }).first();
   assert(await pinningSwitchLabel.count(), '未找到稀客游戏界面置顶开关');
 
@@ -656,7 +656,8 @@ try {
       const events = window.__uiPinningWorkerEvents;
       const received = events.filter((event) => 'receivedAt' in event).length;
       const dispatched = events.filter((event) => 'dispatchedAt' in event).length;
-      return received > 0 && received === dispatched;
+      const discarded = events.filter((event) => 'discardedAt' in event).length;
+      return received > 0 && received === dispatched + discarded;
     }),
     5_000,
     '计算中状态巡检的 Worker 响应未完成派发',
@@ -897,7 +898,10 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
     window.__uiPinningWorkerHoldSuccess = false;
     const heldResponses = window.__uiPinningWorkerHeldResponses.splice(0);
     for (const held of heldResponses) {
-      if (held.worker.delayedOnMessage !== held.listener) continue;
+      if (held.worker.delayedOnMessage !== held.listener) {
+        window.__uiPinningWorkerEvents.push({ requestId: held.data?.requestId, discardedAt: Date.now() });
+        continue;
+      }
       window.__uiPinningWorkerEvents.push({
         requestId: held.data?.requestId,
         dispatchedAt: Date.now(),
@@ -913,7 +917,10 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
         const delayMs = Number(window.__uiPinningWorkerDelayMs || 0);
         window.__uiPinningWorkerEvents.push({ requestId: event.data?.requestId, delayMs, receivedAt: Date.now() });
         const dispatch = () => {
-          if (this.delayedOnMessage !== listener) return;
+          if (this.delayedOnMessage !== listener) {
+            window.__uiPinningWorkerEvents.push({ requestId: event.data?.requestId, discardedAt: Date.now() });
+            return;
+          }
           const reject = Boolean(window.__uiPinningWorkerRejectNext && event.data?.ok);
           const hold = Boolean(window.__uiPinningWorkerHoldSuccess && event.data?.ok && !reject);
           if (hold) {

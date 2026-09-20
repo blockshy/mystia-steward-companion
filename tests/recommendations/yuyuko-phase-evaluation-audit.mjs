@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { readSourceGroup } from './source-groups.mjs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
 });
 let yuyukoPositiveSpellModule;
@@ -731,7 +732,6 @@ function assertRuntimeYuyukoProfileProjection() {
     { version: 1, recipes: [], beverages: [] },
     { version: 1, enabled: true, recipes: [] },
     selectionArgs.preferences,
-    [],
     yuyukoRuleContext,
     [],
     runtimeData,
@@ -759,7 +759,6 @@ function assertRuntimeYuyukoProfileProjection() {
     { version: 1, recipes: [], beverages: [] },
     { version: 1, enabled: true, recipes: [] },
     selectionArgs.preferences,
-    [],
     yuyukoRuleContext,
     [],
     runtimeData,
@@ -790,7 +789,6 @@ function assertRuntimeYuyukoProfileProjection() {
     { version: 1, recipes: [], beverages: [] },
     { version: 1, enabled: true, recipes: [] },
     selectionArgs.preferences,
-    [],
     yuyukoRuleContext,
     [],
     dataWithoutBaseProfile,
@@ -1135,7 +1133,6 @@ function buildYuyukoRareServiceRecommendation({
       filterMissingCookers: true,
       recommendationBudgetPolicy: 'block',
     }),
-    [],
     { ...yuyukoRuleContext, challengeType },
     [],
     data,
@@ -1265,7 +1262,7 @@ async function assertSourceContracts() {
     runtimeOrderPreparationService,
     runtimeOrderDirectDelivery,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
+    readSourceGroup('service'),
     readFile(new URL('apps/companion/src/recommendation-engine/sort-profile.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/rules/types.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/special-business/rules/yuyuko.ts', root), 'utf8'),
@@ -1275,11 +1272,11 @@ async function assertSourceContracts() {
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/YuyukoFoodModifierContract.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.FoodModifierValidation.cs', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readSourceGroup('workbench'),
     readFile(new URL('apps/companion/src/companion/automation-state.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readSourceGroup('orderWorker'),
     readFile(new URL('mods/bepinex/src/LocalApi/OrderPreparationModels.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/LocalApi/LocalApiServer.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs', root), 'utf8'),
@@ -1287,20 +1284,16 @@ async function assertSourceContracts() {
   ]);
 
   const recommendationSources = `${service}\n${sortProfile}\n${ruleTypes}\n${yuyukoRule}`;
-  const workerDataResolver = functionSlice(
-    orderRecommendationWorker,
-    'resolveRecommendationData',
-    'now',
-  );
   for (const cacheName of ['orders', 'foodCandidates', 'beverageCandidates']) {
     assert.ok(
-      workerDataResolver.includes(`recommendationCaches.${cacheName}.clear()`),
-      `Worker 数据版本变化时必须清空 ${cacheName} 缓存。`,
+      service.includes(`caches.${cacheName}.clear()`),
+      `推荐数据版本变化时必须由缓存所有者清空 ${cacheName} 缓存。`,
     );
   }
   assert.ok(
-    workerDataResolver.includes('cachedDataSignature !== payload.dataSignature'),
-    'Worker 候选缓存必须按完整推荐数据签名切换版本。',
+    service.includes('caches.dataSignature !== dataSignature')
+      && orderRecommendationWorker.includes("code: error instanceof RecommendationDataCacheMiss ? 'data-cache-miss'"),
+    '候选缓存按完整数据签名切换版本，Worker 缓存缺失使用结构化错误。',
   );
   assert.equal(recommendationSources.includes('preferYuyukoSafeEvaluation'), false,
     '已移除的跨阶段安全评价标记不得残留。');
@@ -1515,8 +1508,8 @@ async function assertSourceContracts() {
     'SparrowSeries 厨具来源标记不得依赖本地化显示名过滤。');
 
   assert.ok(companionApi.includes('expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join')
-    && orderRecommendationWorker.includes("item.target?.expectedFoodModifierTags.join(',')"),
-  '预期 modifier 标签必须进入 API 请求和后台计算结果标识。');
+    && !orderRecommendationWorker.includes('buildResultSignature'),
+  '预期 modifier 标签必须进入 API 请求，后台完整结果不能被部分签名忽略。');
   const rareOrderApi = functionSlice(
     companionApi,
     'rareOrderAction',
@@ -1540,19 +1533,20 @@ async function assertSourceContracts() {
     && automationState.includes('target.specialTargetRevision === specialTargetRevision'),
   '普客自动化状态必须明确固定完整执行目标及其本场经营编号，并以目标签名和独立修订号提供有效性判断和清理入口。');
   const normalTargetSelectionContract = sourceSlice(
-    workbench,
+    await readFile(new URL('apps/companion/src/companion/domain/automation-target.ts', root), 'utf8'),
     'function getNormalAutomationTargetSelection(',
-    'function buildNormalOrderWorkerPayload(',
+    'function matchesSpecialTargetPolicy(',
   );
   assert.ok(normalTargetSelectionContract.includes('if (!requiresSpecialTarget)')
     && normalTargetSelectionContract.indexOf('if (currentExecutionTarget)')
       < normalTargetSelectionContract.indexOf('if (!requiresRecipeTarget)')
-    && normalTargetSelectionContract.includes('const missingTargetMessage = \'特殊经营料理目标未在执行前固定，自动化已暂停该订单。\'')
-    && normalTargetSelectionContract.includes('policyError: missingTargetMessage')
+    && normalTargetSelectionContract.includes('const message = \'特殊经营料理目标未在执行前固定，自动化已暂停该订单。\'')
+    && normalTargetSelectionContract.includes('return unavailable(message, message)')
     && workbench.includes('const normalOrdersRequireSpecialExecutionTarget = (snapshot?.normalBusiness?.orders ?? []).some('),
   '普通订单不得进入特殊目标检查；特殊经营已固定目标必须优先传递，缺失时酒水与评价阶段也必须停止相关功能。');
   assert.ok(workbench.includes('getCurrentNormalOrderExecutionTarget(')
-    && workbench.includes('target: applySpecialFoodTargetWirePolicy(currentExecutionTarget, targetPolicy)')
+    && normalTargetSelectionContract.includes('target: currentExecutionTarget')
+    && !normalTargetSelectionContract.includes('applySpecialFoodTargetWirePolicy')
     && workbench.includes('currentState = lockNormalOrderExecutionTarget(')
     && workbench.indexOf('currentState = lockNormalOrderExecutionTarget(')
       < workbench.lastIndexOf('completeFirstNormalOrder(')

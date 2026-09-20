@@ -2,7 +2,6 @@ import type { CompanionPreferences } from '@/companion/preferences';
 import type {
   CustomRecipeData,
   FavoriteData,
-  NightBusinessGuest,
   NightBusinessOrder,
   NormalBusinessOrder,
   OrderRecommendation,
@@ -35,7 +34,6 @@ export interface OrderRecommendationWorkerPayload {
   favorites: FavoriteData;
   customRecipes: CustomRecipeData;
   preferences: CompanionPreferences;
-  activeRareGuests: NightBusinessGuest[];
   normalOrders?: NormalBusinessOrder[];
   includeNormalOrderDetails?: boolean;
   includeNormalExecutionTargets?: boolean;
@@ -63,10 +61,10 @@ export type OrderRecommendationWorkerResponse =
     requestId: number;
     ok: true;
     result: OrderRecommendationResult;
-    signature: string;
   }
   | {
     requestId: number;
     ok: false;
+    code: 'data-cache-miss' | 'calculation-failed';
     error: string;
   };

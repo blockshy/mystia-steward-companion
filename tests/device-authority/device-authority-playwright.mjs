@@ -151,8 +151,7 @@ try {
   checkpoints.push('A 正在处理的配置 POST 跨断开/重连保持传输阻断，响应后按新连接轮次重新注册并采用服务端生效配置');
 
   await openConnection(clientB.page);
-  await clickDeviceAction(clientB.page, devices.b.id, '同步配置');
-  await waitForState(devices.b, (next) => Boolean(next.pendingSyncId));
+  await requestAndAssertPendingSync(clientB.page, devices.b.id);
   await refreshDevices(clientB.page);
   state = await waitForState(devices.a, (next) => {
     const device = next.devices.find((item) => item.deviceId === devices.b.id);
@@ -201,8 +200,7 @@ try {
   checkpoints.push('未同步的 C 成为主设备后，C 保存的完整配置成为唯一生效值并覆盖三端 UI');
 
   await openConnection(clientA.page);
-  await clickDeviceAction(clientA.page, devices.a.id, '同步配置');
-  await waitForState(devices.a, (next) => Boolean(next.pendingSyncId));
+  await requestAndAssertPendingSync(clientA.page, devices.a.id);
   await refreshDevices(clientA.page);
   await waitForState(devices.c, (next) => {
     const device = next.devices.find((item) => item.deviceId === devices.a.id);
@@ -341,13 +339,14 @@ function seedClientStorage({ apiUrl: endpoint, apiToken: token, storagePrefix: p
 }
 
 async function openConnection(page) {
-  await openSettingsSection(page, '连接');
+  await page.locator('[data-gamepad-tab-value="overview"]').first().click();
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '设备共享', exact: true }).click();
   await page.locator('[data-device-authority-content]').waitFor({ state: 'visible', timeout: 5_000 });
 }
 
 async function setOverviewConnectionEnabled(page, enabled) {
   await page.locator('[data-gamepad-tab-value="overview"]').first().click();
-  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '连接', exact: true }).click();
+  await page.locator('[data-overview-tabs]').getByRole('tab', { name: '客户端', exact: true }).click();
   const field = page.locator('[data-gamepad-focus-key="overview:connection:toggle"]');
   const input = field.locator('input[type="checkbox"]');
   await input.waitFor({ state: 'visible', timeout: 5_000 });
@@ -362,14 +361,20 @@ async function setOverviewConnectionEnabled(page, enabled) {
 }
 
 async function openSettingsSection(page, label) {
-  const topTab = page.locator('[data-gamepad-tab-value="settings"]').first();
+  assert.equal(label, '推荐');
+  const topTab = page.locator('[data-gamepad-tab-value="recommendations"]').first();
   await topTab.click();
-  const trigger = page.locator('[data-settings-tabs]').getByRole('tab', { name: label, exact: true });
+  const trigger = page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '推荐规则', exact: true });
   await trigger.click();
   await page.waitForTimeout(80);
 }
 
 async function openExtensionSection(page, label) {
+  if (label === '稀客调度') {
+    await page.locator('[data-gamepad-tab-value="service"]').first().click();
+    await page.locator('[data-service-tabs]').getByRole('tab', { name: label, exact: true }).click();
+    return;
+  }
   await page.locator('[data-gamepad-tab-value="extensions"]').first().click();
   await page.locator('[data-extension-tabs]').getByRole('tab', { name: label, exact: true }).click();
   await page.waitForTimeout(80);
@@ -459,6 +464,17 @@ async function refreshDevices(page) {
   await waitForEnabled(button);
   await button.click();
   await waitForEnabled(button);
+}
+
+async function requestAndAssertPendingSync(page, deviceId) {
+  const responsePromise = page.waitForResponse((response) => (
+    response.url() === `${apiUrl}/devices/sync` && response.request().method() === 'POST'
+  ));
+  await clickDeviceAction(page, deviceId, '同步配置');
+  const response = await responsePromise;
+  assert.equal(response.ok(), true);
+  const state = await response.json();
+  assert.ok(state.pendingSyncId, 'Sync response must contain the pending transaction before the client acknowledges it.');
 }
 
 async function waitForEnabled(locator) {

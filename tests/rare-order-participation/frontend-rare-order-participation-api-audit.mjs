@@ -24,7 +24,7 @@ child.stderr.on('data', (chunk) => { childOutput += chunk.toString(); });
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true, hmr: false },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
   logLevel: 'error',
 });

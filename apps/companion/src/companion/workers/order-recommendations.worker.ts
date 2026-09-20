@@ -26,6 +26,8 @@ const recommendationCaches = createRecommendationCacheStore();
 let cachedData: RecommendationDataSet | null = null;
 let cachedDataSignature = '';
 
+class RecommendationDataCacheMiss extends Error {}
+
 workerScope.onmessage = (event) => {
   const { requestId, payload: runtimePayload } = event.data;
 
@@ -46,7 +48,6 @@ workerScope.onmessage = (event) => {
       payload.favorites,
       payload.customRecipes,
       payload.preferences,
-      payload.activeRareGuests,
       payload.specialBusiness ?? null,
       payload.specialBusinessRejectedRecipeKeys ?? [],
       payload.data,
@@ -90,12 +91,12 @@ workerScope.onmessage = (event) => {
       requestId,
       ok: true,
       result,
-      signature: buildResultSignature(result),
     });
   } catch (error) {
     workerScope.postMessage({
       requestId,
       ok: false,
+      code: error instanceof RecommendationDataCacheMiss ? 'data-cache-miss' : 'calculation-failed',
       error: error instanceof Error ? error.message : String(error),
     });
   }
@@ -105,11 +106,6 @@ function resolveRecommendationData(
   payload: OrderRecommendationWorkerRequest['payload'],
 ): RecommendationDataSet {
   if (payload.data) {
-    if (cachedData && cachedDataSignature !== payload.dataSignature) {
-      recommendationCaches.orders.clear();
-      recommendationCaches.foodCandidates.clear();
-      recommendationCaches.beverageCandidates.clear();
-    }
     cachedData = payload.data;
     cachedDataSignature = payload.dataSignature;
     return payload.data;
@@ -119,7 +115,7 @@ function resolveRecommendationData(
     return cachedData;
   }
 
-  throw new Error('推荐数据尚未初始化，等待下一次游戏数据更新。');
+  throw new RecommendationDataCacheMiss('推荐数据尚未初始化，等待下一次游戏数据更新。');
 }
 
 function now(): number {
@@ -150,82 +146,5 @@ function buildNormalExecutionTargets(
     });
 }
 
-function buildResultSignature(result: OrderRecommendationResult): string {
-  return [
-    result.recommendations.map((item) => [
-      item.order.traceId ?? '',
-      item.order.deskCode,
-      item.order.guestId ?? '',
-      item.order.runtimeGuestId ?? '',
-      item.order.guestName,
-      item.order.foodTagId,
-      item.order.foodTag,
-      item.order.beverageTagId,
-      item.order.beverageTag,
-      item.order.specialBusinessRole ?? '',
-      item.order.firstSeenAtUtc ?? '',
-      item.order.isFreeOrder ? 1 : 0,
-      item.order.hasServedFood ? 1 : 0,
-      item.order.hasServedBeverage ? 1 : 0,
-      item.blockedMessages.join('~'),
-      item.blockedDiagnostic?.stateSignature ?? '',
-      item.executionPlans.map((plan) => [
-        plan.bucket,
-        plan.food?.recipe.id ?? '',
-        plan.food?.recipe.recipeId ?? '',
-        plan.food?.extraIngredients.map((ingredient) => ingredient.id).join(',') ?? '',
-        plan.beverage?.beverage.id ?? '',
-        plan.estimatedPrice,
-        plan.reasons.join(','),
-      ].join(':')).join(';'),
-      item.recipes.map((recipe) => [
-        recipe.recipe.id,
-        recipe.recipe.recipeId,
-        recipe.extraIngredients.map((ingredient) => ingredient.id).join(','),
-        recipe.meetsRequiredFood ? 1 : 0,
-        recipe.missionTarget ? 1 : 0,
-        recipe.allTags.join(','),
-      ].join(':')).join(';'),
-      item.beverages.map((beverage) => [
-        beverage.beverage.id,
-        beverage.meetsRequiredBev ? 1 : 0,
-        beverage.matchedTags.join(','),
-      ].join(':')).join(';'),
-    ].join('|')).join('\n'),
-    result.recommendationIssues.map((issue) => [
-      issue.order.traceId ?? '',
-      issue.order.deskCode,
-      issue.order.guestId ?? '',
-      issue.order.runtimeGuestId ?? '',
-      issue.order.foodTagId,
-      issue.order.beverageTagId,
-      issue.message,
-    ].join('|')).join('\n'),
-    result.normalOrderDetailPlans.map((plan) => JSON.stringify(plan)).join('\n'),
-    result.normalExecutionTargets.map((item) => [
-      item.orderKey,
-      item.message,
-      item.target?.foodId ?? '',
-      item.target?.recipeId ?? '',
-      item.target?.executionMode ?? '',
-      item.target?.allowYuumaControlledProgression ? 1 : 0,
-      item.target?.recipeName ?? '',
-      item.target?.extraIngredientIds.join(',') ?? '',
-      item.target?.beverageId ?? '',
-      item.target?.beverageName ?? '',
-      item.target?.reason ?? '',
-      item.target?.foodTags.join(',') ?? '',
-      item.target?.expectedFoodModifierTags.join(',') ?? '',
-      item.target?.beverageTags.join(',') ?? '',
-      item.target?.specialTargetChallenge ?? '',
-      item.target?.specialTargetOwner ?? '',
-      item.target?.specialTargetGeneration ?? '',
-      item.target?.specialTargetRevision ?? '',
-      item.target?.specialTargetFoodTags.join(',') ?? '',
-      item.target?.specialTargetMatchMode ?? '',
-      item.target?.specialTargetSignature ?? '',
-    ].join('|')).join('\n'),
-  ].join('\n---\n');
-}
 
 export {};

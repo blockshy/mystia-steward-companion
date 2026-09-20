@@ -1,5 +1,5 @@
 import { buildRuntimeSets } from '@/companion/domain/cookers';
-import { buildRecommendationRuntimeContext } from '@/companion/domain/service-recommendations';
+import { buildRecommendationRuntimeContext } from '@/companion/domain/recommendation-runtime-context';
 import { normalizeSpecialBusinessTags } from '@/companion/domain/special-business/rules';
 import { emptySpecialFoodTargetWirePolicy } from '@/companion/domain/special-business/target-policy';
 import type { CompanionPreferences } from '@/companion/preferences';

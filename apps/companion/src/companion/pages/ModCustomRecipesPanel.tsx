@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   Badge,
@@ -17,6 +17,7 @@ import {
   compareCustomRecipeEntries,
   normalizeIdList,
 } from '@/companion/domain/custom-recipes';
+import type { CustomRecipeAvailability } from '@/companion/domain/custom-recipe-resource';
 import {
   CUSTOM_RECIPE_ALL_FOOD_TAG_VALUE,
   createEmptyCustomRecipeForm,
@@ -50,7 +51,8 @@ import type { IngredientCatalogItem, RareCustomerCatalogItem, RecipeCatalogItem 
 const MAX_FOOD_INGREDIENT_COUNT = 5;
 
 interface ModCustomRecipesPanelProps {
-  apiToken: string;
+  customRecipeAvailability: CustomRecipeAvailability;
+  onRefreshCustomRecipes: () => Promise<void>;
   customRecipes: CustomRecipeData;
   customRecipeBusyKey: string;
   customRecipeError: string;
@@ -75,7 +77,8 @@ interface CustomRecipeGroup {
 }
 
 export function ModCustomRecipesPanel({
-  apiToken,
+  customRecipeAvailability,
+  onRefreshCustomRecipes,
   customRecipes,
   customRecipeBusyKey,
   customRecipeError,
@@ -94,6 +97,13 @@ export function ModCustomRecipesPanel({
   const panelRef = useRef<HTMLDivElement>(null);
   const editorHeadingRef = useRef<HTMLHeadingElement>(null);
   const returnFocusKeyRef = useRef<string | null>(null);
+  const mountedRef = useRef(false);
+  const formRef = useRef(form);
+  useLayoutEffect(() => { formRef.current = form; }, [form]);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const dataIndexes = useMemo(() => buildRecommendationDataIndexes(data), [data]);
   const customers = useMemo(
     () => getAllRareCustomers(data)
@@ -180,7 +190,6 @@ export function ModCustomRecipesPanel({
   const busy = Boolean(customRecipeBusyKey);
   const summary = summarizeEntries(entries);
   const formError = buildFormError({
-    apiToken,
     form,
     selectedCustomer,
     selectedRecipe,
@@ -209,7 +218,8 @@ export function ModCustomRecipesPanel({
     });
   };
   const saveForm = async () => {
-    if (!selectedCustomer || !selectedRecipe || formError) return;
+    if (!selectedCustomer || !selectedRecipe || formError || !customRecipeAvailability.canWrite) return;
+    const submittedForm = form;
     const creating = !form.editingId;
     const ok = await onUpsertCustomRecipe({
       id: form.editingId || undefined,
@@ -224,7 +234,7 @@ export function ModCustomRecipesPanel({
       pinToTop: creating ? form.pinToTop : undefined,
       sortOrder: form.sortOrder,
     });
-    if (ok) resetForm();
+    if (ok && mountedRef.current && formRef.current === submittedForm) resetForm();
   };
 
   if (!runtimeSets) {
@@ -232,13 +242,13 @@ export function ModCustomRecipesPanel({
   }
 
   return (
-    <div ref={panelRef} className="space-y-4">
+    <div ref={panelRef} className="space-y-4" data-custom-recipes-current={customRecipeAvailability.current}>
       <div className="steward-inline-panel space-y-3 px-3 py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <SwitchField
             label="启用自定义推荐料理"
             checked={customRecipes.enabled}
-            disabled={busy || !apiToken}
+            disabled={!customRecipeAvailability.canWrite}
             onCheckedChange={(enabled) => void onSetCustomRecipesEnabled(enabled)}
           />
           <div className="flex flex-wrap items-center gap-2">
@@ -248,10 +258,20 @@ export function ModCustomRecipesPanel({
             <Badge variant="outline">共 {summary.total}</Badge>
             <Badge variant="outline">启用 {summary.enabled}</Badge>
             <Badge variant="outline">置顶 {summary.pinned}</Badge>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={!customRecipeAvailability.canRefresh}
+              data-gamepad-focus-key="custom-recipes:refresh"
+              onClick={() => void onRefreshCustomRecipes()}
+            >
+              刷新配方
+            </Button>
           </div>
         </div>
+        {customRecipeAvailability.reason && <div role="status" className="text-sm text-muted-foreground">{customRecipeAvailability.reason}</div>}
         {customRecipeError && (
-          <div className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
+          <div role="alert" className="border border-destructive/30 px-3 py-2 text-sm text-destructive">
             {customRecipeError}
           </div>
         )}
@@ -367,7 +387,7 @@ export function ModCustomRecipesPanel({
             <Button
               type="button"
               size="sm"
-              disabled={Boolean(formError) || busy}
+              disabled={Boolean(formError) || !customRecipeAvailability.canWrite}
               data-gamepad-focus-key={`custom-recipes:form:${form.editingId || 'new'}:save`}
               onClick={saveForm}
             >
@@ -391,7 +411,7 @@ export function ModCustomRecipesPanel({
             labelPrefix="全部"
             focusScope="custom-recipes:all"
             summary={summary}
-            busy={busy}
+            busy={!customRecipeAvailability.canWrite}
             onUpdate={(flags) => void onUpdateCustomRecipeFlags({ selection: { scope: 'all' }, ...flags })}
           />
         </div>
@@ -412,7 +432,7 @@ export function ModCustomRecipesPanel({
                     labelPrefix="本组"
                     focusScope={`custom-recipes:group:${group.key}`}
                     summary={groupSummary}
-                    busy={busy}
+                    busy={!customRecipeAvailability.canWrite}
                     onUpdate={(flags) => void onUpdateCustomRecipeFlags({ selection: group.selection, ...flags })}
                   />
                 </div>
@@ -427,12 +447,13 @@ export function ModCustomRecipesPanel({
                       runtimeSets={runtimeSets}
                       dataIndexes={dataIndexes}
                       busy={busy}
+                      writable={customRecipeAvailability.canWrite}
                       onEdit={() => {
                         returnFocusKeyRef.current = `custom-recipe:${entry.id}:edit`;
                         onFormChange(entryToForm(entry));
                       }}
                       onRemove={() => void onRemoveCustomRecipe(entry.id).then((removed) => {
-                        if (removed && form.editingId === entry.id) resetForm();
+                        if (removed && mountedRef.current && formRef.current === form && form.editingId === entry.id) resetForm();
                       })}
                       onToggle={() => void onUpdateCustomRecipeFlags({
                         selection: { scope: 'entry', id: entry.id },
@@ -550,6 +571,7 @@ function CustomRecipeRow({
   runtimeSets,
   dataIndexes,
   busy,
+  writable,
   onEdit,
   onRemove,
   onToggle,
@@ -563,6 +585,7 @@ function CustomRecipeRow({
   runtimeSets: RuntimeSets;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
   busy: boolean;
+  writable: boolean;
   onEdit: () => void;
   onRemove: () => void;
   onToggle: () => void;
@@ -619,7 +642,7 @@ function CustomRecipeRow({
                 type="button"
                 size="xs"
                 variant="outline"
-                disabled={busy || index === 0}
+                disabled={!writable || index === 0}
                 data-gamepad-focus-key={`custom-recipe:${entry.id}:up`}
                 aria-label={`上移${actionTarget}`}
                 onClick={() => void onMove(entry.id, 'up')}
@@ -630,7 +653,7 @@ function CustomRecipeRow({
                 type="button"
                 size="xs"
                 variant="outline"
-                disabled={busy || index === total - 1}
+                disabled={!writable || index === total - 1}
                 data-gamepad-focus-key={`custom-recipe:${entry.id}:down`}
                 aria-label={`下移${actionTarget}`}
                 onClick={() => void onMove(entry.id, 'down')}
@@ -643,7 +666,7 @@ function CustomRecipeRow({
             type="button"
             size="xs"
             variant="outline"
-            disabled={busy}
+            disabled={!writable}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:pin`}
             aria-label={`${entry.pinToTop ? '取消置顶' : '置顶'}${actionTarget}`}
             onClick={onTogglePin}
@@ -654,7 +677,7 @@ function CustomRecipeRow({
             type="button"
             size="xs"
             variant="outline"
-            disabled={busy}
+            disabled={!writable}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:toggle`}
             aria-label={`${entry.enabled ? '停用' : '启用'}${actionTarget}`}
             onClick={onToggle}
@@ -676,7 +699,7 @@ function CustomRecipeRow({
             type="button"
             size="xs"
             variant="destructive"
-            disabled={busy}
+            disabled={!writable}
             data-gamepad-focus-key={`custom-recipe:${entry.id}:remove`}
             aria-label={`删除${actionTarget}`}
             onClick={onRemove}
@@ -824,7 +847,6 @@ function buildBaseIngredientIds(
 }
 
 function buildFormError({
-  apiToken,
   form,
   selectedCustomer,
   selectedRecipe,
@@ -833,7 +855,6 @@ function buildFormError({
   runtimeSets,
   dataIndexes,
 }: {
-  apiToken: string;
   form: CustomRecipeFormState;
   selectedCustomer: RareCustomerCatalogItem | null;
   selectedRecipe: RecipeCatalogItem | null;
@@ -842,7 +863,6 @@ function buildFormError({
   runtimeSets: RuntimeSets | null;
   dataIndexes: ReturnType<typeof buildRecommendationDataIndexes>;
 }): string {
-  if (!apiToken) return '未收到本地 API Token，无法保存自定义推荐料理。';
   if (!selectedCustomer) return form.customerId ? `当前目录未识别稀客 #${form.customerId}，请明确选择稀客后再保存。` : '请选择稀客。';
   if (!selectedRecipe) return form.foodId ? `当前目录未识别料理 #${form.foodId}，请明确选择基础料理后再保存。` : '请选择基础料理。';
   if (!runtimeSets?.recipeIds.has(selectedRecipe.id)) return '基础料理当前未解锁，请选择已解锁料理。';

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { readSourceGroup } from '../recommendations/source-groups.mjs';
 
 const [
   workbenchSource,
@@ -14,7 +15,7 @@ const [
   typesSource,
   mockSource,
 ] = await Promise.all([
-  readFile('apps/companion/src/companion/ModWorkbench.tsx', 'utf8'),
+  readSourceGroup('workbench'),
   readFile('apps/companion/src/companion/hooks/useRareOrderParticipation.ts', 'utf8'),
   readFile('apps/companion/src/companion/domain/rare-order-participation.ts', 'utf8'),
   readFile('apps/companion/src/companion/pages/ModServicePanel.tsx', 'utf8'),
@@ -36,15 +37,14 @@ for (const contract of [
   'operationalRecommendations={operationalOrderRecommendations}',
   'rareParticipationModuleEnabled={rareOrderParticipation.moduleEnabled}',
   'collectionComplete: rareOrderCollectionComplete,',
-  'const effectiveServiceRecommendationTab: ServiceRecommendationTab =',
-  'serviceRecommendationTab={effectiveServiceRecommendationTab}',
+  'serviceRecommendationTab={serviceRecommendationTab}',
   '<ModRareGuestParticipationPanel',
 ]) {
   assert.ok(workbenchSource.includes(contract), `ModWorkbench is missing rare participation wiring: ${contract}`);
 }
 assert.match(
   workbenchSource,
-  /rareOrderParticipation\.participationActive\s*\?\s*rareOrderParticipation\.projectionReady\s*\?\s*rareOrderParticipation\.projection\?\.operationalOrders/,
+  /rareOrderParticipation\.participationActive\s*\?\s*rareOrderParticipation\.projectionReady\s*\?\s*\(?rareOrderParticipation\.projection\?\.operationalOrders/,
   'Game UI target source reconciliation must use only the authoritative operational projection.',
 );
 assert.match(
@@ -62,11 +62,7 @@ assert.match(
   /const runAutoFirstOrder = useCallback[\s\S]+rareParticipationMutationBusyRef\.current[\s\S]+const runAutoNormalOrder = useCallback[\s\S]+rareParticipationMutationBusyRef\.current/,
   'Rare and normal automation entry points must both remain closed while a participation mutation is in flight.',
 );
-assert.match(
-  workbenchSource,
-  /const effectiveServiceRecommendationTab:[\s\S]+!rareOrderParticipation\.moduleEnabled\s*&&\s*serviceRecommendationTab === 'rare-queue'[\s\S]+\? 'rare'[\s\S]+setServiceRecommendationTab\(\(current\) => current === 'rare-queue' \? 'rare' : current\)/,
-  'A disabled rare scheduling module must synchronously normalize the effective queue tab and persisted tab state to rare.',
-);
+assert.ok(!workbenchSource.includes('rare-queue'), 'The removed queue sub-tab must not leave a second navigation state.');
 
 for (const contract of [
   'requestEpochRef',
@@ -112,8 +108,8 @@ for (const contract of [
 assert.ok(!domainSource.includes('recommendationOrders'), 'The removed always-visible paused recommendation path must not remain.');
 
 for (const contract of [
-  "export type ServiceRecommendationTab = 'rare' | 'rare-queue' | 'normal'",
-  'data-service-order-tab="rare-queue"',
+  "export type ServiceRecommendationTab = 'rare' | 'normal'",
+  'value="participation"',
   '<RareOrderParticipationPanel',
   'busyMutationKey={rareParticipationBusyMutationKey}',
   'onMutateGuest={onMutateRareGuestOrders}',
@@ -125,20 +121,11 @@ for (const contract of [
 ]) {
   assert.ok(serviceSource.includes(contract), `Service queue/recommendation wiring is missing: ${contract}`);
 }
-assert.match(
-  serviceSource,
-  /\{rareParticipationModuleEnabled && \(\s*<TabsTrigger[\s\S]+?value="rare-queue"/,
-  'The rare queue tab trigger must only render while the module is enabled.',
-);
-assert.match(
-  serviceSource,
-  /\{rareParticipationModuleEnabled && \(\s*<TabsContent value="rare-queue"/,
-  'The rare queue tab content must only render while the module is enabled.',
-);
-assert.ok(
-  serviceSource.includes("rareParticipationModuleEnabled && value === 'rare-queue'"),
-  'A disabled module must reject rare-queue tab selection events.',
-);
+assert.match(serviceSource, /<TabsTrigger[^>]*value="participation"[^>]*>\s*稀客调度\s*<\/TabsTrigger>/,
+  'Scheduling must keep a fixed business entry, including while the module is disabled.');
+assert.match(serviceSource, /participationSettings\(\s*rareParticipationModuleEnabled\s*\?\s*\(?\s*<RareOrderParticipationPanel/,
+  'The queue must only mount while the module is enabled.');
+assert.ok(!serviceSource.includes('rare-queue'), 'The replaced nested queue route must be removed.');
 for (const contract of [
   '<ModuleControlPanel',
   'moduleId="rare-guest-participation"',
@@ -180,7 +167,8 @@ assert.ok(apiSource.includes('action: request.action'));
 assert.ok(apiSource.includes("type: 'order'"));
 assert.ok(typesSource.includes("'suspended-participation'"));
 
-assert.match(typesSource, /export type ExtensionTab = [^;]*'rare-participation'/);
+assert.doesNotMatch(typesSource.match(/export type ExtensionTab =[^;]*;/)?.[0] ?? '', /rare-participation/);
+assert.match(serviceSource, /export type ServicePanelView = [^;]*'participation'/);
 assert.doesNotMatch(
   typesSource.match(/export type SettingsTab =[\s\S]*?;/)?.[0] ?? '',
   /rare-participation/,

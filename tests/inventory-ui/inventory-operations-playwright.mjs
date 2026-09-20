@@ -20,8 +20,8 @@ try {
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
   const top = (name) => page.locator('.steward-primary-tabs-list').getByRole('tab', { name, exact: true }).click();
   const openInventory = async () => {
-    await top('扩展功能');
-    await page.getByRole('tab', { name: '修改', exact: true }).click();
+    await top('工具');
+    await page.getByRole('tab', { name: '库存', exact: true }).click();
   };
   await top('概览');
   await page.waitForFunction(() => document.body.textContent.includes('1.0.5'));

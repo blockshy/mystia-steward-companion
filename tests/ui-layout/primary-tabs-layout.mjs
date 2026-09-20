@@ -2,8 +2,8 @@ export const EXPECTED_PRIMARY_TAB_VALUES = Object.freeze([
   'overview',
   'recommendations',
   'service',
+  'automation',
   'extensions',
-  'logs',
   'settings',
 ]);
 

@@ -113,7 +113,7 @@ try {
   await primary('overview');
   await toggle.click();
   await primary('recommendations');
-  await page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '收藏管理', exact: true }).click();
+  await page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '收藏', exact: true }).click();
   assert(await page.getByRole('button', { name: '刷新', exact: true }).isDisabled());
   assert(await page.getByRole('button', { name: /取消收藏/ }).evaluateAll((buttons) => buttons.every((button) => button.disabled)));
   const writesAtPause = favoriteWrites;

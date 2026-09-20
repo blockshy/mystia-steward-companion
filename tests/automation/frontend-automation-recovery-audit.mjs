@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { automationSourcePaths, readAutomationSources } from '../helpers/automation-source.mjs';
 import { buildCurrentSharedProfileV4 } from '../device-authority/current-v4-profile-fixture.mjs';
 import {
   assertAutomationDirectDeliveryCompletionInvariant,
@@ -586,7 +587,7 @@ async function assertOldRecoveryLogicRemoved() {
   const files = [
     'apps/companion/src/companion/automation-state.ts',
     'apps/companion/src/companion/domain/automation.ts',
-    'apps/companion/src/companion/ModWorkbench.tsx',
+    ...automationSourcePaths,
   ];
   const source = (await Promise.all(files.map(async (file) => readFile(new URL(file, root), 'utf8')))).join('\n');
   for (const removed of [
@@ -603,14 +604,14 @@ async function assertOldRecoveryLogicRemoved() {
 }
 
 async function assertStageAndControlContracts() {
-  const workbench = await readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8');
+  const workbench = await readAutomationSources();
   const domain = await readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8');
   const normalOrderKey = await readFile(new URL('apps/companion/src/companion/domain/normal-order-key.ts', root), 'utf8');
   const intervals = await readFile(new URL('apps/companion/src/companion/hooks/useOrderAutomationIntervals.ts', root), 'utf8');
   const storage = await readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8');
   const api = await readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8');
   const types = await readFile(new URL('apps/companion/src/companion/types.ts', root), 'utf8');
-  const servicePanel = await readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8');
+  const servicePanel = await readFile(new URL('apps/companion/src/companion/pages/automation/AutomationRuntimePanel.tsx', root), 'utf8');
   const stateMachine = await readFile(new URL('apps/companion/src/companion/automation-state.ts', root), 'utf8');
   const automationMachine = await readFile(new URL('apps/companion/src/companion/automation-machine.ts', root), 'utf8');
   const connection = await readFile(new URL('apps/companion/src/companion/hooks/useCompanionConnection.ts', root), 'utf8');
@@ -685,12 +686,12 @@ async function assertStageAndControlContracts() {
     'Koishi rare full-feed requests must carry completion intent into the exact runtime evaluation route.',
   );
   const stagedRarePrepareRequest = workbench.slice(
-    workbench.indexOf('const preparePreferences = {'),
+    workbench.indexOf('const preparePreferences = buildRarePreparationPreferences('),
     workbench.indexOf('const prepareResponseAt = Date.now();'),
   );
   assert.match(
     stagedRarePrepareRequest,
-    /autoPrepTakeBeverage: shouldPrepareBeverage,[\s\S]*autoPrepStartCooking: shouldPrepareFood/,
+    /buildRarePreparationPreferences\(companionPreferences, \{\s*shouldPrepareBeverage,\s*shouldPrepareFood,\s*forceKoishiFullFeedAutomation/,
     'Rare staged actions must remain controlled exclusively by the current autoPrep action gates.',
   );
   assert.match(
@@ -816,9 +817,9 @@ async function assertStageAndControlContracts() {
     'The resource overview must not reserve rare cooker capacity while rare processing is disabled.',
   );
   assert.ok(
-    workbench.includes('rareAutomationNeedsRecommendations = automationRuntimeEnabled')
+    /rareAutomationNeedsRecommendations\s*=\s*automationRuntimeEnabled/.test(workbench)
       && workbench.includes('companionPreferences.autoRareOrderEnabled')
-      && workbench.includes('resetRareStateWhenDisabled: !companionPreferences.automationEnabled'),
+      && /resetRareStateWhenDisabled:\s*!companionPreferences\.automationEnabled/.test(workbench),
     'The rare group switch must gate recommendation work and own an explicit disable transition.',
   );
   assert.match(
@@ -994,7 +995,7 @@ async function assertStageAndControlContracts() {
   assert.equal(controlReleaseEffect.includes('rareOrderStatesRef.current.delete'), false);
   assert.equal(controlReleaseEffect.includes('normalOrderStatesRef.current.delete'), false,
     'A control-state transition must retain both groups\' active cooking-job identity.');
-  assert.ok(workbench.includes('|| automationControlReleasePending) return undefined;')
+  assert.ok(/\|\|\s*automationControlReleasePending\s*\)\s*return undefined;/.test(workbench)
     && workbench.includes('if (automationControlReleasePendingRef.current) return;'),
   'Lease renewal must remain closed until the latest serialized control-state release finishes.');
   assert.ok(connection.includes('if (inFlightRequestIdRef.current !== null && !supersede) return null;')
@@ -1007,7 +1008,7 @@ async function assertStageAndControlContracts() {
   'The frontend must use the canonical explicit lease-release endpoint.');
   assert.equal(api.includes('/automation/cancel'), false);
   assert.equal(api.includes('/automation/jobs/cancel'), false);
-  assert.ok(servicePanel.includes('diagnostic.manualResolutionRequired ? \'确认已处理\' : \'重置\''));
+  assert.match(servicePanel, /diagnostic\.manualResolutionRequired\s*\? '确认已处理'\s*: '重置'/);
   assert.ok(servicePanel.includes('!diagnostic.paused || diagnostic.manualResolutionRequired'));
   assert.ok(api.includes('/automation/barriers/ack?${params.toString()}'), 'The frontend must use the canonical safety-barrier ACK endpoint.');
   assert.ok(api.includes("params.set('runtimeGuestId', String(item.order.runtimeGuestId))"), 'Rare automation must send the raw runtime guest identity.');
@@ -1023,13 +1024,13 @@ async function assertStageAndControlContracts() {
   assert.ok(domain.includes("'runtime-identity-missing'"), 'Orders with incomplete runtime identity must be skipped before automation requests.');
   assert.ok(types.includes('acknowledgedSequences: number[];'), 'The ACK response must expose every barrier sequence cleared by the Mod.');
   assert.ok(workbench.includes('automationLeaseOwnedRef.current'), 'ACK must require the current-session automation lease.');
-  assert.ok(workbench.includes('&& nightBusinessAutomationAllowed;'),
+  assert.ok(/&&\s*nightBusinessAutomationAllowed;/.test(workbench),
     'Frontend automation scheduling must consume the authoritative tutorial gate from the snapshot.');
   assert.ok(workbench.includes('previousAutomationRuntimeEnabledRef.current && !automationRuntimeEnabled'),
     'Closing the runtime tutorial gate must advance the request epoch and isolate late responses.');
   assert.ok(workbench.includes('resetStateWhenDisabled: !companionPreferences.automationEnabled'),
     'A runtime-only tutorial pause must preserve rare-order automation state.');
-  assert.ok(workbench.includes('resetNormalStateWhenDisabled: !companionPreferences.automationEnabled'),
+  assert.ok(/resetNormalStateWhenDisabled:\s*!companionPreferences\.automationEnabled/.test(workbench),
     'A runtime-only tutorial pause must preserve normal-order automation state.');
   assert.ok(workbench.includes('getNightBusinessAutomationPauseMessage('),
     'The UI must explain a tutorial pause without changing the stored automation preference.');
@@ -1038,7 +1039,7 @@ async function assertStageAndControlContracts() {
   assert.equal(servicePanel.includes("{paused ? '已暂停' : '运行中'}"), false,
     'The rare global status must not claim automation is running while the tutorial gate is closed.');
   assert.ok(workbench.includes('clearAcknowledgedAutomationBarriers(response.acknowledgedSequences'), 'ACK success must clear every frontend latch acknowledged by the Mod.');
-  assert.ok(workbench.match(/canAdvanceAutomationRuntimeEventSequence\(state\.manualResolutionRequired, manualResolutionRequired\)/g)?.length >= 2, 'Rare and normal reducers must both preserve manual barrier sequences.');
+  assert.ok(workbench.match(/canAdvanceAutomationRuntimeEventSequence\(\s*state\.manualResolutionRequired,\s*manualResolutionRequired,?\s*\)/g)?.length >= 2, 'Rare and normal reducers must both preserve manual barrier sequences.');
   assert.ok(workbench.includes('events.filter(isManualResolutionAutomationEvent)'), 'Same-session barrier convergence must use the unresolved manual-event set from the snapshot.');
   assert.ok(workbench.match(/shouldRetireMissingManualBarrier\(/g)?.length >= 2, 'Rare and normal latches must converge after another window acknowledges their barrier.');
   assert.ok(workbench.includes("event.code.startsWith('order-')"), 'Order-evaluation barriers must map to the order stage.');

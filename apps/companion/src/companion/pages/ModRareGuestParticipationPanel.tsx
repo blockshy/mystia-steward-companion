@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, type ReactNode } from 'react';
 
 import {
   buildRareGuestRosterSections,
@@ -8,7 +8,7 @@ import {
 import type { ExtensionModuleControlModel } from '@/companion/domain/extension-module-control';
 import { ModuleControlPanel } from '@/companion/pages/ModuleControlPanel';
 import type { NightBusinessOrder } from '@/companion/types';
-import { Badge, Button, Dialog, EmptyRow, EmptyState, Input, ListPanel } from '@/components/ui-kit';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger, Badge, Button, Dialog, EmptyRow, EmptyState, Input, ListPanel } from '@/components/ui-kit';
 import type { RareCustomerCatalogItem } from '@/lib/catalog-types';
 
 export interface ModRareGuestParticipationPanelProps {
@@ -17,12 +17,13 @@ export interface ModRareGuestParticipationPanelProps {
   managedGuestIds: readonly number[];
   currentOrders: readonly NightBusinessOrder[];
   error?: string | null;
+  queue?: ReactNode;
   onModuleEnabledChange: (enabled: boolean) => void;
   onManagedGuestIdsChange: (nextGuestIds: readonly number[]) => void;
 }
 
 /**
- * “扩展功能 · 稀客调度”模块。
+ * 经营中的稀客调度模块，队列优先，名单独立管理。
  *
  * 模块开关和名单始终来自主设备共享配置。关闭模块只停用运行时调度，不删除已经保存的名单。
  */
@@ -32,6 +33,7 @@ export function ModRareGuestParticipationPanel({
   managedGuestIds,
   currentOrders,
   error,
+  queue,
   onModuleEnabledChange,
   onManagedGuestIdsChange,
 }: ModRareGuestParticipationPanelProps) {
@@ -57,6 +59,9 @@ export function ModRareGuestParticipationPanel({
           text={`稀客调度模块已停用。已保存 ${managedGuestIds.length} 名稀客；启用模块后名单才会影响高亮和自动化。`}
         />
       ) : (
+        <>
+        {queue}
+        <Accordion><AccordionItem value="roster"><AccordionTrigger>调度名单 · {managedGuestIds.length} 名稀客</AccordionTrigger><AccordionContent>
         <RareGuestRosterPanel
           customers={customers}
           managedGuestIds={managedGuestIds}
@@ -64,6 +69,8 @@ export function ModRareGuestParticipationPanel({
           control={control}
           onManagedGuestIdsChange={onManagedGuestIdsChange}
         />
+        </AccordionContent></AccordionItem></Accordion>
+        </>
       )}
     </div>
   );
@@ -122,11 +129,11 @@ function RareGuestRosterPanel({
         >
           <div className="space-y-3">
             <p className="text-sm text-muted-foreground">
-              名单内稀客的每一笔新订单都默认暂停，只有在“经营中 · 稀客队列”手动启用后才参与
+              名单内稀客的每一笔新订单都默认暂停，只有在本页队列中手动启用后才参与
               高亮、自动化和资源预约。未入名单的稀客保持原有行为。
             </p>
             {!control.writable && (
-              <div className="border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+              <div className="border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
                 {control.reason || '当前稀客调度配置只读。'}
               </div>
             )}

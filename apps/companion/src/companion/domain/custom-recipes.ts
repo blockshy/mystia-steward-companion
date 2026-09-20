@@ -6,6 +6,7 @@ import type {
 import type { RecommendationDataSet } from '@/lib/recommendation-data';
 import type { IngredientCatalogItem, RareCustomerCatalogItem, RecipeCatalogItem } from '@/lib/catalog-types';
 import { inventoryShortage } from '@/lib/inventory-quantity';
+import { isIngredientAvailable, resolveRecipeIngredientAvailability } from '@/recommendation-engine/ingredient-availability';
 import {
   compareFoodCandidates,
   hasForbiddenIngredientTag,
@@ -212,15 +213,14 @@ function isCustomRecipeFoodCandidateAllowed(
 ): boolean {
   if (!context.availableRecipeIds.has(recipe.id)) return false;
   if (recipe.ingredients.length + extraIngredients.length > MAX_FOOD_INGREDIENT_COUNT) return false;
-  if (!hasAvailableBaseIngredients(recipe, ingredientsByName, context)) return false;
+  if (!resolveRecipeIngredientAvailability(recipe, ingredientsByName, context).available) return false;
   if (context.filterMissingCookers && !isCookerAvailable(recipe, context)) return false;
 
   const baseIngredientIds = new Set(recipe.ingredients
     .map((name) => ingredientsByName.get(name)?.id ?? -1)
     .filter((id) => id >= 0));
   return extraIngredients.every((ingredient) =>
-    context.availableIngredientIds.has(ingredient.id)
-    && !isIngredientExcluded(ingredient.id, context)
+    isIngredientAvailable(ingredient.id, context)
     && !baseIngredientIds.has(ingredient.id)
     && !hasForbiddenIngredientTag(ingredient, recipe)
   );
@@ -396,23 +396,6 @@ function buildCustomFoodConditionResults({
   }
 
   return results;
-}
-
-function hasAvailableBaseIngredients(
-  recipe: RecipeCatalogItem,
-  ingredientsByName: Map<string, IngredientCatalogItem>,
-  context: RecommendationRuntimeContext,
-): boolean {
-  return recipe.ingredients.every((name) => {
-    const ingredient = ingredientsByName.get(name);
-    return ingredient !== undefined
-      && context.availableIngredientIds.has(ingredient.id)
-      && !isIngredientExcluded(ingredient.id, context);
-  });
-}
-
-function isIngredientExcluded(id: number, context: RecommendationRuntimeContext): boolean {
-  return context.disabledIngredientIds.has(id) || context.excludedIngredientIds.has(id);
 }
 
 function isCookerAvailable(recipe: RecipeCatalogItem, context: RecommendationRuntimeContext): boolean {

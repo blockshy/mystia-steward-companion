@@ -1,6 +1,6 @@
 # 推荐引擎
 
-更新日期：2026-09-02
+更新日期：2026-09-21
 
 本文说明料理与酒水推荐的输入、候选处理流程和唯一主执行方案约定。运行时快照如何产生见
 [游戏数据提供器](runtime-provider.md)；自动化如何使用推荐见
@@ -29,12 +29,16 @@
 - `tag-resolution.ts`、`dynamic-food-tags.ts`：游戏标签解析。
 - `rare-orders.ts`、`normal-coverage.ts`：订单候选与覆盖计算。
 - `mission-recipe-priority.ts`：已验证任务料理优先信号。
+- `ingredient-availability.ts`：普通与自定义候选共用的材料排除、数量和无限库存判断。
 - `sort-profile.ts`：排序目标和预设。
 - `index.ts`：公共计算入口。
 
 页面和运行时使用方位于：
 
 - `apps/companion/src/companion/domain/service-recommendations.ts`
+- `apps/companion/src/companion/domain/recommendation-runtime-context.ts`
+- `apps/companion/src/companion/domain/recommendation-blocked-diagnostics.ts`
+- `apps/companion/src/companion/domain/special-business/candidate-constraints.ts`
 - `apps/companion/src/companion/domain/primary-execution-plan.ts`
 - `apps/companion/src/companion/domain/normal-order-details.ts`
 - `apps/companion/src/companion/workers/order-recommendations.worker.ts`
@@ -42,6 +46,9 @@
 
 静态目录只是候选基础；解锁、库存、厨具、地点、订单标签、预算和当前经营上下文以当前游戏快照为准。快照或
 必要目录不完整时必须停止对应决策，不能用部分数据猜测可执行性。
+
+客人目录只接受唯一的规范客人 ID；缺失或重复时不能按姓名补选。预算与付款状态直接使用当前订单发布的字段，
+缺失时保持未知，不从活动客人列表按姓名、桌位或第一项关联另一份预算。
 
 ## 候选处理流程
 
@@ -64,7 +71,7 @@
 
 `executionPlans[0]` 是一笔订单唯一的主方案。以下功能必须读取同一项：
 
-- “经营中”参与订单页面展示的首选组合。
+- “经营”参与订单页面展示的首选组合。
 - 自动化首次锁定的料理、加料和酒水。
 - 游戏界面辅助发布的食材、料理、酒水和厨具目标。
 
@@ -72,7 +79,7 @@
 当前订单实例不一致，相关功能必须停止处理。
 
 参与状态不改变订单捕获、推荐候选、Worker 结果或主方案。暂停的名单内稀客仍保留这些推荐结果，但不会
-显示到“经营中 -> 推荐 -> 稀客”或稀客订单专注模式；重新启用后按 Mod 返回的 `queuePosition` 恢复展示。
+显示到“经营 -> 稀客”或稀客订单专注模式；重新启用后按 Mod 返回的 `queuePosition` 恢复展示。
 自动化和游戏 UI 等执行功能在使用主方案前，采用同一份参与状态筛选结果。模块关闭或
 生效名单为空时不应用这层展示与执行过滤，全部沿用原有集合和排序。完整集合检查、队列顺序和非阻塞规则只在
 [稀客调度与订单队列](rare-order-participation.md)维护。
@@ -109,8 +116,14 @@
 ## Worker 与并发
 
 高成本推荐在 Worker 中运行。数据集按语义签名缓存，而不是按对象引用或计数缓存；同计数但内容变化必须使
-签名变化。每个 Worker 只保留正在计算的请求和最新待处理请求，迟到结果必须按请求标识丢弃。离开相应页面或
-停用对应功能时，应停止轮询或终止不再需要的 Worker。
+签名变化，标签 ID 映射也属于目录内容。候选缓存由推荐编排层按完整目录签名失效，独立调用同样遵守此规则。
+每个 Worker 只保留正在计算的请求和最新待处理请求，真正发送时才依据该 Worker 已确认的目录决定是否发送完整数据。
+迟到结果按请求与 Worker 实例丢弃；离开相应页面或停用对应功能时，停止轮询或终止不再需要的 Worker。
+
+`order-recommendations-controller.ts` 管理订单 Worker 的请求、目录和错误状态，Hook 只负责 React 生命周期与
+当前输入/经营上下文检查。每次成功计算都发布完整的新业务结果，不能以候选相同为由保留旧预算、执行许可或订单标识。
+旧结果只可在相同经营上下文中保留展示，不能用于新的执行。缓存缺失使用结构化错误并最多重发一次完整目录；
+构造失败、致命错误或结果无法读取时释放失效实例，显式重新计算才重建，不无限自动重试。
 
 参与状态中的暂停发生在 Worker 结果之后，只影响展示和执行筛选，不表示应删除订单或推荐结果。单笔订单暂停不能从
 Worker 数据集移除该订单、清除已验证结果或另建一套候选处理流程；稀客队列管理和诊断仍可读取同一份结果。

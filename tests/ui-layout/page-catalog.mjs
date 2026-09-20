@@ -1,0 +1,28 @@
+// Shared navigation contract for visual coverage; behavior audits still assert
+// the feature-specific controls after navigating to these entries.
+export const PAGE_CATALOG = [
+  { value: 'overview', topValue: 'overview', innerSelector: '[data-overview-tabs]', innerLabel: '客户端' },
+  { value: 'network', topValue: 'overview', innerSelector: '[data-overview-tabs]', innerLabel: '主机网络' },
+  { value: 'devices', topValue: 'overview', innerSelector: '[data-overview-tabs]', innerLabel: '设备共享' },
+  { value: 'status', topValue: 'overview', innerSelector: '[data-overview-tabs]', innerLabel: '运行状态' },
+  { value: 'normal', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '普客' },
+  { value: 'rare', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '稀客' },
+  { value: 'custom-recipes', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '自定义' },
+  { value: 'favorites', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '收藏' },
+  { value: 'rules', topValue: 'recommendations', innerSelector: '[data-recommendation-tabs]', innerLabel: '推荐规则' },
+  { value: 'service', topValue: 'service', innerSelector: '[data-service-tabs]', innerLabel: '稀客' },
+  { value: 'normal-orders', topValue: 'service', innerSelector: '[data-service-tabs]', innerLabel: '普客' },
+  { value: 'rare-participation', topValue: 'service', innerSelector: '[data-service-tabs]', innerLabel: '稀客调度' },
+  { value: 'game-ui', topValue: 'service', innerSelector: '[data-service-tabs]', innerLabel: '游戏辅助' },
+  { value: 'diagnostics', topValue: 'service', innerSelector: '[data-service-tabs]', innerLabel: '诊断' },
+  { value: 'automation-runtime', topValue: 'automation', innerSelector: '[data-automation-tabs]', innerLabel: '运行状态' },
+  { value: 'automation-config', topValue: 'automation', innerSelector: '[data-automation-tabs]', innerLabel: '执行配置' },
+  { value: 'missions', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '任务列表' },
+  { value: 'rare-invitations', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '稀客邀请' },
+  { value: 'inventory', topValue: 'extensions', innerSelector: '[data-extension-tabs]', innerLabel: '库存' },
+  { value: 'settings', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '外观窗口' },
+  { value: 'input', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '输入' },
+  { value: 'updates', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '更新' },
+  { value: 'help', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '帮助' },
+  { value: 'logs', topValue: 'settings', innerSelector: '[data-settings-tabs]', innerLabel: '日志' },
+];

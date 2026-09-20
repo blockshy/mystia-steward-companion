@@ -50,7 +50,7 @@ try {
     localStorage.setItem(`${storagePrefix}-custom-recipe-group-mode`, 'customer');
   }, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
-  await activateTab('自定义推荐料理');
+  await activateTab('自定义');
   await page.getByText('启用自定义推荐料理', { exact: true }).waitFor();
   for (const label of ['稀客', '点单料理标签', '基础料理']) {
     assert(await page.getByRole('combobox', { name: label, exact: true }).count() === 1, `${label}字段没有唯一可访问名称`);
@@ -62,7 +62,7 @@ try {
   await page.getByText('保存后启用', { exact: true }).click();
   assert(!await draftEnabled.isChecked(), '新增草稿启用状态没有关闭');
   await activateTab('概览');
-  await activateTab('自定义推荐料理');
+  await activateTab('自定义');
   assert(!await page.getByLabel('保存后启用').isChecked(), '新增草稿状态在页签切换后丢失');
 
   await page.getByText('启用自定义推荐料理', { exact: true }).click();
@@ -97,7 +97,7 @@ try {
     '稀客页自定义配方详情错误地渲染到了面板标题区',
   );
 
-  await activateTab('经营中');
+  await activateTab('经营');
   const serviceCustomRecipeTriggers = page.locator('[data-effective-custom-recipes-trigger="true"]:visible');
   await serviceCustomRecipeTriggers.first().waitFor();
   const serviceCustomRecipeTriggerCount = await serviceCustomRecipeTriggers.count();
@@ -108,7 +108,7 @@ try {
       `经营中第 ${index + 1} 个自定义配方按钮没有与推荐料理标题保持同行`,
     );
   }
-  await activateTab('自定义推荐料理');
+  await activateTab('自定义');
   await page.getByText('启用自定义推荐料理', { exact: true }).click();
   await waitForRecipes((data) => data.enabled === true, '功能总开关没有恢复开启状态');
 
@@ -117,7 +117,7 @@ try {
   assert(await page.getByRole('button', { name: /^上移/ }).count() === 0, '基础料理分组仍显示稀客内排序按钮');
   assert(await page.evaluate((key) => localStorage.getItem(key), `${STORAGE_PREFIX}-custom-recipe-group-mode`) === 'recipe', '基础料理分组模式没有持久化');
   await activateTab('概览');
-  await activateTab('自定义推荐料理');
+  await activateTab('自定义');
   assert(await page.getByRole('button', { name: /^上移/ }).count() === 0, '页签切换后没有恢复基础料理分组');
 
   await page.getByText('按稀客', { exact: true }).click();
@@ -199,7 +199,7 @@ try {
     body: JSON.stringify({ version: 1, enabled: true, recipes: [invalidEntry] }),
   }));
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await activateTab('自定义推荐料理');
+  await activateTab('自定义');
   await page.locator('[data-gamepad-focus-key="custom-recipe:audit-missing-customer:edit"]').click();
   assert(await page.getByRole('combobox', { name: '稀客', exact: true }).inputValue() === '目录未识别的稀客 #999999',
     '失效稀客 ID 被自动替换成目录首项。');
@@ -247,8 +247,8 @@ async function assertHeaderActionSameLine(action, message) {
 }
 
 async function activateTab(label) {
-  if (['普客', '稀客', '自定义推荐料理', '收藏管理'].includes(label)) {
-    await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
+  if (['普客', '稀客', '自定义', '收藏'].includes(label)) {
+    await page.getByRole('tab', { name: '推荐', exact: true }).click();
   }
   await page.getByRole('tab', { name: label, exact: true }).click();
   await page.waitForTimeout(150);

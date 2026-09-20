@@ -25,7 +25,7 @@ const selectors = {
 };
 
 const expectedHelpIdsBySection = new Map([
-  ['窗口', [
+  ['外观窗口', [
     'window-background-opacity',
     'window-content-opacity',
     'window-focus-switch-behavior',
@@ -34,16 +34,18 @@ const expectedHelpIdsBySection = new Map([
     'window-mouse-passthrough',
     'window-theme',
     'window-font-scale',
-    'window-gamepad-navigation',
     'window-debug-details',
   ]],
-  ['连接', [
+  ['输入', ['window-gamepad-navigation']],
+  ['主机网络', [
     'connection-lan-enabled',
     'connection-lan-bind-host',
   ]],
-  ['推荐', [
+  ['订单显示', [
     'recommendation-service-order-sort',
     'recommendation-focus-compact',
+  ]],
+  ['推荐规则', [
     'recommendation-budget-policy',
     'recommendation-filter-missing-cookers',
     'recommendation-mission-recipe-priority',
@@ -62,7 +64,7 @@ const expectedHelpIdsBySection = new Map([
     'recommendation-weight-profit',
     'recommendation-weight-beverageStock',
   ]],
-  ['实验性功能', [
+  ['游戏辅助', [
     'recommendation-rare-game-ui-pinning',
     'recommendation-rare-recipe-variant',
     'recommendation-rare-cooker-highlight',
@@ -75,6 +77,8 @@ const expectedHelpIdsBySection = new Map([
     'recommendation-normal-seat-highlight',
     'recommendation-normal-order-highlight',
     'recommendation-normal-highlight-color',
+  ]],
+  ['执行配置', [
     'automation-enabled',
     'automation-rare-concurrency',
     'automation-normal-concurrency',
@@ -97,7 +101,7 @@ const expectedHelpIdsBySection = new Map([
   ]],
 ]);
 
-const expectedSettingsTabs = ['窗口', '连接', '推荐', '实验性功能', '更新', '帮助'];
+const expectedSettingsTabs = ['外观窗口', '输入', '更新', '帮助', '日志'];
 
 const expectedExperimentalPanelByHelpId = new Map([
   ['automation-enabled', '自动化总控'],
@@ -190,7 +194,7 @@ async function seedAndOpen(page, fontScale) {
   await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
   await page.locator('[data-gamepad-tab-value="overview"]').first().waitFor({ timeout: 10_000 });
   await activateSettings(page);
-  await activateSettingsSection(page, '窗口');
+  await activateSettingsSection(page, '外观窗口');
   await assertNoVisibleTooltip(page, '初始状态不应显示设置说明');
 }
 
@@ -200,7 +204,7 @@ async function auditDesktopInteractions(page) {
   await assertExperimentalPanelGroups(page);
   await assertAutomationSettingOrder(page);
   await auditAutomationDeliveryInvariant(page);
-  await activateSettingsSection(page, '窗口');
+  await activateSettingsSection(page, '外观窗口');
   const switchField = findField(page, '始终置顶');
   const switchTrigger = switchField.locator(selectors.trigger);
   await assertEnabledHelpTriggerSkipsGamepad(switchTrigger, '始终置顶');
@@ -236,13 +240,13 @@ async function auditDesktopInteractions(page) {
     'segmented control',
   );
 
-  await activateSettingsSection(page, '推荐');
+  await activateSettingsSection(page, '推荐规则');
   const numberField = findField(page, '同基础料理显示');
   await numberField.locator('input[data-slot="number-input"]').click();
   await assertNoVisibleTooltip(page, '鼠标点击数值输入框不应打开说明');
   await auditControlFocus(page, '同基础料理显示', 'input', 'number input');
 
-  await activateSettingsSection(page, '实验性功能');
+  await activateSettingsSection(page, '游戏辅助');
   const disabledField = findField(page, '稀客加料料理选项');
   const disabledControl = disabledField.locator('input[type="checkbox"]').first();
   assert.equal(await disabledControl.isDisabled(), true, '测试夹具应使加料料理选项开关处于禁用状态');
@@ -259,7 +263,7 @@ async function auditDesktopInteractions(page) {
   await page.screenshot({ path: path.join(outputDir, 'desktop-disabled-focus.png'), fullPage: true });
   await auditTargetHighlightColors(page);
 
-  await activateSettingsSection(page, '推荐');
+  await activateSettingsSection(page, '推荐规则');
   await assertNoVisibleTooltip(page, '切换设置分栏后应关闭旧说明');
 
   await findField(page, '任务料理置顶').locator(selectors.trigger).hover();
@@ -411,13 +415,16 @@ async function auditTargetHighlightColors(page) {
 }
 
 async function auditCompactTooltipLayout(page, profileName) {
-  await assertSettingsTabLabelFits(page, '实验性功能', profileName);
+  for (const label of ['外观窗口', '执行配置', '游戏辅助', '推荐规则']) {
+    await activateSettingsSection(page, label);
+    await assertSettingsTabLabelFits(page, label, profileName);
+  }
   if (profileName === 'minimum-640x520') {
     await auditAllCompactTooltips(page, profileName);
     await page.screenshot({ path: path.join(outputDir, `${profileName}.png`), fullPage: true });
     return;
   }
-  await activateSettingsSection(page, '推荐');
+  await activateSettingsSection(page, '推荐规则');
   const field = findField(page, '任务料理置顶');
   const baseline = await readDocumentGeometry(page);
   await field.locator(selectors.trigger).hover();
@@ -444,7 +451,7 @@ async function auditAllCompactTooltips(page, profileName) {
 }
 
 async function auditTouchAndCompactLayout(page) {
-  await activateSettingsSection(page, '推荐');
+  await activateSettingsSection(page, '推荐规则');
   const exclusionField = findField(page, '排除材料');
   await exclusionField.locator('input[data-slot="multi-select"]').tap();
   await assertNoVisibleTooltip(page, '触摸原设置控件不应打开说明');
@@ -522,15 +529,14 @@ async function assertLinkedTooltipVisible(page, field, context) {
 }
 
 async function assertSettingsTabStructure(page) {
-  const windowTab = page.getByRole('tab', { name: '窗口', exact: true }).first();
-  const tabs = windowTab.locator('..').getByRole('tab');
+  const tabs = page.locator('[data-settings-tabs]').getByRole('tab');
   assert.deepEqual(
     (await tabs.allTextContents()).map((label) => label.trim()),
     expectedSettingsTabs,
     '设置分栏名称或顺序发生变化',
   );
   assert.equal(
-    await page.getByRole('tab', { name: '自动化', exact: true }).count(),
+    await page.locator('[data-settings-tabs]').getByRole('tab', { name: '自动化', exact: true }).count(),
     0,
     '旧“自动化”设置分栏不应保留',
   );
@@ -541,23 +547,25 @@ async function assertSettingsTabStructure(page) {
   );
   await activateSettingsSection(page, '帮助');
   await page.getByRole('heading', { name: '帮助', exact: true }).waitFor();
-  await activateSettingsSection(page, '窗口');
+  await activateSettingsSection(page, '外观窗口');
 }
 
 async function assertExperimentalPanelGroups(page) {
-  await activateSettingsSection(page, '实验性功能');
-  const riskNotice = page.locator('[data-experimental-risk-notice="true"]');
-  assert.equal(await riskNotice.count(), 1, '实验性功能页面必须显示唯一风险提示条');
-  assert.equal(await riskNotice.isVisible(), true, '实验性功能风险提示条必须可见');
-  assert.match(
-    await riskNotice.innerText(),
-    /自动化和加料料理选项会直接改变游戏状态，存在一定风险。/,
-    '实验性功能风险提示内容不完整',
-  );
-  const groups = await page.locator(`${selectors.field}:visible`).evaluateAll((fields) => fields.map((field) => ({
-    helpId: field.getAttribute('data-setting-help-id') || '',
-    panel: field.closest('.steward-list-panel')?.querySelector('h2')?.textContent?.trim() || '',
-  })));
+  const groups = [];
+  for (const [section, notice] of [
+    ['执行配置', /自动化会直接改变游戏状态，存在一定风险。/],
+    ['游戏辅助', /加料料理选项会直接改变游戏状态，存在一定风险。/],
+  ]) {
+    await activateSettingsSection(page, section);
+    const riskNotice = page.locator('[data-experimental-risk-notice="true"]');
+    assert.equal(await riskNotice.count(), 1, `${section}必须显示唯一风险提示条`);
+    assert.equal(await riskNotice.isVisible(), true, `${section}风险提示条必须可见`);
+    assert.match(await riskNotice.innerText(), notice, `${section}风险提示内容不完整`);
+    groups.push(...await page.locator(`${selectors.field}:visible`).evaluateAll((fields) => fields.map((field) => ({
+      helpId: field.getAttribute('data-setting-help-id') || '',
+      panel: field.closest('.steward-list-panel')?.querySelector('h2')?.textContent?.trim() || '',
+    }))));
+  }
   assert.deepEqual(
     new Map(groups.map(({ helpId, panel }) => [helpId, panel])),
     expectedExperimentalPanelByHelpId,
@@ -566,7 +574,7 @@ async function assertExperimentalPanelGroups(page) {
 }
 
 async function assertAutomationSettingOrder(page) {
-  await activateSettingsSection(page, '实验性功能');
+  await activateSettingsSection(page, '执行配置');
   const commonOrder = [
     'enabled',
     'take-beverage',
@@ -590,7 +598,7 @@ async function assertAutomationSettingOrder(page) {
 }
 
 async function auditAutomationDeliveryInvariant(page) {
-  await activateSettingsSection(page, '实验性功能');
+  await activateSettingsSection(page, '执行配置');
 
   const rarePanel = findPanel(page, '稀客自动化设置');
   const rareBeverage = findHelpField(rarePanel, 'automation-rare-take-beverage').locator('input[type="checkbox"]');
@@ -729,10 +737,29 @@ async function activateSettings(page) {
   const tab = page.locator('[data-gamepad-tab-value="settings"]').first();
   await tab.scrollIntoViewIfNeeded();
   await tab.click();
-  await page.getByRole('tab', { name: '窗口', exact: true }).waitFor({ state: 'visible' });
+  await page.getByRole('tab', { name: '外观窗口', exact: true }).waitFor({ state: 'visible' });
 }
 
 async function activateSettingsSection(page, label) {
+  const primary = label === '主机网络' ? 'overview'
+    : ['订单显示', '游戏辅助'].includes(label) ? 'service'
+    : label === '执行配置' ? 'automation'
+    : label === '推荐规则' ? 'recommendations'
+    : 'settings';
+  await page.locator(`[data-gamepad-tab-value="${primary}"]`).first().click();
+  if (label === '订单显示') {
+    await page.locator('[data-service-tabs]').getByRole('tab', { name: '稀客', exact: true }).click();
+    const trigger = page.getByRole('button', { name: '订单显示', exact: true });
+    if (await trigger.getAttribute('aria-expanded') !== 'true') await trigger.click();
+    await page.locator(`${selectors.field}[data-setting-help-id="recommendation-focus-compact"]`).waitFor();
+    await page.evaluate(async () => {
+      document.body.getBoundingClientRect();
+      await Promise.all(document.getAnimations().filter((animation) => (
+        animation.effect?.getTiming().iterations !== Infinity
+      )).map((animation) => animation.finished.catch(() => {})));
+    });
+    return;
+  }
   const tab = page.getByRole('tab', { name: label, exact: true }).first();
   await tab.scrollIntoViewIfNeeded();
   await tab.click();

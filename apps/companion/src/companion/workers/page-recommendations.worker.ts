@@ -5,10 +5,10 @@ import {
 } from '@/companion/domain/custom-recipes';
 import {
   buildRecommendationPlanSortContext,
-  buildRecommendationRuntimeContext,
   deriveBeverageRowsFromCandidates,
   deriveRecipeRowsFromCandidates,
 } from '@/companion/domain/service-recommendations';
+import { buildRecommendationRuntimeContext } from '@/companion/domain/recommendation-runtime-context';
 import { MAX_RECOMMENDATION_ROWS } from '@/companion/pages/shared-constants';
 import {
   buildNormalBeverageRecommendations,

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { readAutomationSources } from '../helpers/automation-source.mjs';
 import {
   CONNECTION_RETRY_DELAYS_MS,
   buildAutomationLeaseConnectionKey,
@@ -13,7 +14,7 @@ import {
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const [hook, workbench, tauriApp] = await Promise.all([
   readFile(`${root}/apps/companion/src/companion/hooks/useCompanionConnection.ts`, 'utf8'),
-  readFile(`${root}/apps/companion/src/companion/ModWorkbench.tsx`, 'utf8'),
+  readAutomationSources(),
   readFile(`${root}/apps/companion/src-tauri/src/app.rs`, 'utf8'),
 ]);
 

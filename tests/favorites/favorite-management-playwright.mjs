@@ -190,7 +190,7 @@ try {
   }, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
   await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
 
-  await page.getByRole('tab', { name: '经营中', exact: true }).click();
+  await page.getByRole('tab', { name: '经营', exact: true }).click();
   const rareOrders = page.locator('[data-service-order-collection="rare"]');
   await rareOrders.waitFor({ state: 'visible', timeout: 10_000 });
   await rareOrders.locator('[data-service-order-card="true"]').first().waitFor({ timeout: 10_000 });
@@ -233,8 +233,8 @@ try {
   );
   assert(favoriteReadRequests === 2, '快照轮询不应重复读取已恢复的收藏');
 
-  await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
-  await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
+  await page.getByRole('tab', { name: '推荐', exact: true }).click();
+  await page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '收藏', exact: true }).click();
   await page.locator('[data-favorite-management="true"]').waitFor();
 
   failNextFavoriteRead = true;
@@ -242,7 +242,7 @@ try {
   await page.getByText(FAVORITE_WRITE_RACE_ERROR, { exact: true }).waitFor({ timeout: 10_000 });
   assert(favoriteReadRequests === 3, '快照抖动前没有建立收藏读取错误');
   failNextCompactSnapshot = true;
-  await page.getByRole('tab', { name: '经营中', exact: true }).click();
+  await page.getByRole('tab', { name: '经营', exact: true }).click();
   await Promise.race([
     snapshotRecoveryStarted,
     new Promise((_, reject) => setTimeout(() => reject(new Error('主快照失败后没有发起恢复请求')), 10_000)),
@@ -263,8 +263,8 @@ try {
   await page.getByText(FAVORITE_WRITE_RACE_ERROR, { exact: true }).waitFor({ state: 'detached', timeout: 10_000 });
   assert(!snapshotRecoveryWatchdogTriggered, '主快照恢复测试超过预设等待时限');
 
-  await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
-  await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
+  await page.getByRole('tab', { name: '推荐', exact: true }).click();
+  await page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '收藏', exact: true }).click();
   await page.locator('[data-favorite-management="true"]').waitFor();
 
   const recipeRow = page.locator('[data-favorite-entry-kind="recipe"]');
@@ -320,8 +320,8 @@ try {
   await waitFor(() => activeMutations === 0, 2_000, '预期的收藏写请求没有结束');
   await waitFor(() => favoriteReadRequests === favoriteReadsBeforeMutation + 1, 5_000, '处理中的旧写请求结束后没有读取当前连接轮次的收藏');
   assert(!mutationWatchdogTriggered, '收藏写入锁测试超过预设等待时限');
-  await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
-  await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
+  await page.getByRole('tab', { name: '推荐', exact: true }).click();
+  await page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '收藏', exact: true }).click();
   await page.locator('[data-favorite-management="true"]').waitFor();
   await recipeRow.waitFor({ state: 'detached' });
   await page.getByText(FAVORITE_WRITE_RACE_ERROR, { exact: true }).waitFor({ state: 'detached' });
@@ -368,7 +368,7 @@ try {
   assert(mutationRequests.at(-1).path === '/favorites/remove-beverage'
     && mutationRequests.at(-1).id === 'mock-beverage-1001-水果-101', '丢失响应场景未使用酒水的精确删除ID');
   await page.screenshot({ path: `${OUTPUT_DIR}/lost-mutation-response-confirming.png`, fullPage: true });
-  await page.getByRole('tab', { name: '经营中', exact: true }).click();
+  await page.getByRole('tab', { name: '经营', exact: true }).click();
   const pendingRecommendationActions = rareOrders.getByRole('button', {
     name: /^(?:取消)?收藏该(?:料理方案|酒水)$/,
   });
@@ -376,8 +376,8 @@ try {
   assert(await pendingRecommendationActions.evaluateAll((buttons) => buttons.every((button) => button.disabled)),
     '收藏确认尚未完成时经营推荐中仍允许修改收藏');
   releaseFavoriteVerification();
-  await page.getByRole('tab', { name: '推荐料理', exact: true }).click();
-  await page.getByRole('tab', { name: '收藏管理', exact: true }).click();
+  await page.getByRole('tab', { name: '推荐', exact: true }).click();
+  await page.locator('[data-recommendation-tabs]').getByRole('tab', { name: '收藏', exact: true }).click();
   await beverageRow.waitFor({ state: 'detached', timeout: 5_000 });
   await page.getByText('暂无料理或酒水收藏', { exact: true }).waitFor({ timeout: 5_000 });
   assert(await mutationFailure.isVisible(), '只读确认成功不应抹去丢失响应的修改失败说明');

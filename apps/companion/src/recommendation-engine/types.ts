@@ -96,7 +96,7 @@ export interface RecommendationExclusions {
  */
 export interface RecommendationBudgetContext {
   remainingBudget: number | null;
-  source: 'runtime-active-guest' | 'manual' | 'unknown';
+  source: 'runtime-order' | 'manual' | 'unknown';
   willPayMoney?: boolean | null;
 }
 

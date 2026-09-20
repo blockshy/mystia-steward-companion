@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { readSourceGroup } from './source-groups.mjs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
 });
 
@@ -454,7 +455,7 @@ function build({
     availableRecipeIds,
     availableBeverageIds,
     availableIngredientIds,
-    ownedIngredientQty: { [ingredient.id]: 10 },
+    ownedIngredientQty: Object.fromEntries(availableIngredientIds.map((id) => [id, 10])),
     ownedBeverageQty: { [beverage.id]: 10 },
     ...buildCookerSnapshot(placedCookerTypeIds, cookerSnapshotOverrides),
     popularFoodTag: null,
@@ -473,7 +474,6 @@ function build({
       recommendationBudgetPolicy: 'block',
       ...preferenceOverrides,
     }),
-    [],
     specialBusinessContext,
     [],
     effectiveRecommendationData,
@@ -524,10 +524,10 @@ function buildCooker(controllerIndex, typeId, overrides = {}) {
 
 async function assertSourceContracts() {
   const [service, automation, workbench, worker, rareOrders] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
+    readSourceGroup('service'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readSourceGroup('workbench'),
+    readSourceGroup('orderWorker'),
     readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
   ]);
 
@@ -546,8 +546,8 @@ async function assertSourceContracts() {
   );
   assert.ok(automation.includes("item.blockedDiagnostic?.message ?? '没有可用的推荐料理。'"),
     '自动化无料理目标时应优先显示结构化首个清零原因。');
-  assert.ok(worker.includes("item.blockedDiagnostic?.stateSignature ?? ''"),
-    'Worker 结果签名必须包含候选诊断状态。');
+  assert.equal(worker.includes('buildResultSignature'), false,
+    '完整候选诊断必须随每次新结果发布，不能被部分签名忽略。');
   assert.ok(workbench.includes('rareAutomationDecisionDiagnosticSignaturesRef'));
   assert.ok(workbench.includes('normalAutomationDecisionDiagnosticSignaturesRef'));
   assert.ok(

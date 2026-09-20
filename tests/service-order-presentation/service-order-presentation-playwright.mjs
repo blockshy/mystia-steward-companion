@@ -181,8 +181,6 @@ function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
 
 async function activateServiceRecommendations(page) {
   await page.locator('[data-gamepad-tab-value="service"]').first().click();
-  const serviceViewControl = page.locator('[data-slot="segmented-control"]').filter({ hasText: '推荐' }).first();
-  await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
 }
 
 async function inspectOrderCollection(page, kind, options = {}) {

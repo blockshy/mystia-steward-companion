@@ -131,7 +131,8 @@ export function buildRecommendationDataIndexes(data: RecommendationDataSet) {
 }
 
 export function buildRecommendationDataSignature(data: RecommendationDataSet): string {
-  return [
+  // Preserve field and array boundaries; catalog text may itself contain separators.
+  return JSON.stringify([
     data.source,
     data.status,
     data.recipes.map((recipe) => [
@@ -142,50 +143,50 @@ export function buildRecommendationDataSignature(data: RecommendationDataSet): s
       recipe.price,
       recipe.level,
       recipe.baseCookTime,
-      recipe.ingredients.join(','),
-      stableStringArraySignature(recipe.positiveTags),
-      stableStringArraySignature(recipe.negativeTags),
-    ].join(':')).join(','),
+      recipe.ingredients,
+      sortedStringValues(recipe.positiveTags),
+      sortedStringValues(recipe.negativeTags),
+    ]),
     data.ingredients.map((ingredient) => [
       ingredient.id,
       ingredient.name,
       ingredient.type,
       ingredient.price,
-      stableStringArraySignature(ingredient.tags),
-    ].join(':')).join(','),
+      sortedStringValues(ingredient.tags),
+    ]),
     data.beverages.map((beverage) => [
       beverage.id,
       beverage.name,
       beverage.price,
       beverage.level,
-      stableStringArraySignature(beverage.tags),
-    ].join(':')).join(','),
+      sortedStringValues(beverage.tags),
+    ]),
     data.normalCustomers.map((customer) => [
       customer.id,
       customer.name,
-      stableStringArraySignature(customer.places),
-      stableStringArraySignature(customer.positiveTags),
-      stableStringArraySignature(customer.beverageTags),
-    ].join(':')).join(','),
+      sortedStringValues(customer.places),
+      sortedStringValues(customer.positiveTags),
+      sortedStringValues(customer.beverageTags),
+    ]),
     data.rareCustomers.map((customer) => [
       customer.id,
       customer.name,
-      stableStringArraySignature(customer.places),
-      stableStringArraySignature(customer.positiveTags),
-      stableStringArraySignature(customer.negativeTags),
-      stableStringArraySignature(customer.beverageTags),
-    ].join(':')).join(','),
+      sortedStringValues(customer.places),
+      sortedStringValues(customer.positiveTags),
+      sortedStringValues(customer.negativeTags),
+      sortedStringValues(customer.beverageTags),
+    ]),
     data.rareCustomerProfiles.map((profile) => [
       profile.id,
       profile.name,
-      stableStringArraySignature(profile.positiveTags),
-      stableStringArraySignature(profile.negativeTags),
-      stableStringArraySignature(profile.beverageTags),
-    ].join(':')).join(','),
-    data.tagPriorityRules
-      .map((rule) => `${rule.id}:${stableNumberArraySignature(rule.tagIds)}:${stableStringArraySignature(rule.tags)}`)
-      .join(','),
-  ].join('\n');
+      sortedStringValues(profile.positiveTags),
+      sortedStringValues(profile.negativeTags),
+      sortedStringValues(profile.beverageTags),
+    ]),
+    Object.entries(data.foodTagIdMap).sort(([left], [right]) => Number(left) - Number(right)),
+    Object.entries(data.beverageTagIdMap).sort(([left], [right]) => Number(left) - Number(right)),
+    data.tagPriorityRules.map((rule) => [rule.id, sortedNumberValues(rule.tagIds), sortedStringValues(rule.tags)]),
+  ]);
 }
 
 export function getRareCustomersByPlace(
@@ -314,19 +315,17 @@ function normalizeRuntimeRareCustomerProfile(
   };
 }
 
-function stableNumberArraySignature(values: readonly number[] | undefined): string {
+function sortedNumberValues(values: readonly number[] | undefined): number[] {
   return [...(values ?? [])]
     .filter((value) => Number.isFinite(value))
-    .sort((left, right) => left - right)
-    .join(',');
+    .sort((left, right) => left - right);
 }
 
-function stableStringArraySignature(values: readonly string[] | undefined): string {
+function sortedStringValues(values: readonly string[] | undefined): string[] {
   return [...(values ?? [])]
     .map((value) => value.trim())
     .filter(Boolean)
-    .sort()
-    .join(',');
+    .sort();
 }
 
 function normalizeStringList(value: unknown): string[] {

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { readSourceGroup } from './source-groups.mjs';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
   configFile: 'apps/companion/vite.config.ts',
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, hmr: false, watch: null },
   appType: 'custom',
   logLevel: 'silent',
 });
@@ -297,13 +298,14 @@ const coldStartFailure = buildOrderRecommendationPresentation({
     message: 'Worker cold-start failure',
   }],
   pending: false,
-  isCurrent: true,
+  isCurrent: false,
   resultContextSignature: 'same-context',
   currentContextSignature: 'same-context',
   error: 'Worker cold-start failure',
   retainedAfterError: false,
 });
 assert.equal(coldStartFailure.recommendationIssues[0]?.message, 'Worker cold-start failure');
+assert.equal(coldStartFailure.updating, false, '已停止计算的冷启动失败不应一直显示更新中。');
 assert.equal(coldStartFailure.updateError, null,
   '冷启动失败应显示逐单失败 issue，而不是声称正在展示上次结果。');
 
@@ -507,14 +509,14 @@ async function assertSourceContracts() {
     automation,
     worker,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readSourceGroup('workbench'),
     readFile(new URL('apps/companion/src/companion/hooks/useOrderRecommendations.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/service/ServiceOrderPresentation.tsx', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/pages/service/service-order-collection-state.ts', root), 'utf8'),
     readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readSourceGroup('orderWorker'),
   ]);
   const orderSignature = workbench.slice(
     workbench.indexOf('function buildNightBusinessOrderSignature'),
@@ -528,10 +530,9 @@ async function assertSourceContracts() {
   assert.match(workbench, /buildOrderRecommendationPresentation\(/);
   assert.equal(workbench.includes('visibleOrderRecommendations = orderRecommendationsPending'), false);
   assert.match(hook, /resultContextSignature/);
-  assert.match(hook, /retainedAfterError/);
-  assert.match(hook, /retainedAfterError: Boolean\(queueError\)/,
-    '最新排队请求投递失败时，已成功返回的上一轮结果必须显式标记为失败后保留。');
-  assert.match(hook, /lastResultSignatureRef\.current = ''/);
+  assert.match(worker, /retainedAfterError/);
+  assert.equal(worker.includes('buildResultSignature'), false,
+    '不完整的展示签名不得作为整个业务结果复用的依据；行为由 order-worker 专项覆盖。');
   assert.match(servicePresentation, /data-recommendation-pending-order=\{pending \? 'true' : undefined\}/);
   assert.match(servicePresentation, /更新失败，当前为上次结果/);
   assert.match(collectionState, /推荐更新失败/);
@@ -554,8 +555,8 @@ async function assertSourceContracts() {
       `${field} 必须来自独立策略，而不是可空料理动作目标。`,
     );
   }
-  assert.match(worker, /item\.target\?\.specialTargetRevision \?\? ''/,
-    'Worker 结果标识必须携带独立修订号，避免 A -> B -> A 复用旧结果。');
+  assert.match(hook, /state\.resultContextSignature === contextSignature/,
+    '执行结果必须属于当前经营上下文，旧显示结果不能重新标记为当前。');
   assert.equal(
     (api.match(/specialTargetRevision: String\(specialTargetPolicy\.specialTargetRevision\)/g) ?? []).length,
     2,
@@ -593,7 +594,7 @@ async function assertSourceContracts() {
     false,
     '特殊目标 Worker pending 不得全局阻断只送酒或只完成阶段。',
   );
-  assert.match(workbench, /const requiresRecipeTarget = shouldStartCooking[\s\S]{0,180}shouldDeliverFood/);
+  assert.match(workbench, /const requiresRecipeTarget =\s*shouldStartCooking[\s\S]{0,180}shouldDeliverFood/);
   assert.match(automation, /if \(!requiresRecipeTarget\)/);
   assert.equal(automation.includes('buildWackyFoodTargetSignature'), false);
   assert.match(automation, /reconcileRareRecipeTargetForSpecialBusiness/);

@@ -1,6 +1,6 @@
 # 验证指南
 
-更新日期：2026-09-10
+更新日期：2026-09-21
 
 本文档负责回答“改动后应运行哪些验证”。它只记录测试入口、选择规则和平台边界；每项测试的完整断言、
 fixtures 和禁止路径以 `tests/` 下的源码为准，业务契约不在这里重复维护。
@@ -52,8 +52,9 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 | 连接恢复 | `corepack pnpm audit:connection-recovery` |
 | 主设备与生效配置 | `corepack pnpm audit:device-authority`、`corepack pnpm audit:device-authority:ui` |
 | 字号与缩放 | `corepack pnpm audit:font-scale` |
+| 浅深主题文字、控件边界与焦点对比度 | `corepack pnpm audit:theme-contrast` |
 | 设置与帮助 | `corepack pnpm audit:settings-help`、`corepack pnpm audit:settings-lifecycle` |
-| 连接草稿、推荐归属与断线操作 | `corepack pnpm audit:ui-lifecycle` |
+| 导航迁移、推荐恢复、连接草稿与断线操作 | `corepack pnpm audit:ui-lifecycle` |
 | 库存修改占用与结果确认 | `corepack pnpm audit:inventory-ui` |
 | 桌面窗口请求与实际状态 | `corepack pnpm audit:desktop-window` |
 | 订单状态与展示 | `corepack pnpm audit:service-orders` |

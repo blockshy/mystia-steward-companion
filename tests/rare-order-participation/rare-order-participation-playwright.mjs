@@ -176,9 +176,9 @@ try {
   );
 
   console.log('PASS: rare-order participation extension module and service queue UI audit completed.');
-  console.log('- 模块默认关闭时不生成稀客队列页签，关闭后稳定切回稀客页且重开不恢复旧队列选择');
+  console.log('- 稀客调度固定入口在模块关闭后仅保留开关和人数，队列与名单即时卸载');
   console.log('- 1280/640/390 扩展名单搜索、调度状态、移出确认与取消焦点返回通过');
-  console.log('- 经营中稀客/稀客队列/普客三个页签与横向溢出检查通过');
+  console.log('- 经营稀客/普客/稀客调度平级页签与横向溢出检查通过');
   console.log('- 默认暂停、订单级优先启用、稀客级非抢占优先、单订单暂停、队尾重启与所有修改按钮忙碌状态通过');
   console.log('- 普通稀客页与专注模式按 Mod 稀客队列同步隐藏、显示和排序；失败的修改操作不改变可见集合');
   console.log('- 从设备模块开关、扩展名单、队列操作禁用与主设备远程关闭/重开一致性检查通过');
@@ -225,6 +225,7 @@ async function setParticipationModuleEnabled(page, enabled) {
     );
     return element instanceof HTMLInputElement && element.checked === expected;
   }, enabled, { timeout: 5_000 });
+  if (enabled) await expandParticipationRoster(page);
   await module.locator('[data-rare-guest-participation-roster="true"]').waitFor({
     state: enabled ? 'visible' : 'detached',
     timeout: 12_000,
@@ -234,61 +235,67 @@ async function setParticipationModuleEnabled(page, enabled) {
 async function assertQueueSelectionResetAcrossModuleToggle(page) {
   await openServiceQueue(page);
   assert.equal(
-    await page.locator('[data-service-order-tab-trigger="rare-queue"]').getAttribute('aria-selected'),
+    await participationTrigger(page).getAttribute('aria-selected'),
     'true',
     '动态关闭前应先选中稀客队列',
   );
 
   try {
     await disableParticipationModule(page);
-    await openServiceRecommendations(page);
-    await assertQueueTabUnavailable(page, '从稀客队列关闭模块');
+    await assertSchedulingContentsUnavailable(page, '从稀客队列关闭模块');
   } finally {
     await enableParticipationModule(page);
   }
-  await openServiceRecommendations(page);
-  const queueTrigger = page.locator('[data-service-order-tab-trigger="rare-queue"]');
+  const queueTrigger = participationTrigger(page);
   await queueTrigger.waitFor({ state: 'visible', timeout: 12_000 });
+  await page.locator('[data-rare-order-participation-panel="true"]').waitFor({ state: 'visible', timeout: 12_000 });
   assert.equal(
-    await page.locator('[data-service-order-tab="rare-queue"]').count(),
+    await page.locator('[data-rare-order-participation-panel="true"]').count(),
     1,
     '重新开启模块后应重新生成稀客队列内容',
   );
   assert.equal(
     await queueTrigger.getAttribute('aria-selected'),
-    'false',
-    '重新开启模块后不应恢复旧稀客队列选择',
+    'true',
+    '重新开启模块后应保留固定稀客调度入口的选择',
   );
-  await assertRareTabActive(page, '重新开启模块');
 }
 
 async function assertSecondaryQueueSelectionResetAcrossPrimaryModuleToggle(primaryPage, secondaryPage) {
   assert.equal(
-    await secondaryPage.locator('[data-service-order-tab-trigger="rare-queue"]').getAttribute('aria-selected'),
+    await participationTrigger(secondaryPage).getAttribute('aria-selected'),
     'true',
     '主设备远程关闭前从设备应仍停留在稀客队列',
   );
 
   try {
     await disableParticipationModule(primaryPage);
-    await assertQueueTabUnavailable(secondaryPage, '主设备远程关闭后的从设备');
+    await assertSchedulingContentsUnavailable(secondaryPage, '主设备远程关闭后的从设备');
   } finally {
     await enableParticipationModule(primaryPage);
   }
 
-  const secondaryQueueTrigger = secondaryPage.locator(
-    '[data-service-order-tab-trigger="rare-queue"]',
-  );
+  const secondaryQueueTrigger = participationTrigger(secondaryPage);
   await secondaryQueueTrigger.waitFor({ state: 'visible', timeout: 12_000 });
   await secondaryPage.waitForFunction(() => (
-    document.querySelectorAll('[data-service-order-tab="rare-queue"]').length === 1
+    document.querySelectorAll('[data-rare-order-participation-panel="true"]').length === 1
   ), null, { timeout: 12_000 });
   assert.equal(
     await secondaryQueueTrigger.getAttribute('aria-selected'),
-    'false',
-    '主设备重新开启模块后，从设备不应恢复旧稀客队列选择',
+    'true',
+    '主设备重新开启模块后，从设备应保留稀客调度页并恢复队列',
   );
-  await assertRareTabActive(secondaryPage, '主设备重新开启后的从设备');
+}
+
+function participationTrigger(page) {
+  return page.locator('[data-service-tabs]').getByRole('tab', { name: '稀客调度', exact: true });
+}
+
+async function assertSchedulingContentsUnavailable(page, label) {
+  await page.locator('[data-rare-order-participation-panel="true"]').waitFor({ state: 'detached', timeout: 12_000 });
+  assert.equal(await participationTrigger(page).getAttribute('aria-selected'), 'true', `${label}时固定调度入口应保持选中`);
+  assert.equal(await page.locator('[data-rare-guest-participation-roster="true"]').count(), 0);
+  await page.getByText(/稀客调度模块已停用/).waitFor();
 }
 
 async function assertQueueTabUnavailable(page, label) {
@@ -303,6 +310,7 @@ async function assertQueueTabUnavailable(page, label) {
     `${label}时经营推荐应只保留稀客和普客两个 Tab`,
   );
   assert.equal(await page.locator('[data-service-order-tab-trigger="normal"]').count(), 1);
+  assert.equal(await participationTrigger(page).count(), 1, `${label}时稀客调度入口必须仍可访问`);
   await assertRareTabActive(page, label);
 }
 
@@ -318,6 +326,8 @@ async function assertExtensionRoster(page, profileName, readOnly) {
   await openExtensionSection(page, '稀客调度');
   const root = page.locator('[data-rare-guest-participation-roster="true"]');
   await root.waitFor({ state: 'visible', timeout: 10_000 });
+  await root.getByText('参与随时启用/暂停的稀客列表', { exact: true }).waitFor();
+  await root.getByText(/名单内稀客的每一笔新订单都默认暂停/).waitFor();
 
   const managed1001 = managedRow(root, 1001, true);
   const managed1002 = managedRow(root, 1002, true);
@@ -325,6 +335,8 @@ async function assertExtensionRoster(page, profileName, readOnly) {
   await managed1002.waitFor({ state: 'visible', timeout: 12_000 });
   await root.getByRole('heading', { name: '已加入名单 (2)', exact: true }).waitFor({ timeout: 12_000 });
   await managed1001.getByText('当前 1 笔', { exact: true }).waitFor({ timeout: 12_000 });
+  assert.equal(await managed1001.locator('[data-gamepad-focus-key="extensions:rare-participation:guest:1001:remove"]').isDisabled(), readOnly,
+    `${profileName}: 名单写入按钮必须服从主设备所有权`);
 
   const search = root.getByPlaceholder('输入姓名、ID或地区', { exact: true });
   assert.equal(await search.isDisabled(), false, `${profileName}: 稀客搜索不应禁用`);
@@ -357,7 +369,6 @@ async function assertRemovalCancelReturnsFocus(page, root) {
 async function assertServiceTabs(page, profileName) {
   const expectedTabs = new Map([
     ['rare', '稀客'],
-    ['rare-queue', '稀客队列'],
     ['normal', '普客'],
   ]);
   for (const [kind, label] of expectedTabs) {
@@ -366,7 +377,7 @@ async function assertServiceTabs(page, profileName) {
     await trigger.click();
     await page.locator(`[data-service-order-tab="${kind}"]`).waitFor({ state: 'visible', timeout: 10_000 });
   }
-  await page.locator('[data-service-order-tab-trigger="rare-queue"]').click();
+  await participationTrigger(page).click();
   const panel = page.locator('[data-rare-order-participation-panel="true"]');
   await panel.waitFor({ state: 'visible' });
   await panel.getByRole('heading', { name: '稀客队列', exact: true }).waitFor();
@@ -593,17 +604,24 @@ async function assertPrimaryParticipationLifecycle(page) {
 }
 
 async function openExtensionSection(page, label) {
-  const topTab = page.locator('[data-gamepad-tab-value="extensions"]').first();
+  assert.equal(label, '稀客调度');
+  const topTab = page.locator('[data-gamepad-tab-value="service"]').first();
   await topTab.scrollIntoViewIfNeeded();
   await topTab.click();
-  const trigger = page.locator('[data-extension-tabs]').getByRole('tab', { name: label, exact: true });
+  const trigger = page.locator('[data-service-tabs]').getByRole('tab', { name: label, exact: true });
   await trigger.scrollIntoViewIfNeeded();
   await trigger.click();
+  await expandParticipationRoster(page);
+}
+
+async function expandParticipationRoster(page) {
+  const roster = page.getByRole('button', { name: /调度名单 ·/ });
+  if (await roster.count() && await roster.getAttribute('aria-expanded') !== 'true') await roster.click();
 }
 
 async function openServiceQueue(page) {
   await openServiceRecommendations(page);
-  await page.locator('[data-service-order-tab-trigger="rare-queue"]').click();
+  await page.locator('[data-service-tabs]').getByRole('tab', { name: '稀客调度', exact: true }).click();
   await page.locator('[data-rare-order-participation-panel="true"]').waitFor({ state: 'visible', timeout: 10_000 });
 }
 
@@ -611,8 +629,7 @@ async function openServiceRecommendations(page) {
   const topTab = page.locator('[data-gamepad-tab-value="service"]').first();
   await topTab.scrollIntoViewIfNeeded();
   await topTab.click();
-  const serviceViewControl = page.locator('[data-slot="segmented-control"]').filter({ hasText: '推荐' }).first();
-  await serviceViewControl.locator('label').filter({ hasText: /^推荐$/ }).click();
+  await page.locator('[data-service-order-tab-trigger="rare"]').click();
 }
 
 async function openRareRecommendations(page) {
