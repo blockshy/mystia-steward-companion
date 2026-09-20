@@ -30,6 +30,7 @@
     "audit:device-authority": "node tests/device-authority/device-authority-audit.mjs",
     "audit:device-authority:ui": "node tests/device-authority/device-authority-playwright.mjs",
     "audit:font-scale": "node tests/font-scale/font-scale-playwright.mjs",
+    "audit:theme-contrast": "node tests/theme/theme-contrast-playwright.mjs",
     "audit:settings-help": "node tests/settings-help/settings-help-playwright.mjs",
     "audit:settings-lifecycle": "node tests/settings-lifecycle/settings-lifecycle-playwright.mjs",
     "audit:ui-lifecycle": "node tests/ui-lifecycle/ui-lifecycle-playwright.mjs",

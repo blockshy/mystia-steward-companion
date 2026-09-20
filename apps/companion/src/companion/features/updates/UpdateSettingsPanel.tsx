@@ -221,7 +221,7 @@ function ReleaseHistory({
           <CardDescription>发现新版本后，会在这里逐一列出当前版本到最新版本的更新说明。</CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-2 text-sm text-muted-foreground">
-          <IconCheck size={17} className="text-primary" aria-hidden="true" />
+          <IconCheck size={17} className="text-success" aria-hidden="true" />
           {status?.state === 'current' ? '当前已经是最新版本。' : '检查更新后显示版本说明。'}
         </CardContent>
       </Card>
@@ -230,10 +230,10 @@ function ReleaseHistory({
 
   if (status.releaseHistoryState !== 'ready' || releases.length === 0) {
     return (
-      <Card className="border-amber-500/35 bg-amber-500/[0.04]">
+      <Card className="border-warning/35 bg-warning/[0.04]">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <IconAlertTriangle size={18} className="text-amber-600" aria-hidden="true" />
+            <IconAlertTriangle size={18} className="text-warning" aria-hidden="true" />
             完整版本说明暂不可用
           </CardTitle>
           <CardDescription>

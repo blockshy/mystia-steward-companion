@@ -5,7 +5,7 @@ import type { ReactNode } from 'react';
 import { useThemeMode } from '@/lib/theme';
 
 const companionTheme = createTheme({
-  fontFamily: "'Geist Variable', sans-serif",
+  fontFamily: "'Geist Variable', 'Noto Sans CJK SC', 'Microsoft YaHei', 'PingFang SC', sans-serif",
   fontSizes: {
     xs: 'calc(0.75rem * var(--companion-font-scale))',
     sm: 'calc(0.875rem * var(--companion-font-scale))',
@@ -25,19 +25,19 @@ const companionTheme = createTheme({
   },
   primaryColor: 'steward',
   defaultRadius: 0,
-  primaryShade: { light: 6, dark: 4 },
+  primaryShade: { light: 6, dark: 3 },
   colors: {
     steward: [
-      '#fff0c8',
-      '#f6ddb0',
-      '#e9c28b',
-      '#d99a5a',
-      '#f08a35',
-      '#bd6430',
-      '#a93b25',
-      '#87301e',
-      '#622516',
-      '#3f1813',
+      '#fff5e8',
+      '#f6dec0',
+      '#edc79d',
+      '#e7a05b',
+      '#c87d3d',
+      '#ab602b',
+      '#8c4b1f',
+      '#743a1a',
+      '#542918',
+      '#382015',
     ],
   },
   cursorType: 'pointer',
@@ -47,9 +47,15 @@ const companionCssVariablesResolver: CSSVariablesResolver = () => ({
   variables: {},
   light: {
     '--mantine-color-body': 'transparent',
+    '--mantine-color-disabled': 'var(--companion-muted-surface)',
+    '--mantine-color-disabled-color': 'var(--muted-foreground)',
+    '--mantine-color-disabled-border': 'var(--border)',
   },
   dark: {
     '--mantine-color-body': 'transparent',
+    '--mantine-color-disabled': 'var(--companion-muted-surface)',
+    '--mantine-color-disabled-color': 'var(--muted-foreground)',
+    '--mantine-color-disabled-border': 'var(--border)',
   },
 });
 

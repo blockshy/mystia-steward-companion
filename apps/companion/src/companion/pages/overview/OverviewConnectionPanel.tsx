@@ -27,7 +27,7 @@ function StatusMetric({
   tone: StatusTone;
 }) {
   const toneClass = tone === 'good'
-    ? 'text-[#4f6d38] dark:text-[#c6d59b]'
+    ? 'text-success'
     : tone === 'bad'
       ? 'text-destructive'
       : 'text-foreground';
