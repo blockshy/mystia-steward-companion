@@ -52,6 +52,7 @@ const companionCssVariablesResolver: CSSVariablesResolver = () => ({
     '--mantine-color-disabled-border': 'var(--border)',
   },
   dark: {
+    '--mantine-color-steward-3': 'var(--primary)',
     '--mantine-color-body': 'transparent',
     '--mantine-color-disabled': 'var(--companion-muted-surface)',
     '--mantine-color-disabled-color': 'var(--muted-foreground)',
