@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-09-21",
+  "updatedAt": "2026-10-07",
   "intro": "这里记录伴随窗口的常用操作、功能说明和排查步骤，可从目录选择条目。",
   "categories": [
     {
@@ -201,7 +201,7 @@
             "Windows 设备下载 mystia-steward-companion-companion-windows-x64.exe 并直接运行；如果当前版本没有独立 EXE，也可从完整 Mod 包的 companion 目录取出 exe。",
             "Android 设备下载并安装对应 CPU 架构的 APK；普通手机和平板优先选择 mystia-steward-companion-android-arm64-v8a.apk，旧设备再选择 mystia-steward-companion-android-armeabi-v7a.apk。",
             "先在 B 设备浏览器访问 http://A设备局域网地址:32145/health；能看到 JSON 表示地址、路由和防火墙基本可达。",
-            "在 B 设备进入概览页的客户端分栏，填写通过健康检查的 LAN 地址和 Token，然后按 Enter 应用或开启连接。",
+            "在 B 设备进入概览页的客户端分栏，填写通过健康检查的 LAN 地址和 Token，然后点击应用并连接或按 Enter 提交。",
             "等待客户端分栏的连接状态变为已连接。",
             "进入概览页的设备共享分栏查看设备列表；需要由 B 设备接管共享配置时，先同步配置，再将 B 设备设为主设备。"
           ],

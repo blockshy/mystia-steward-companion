@@ -80,10 +80,10 @@ dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
   -ReferenceDir "D:\path\to\mystia-steward-companion-references"
-
-dotnet run --project tests\ui-pinning-runtime\UiPinningRuntimeSmoke.csproj `
-  -c Release -p:ReferenceDir="D:\path\to\mystia-steward-companion-references"
 ```
+
+锁定 .NET 6 smoke 只挂载当前仓库；运行前将正式引用和上文测试专用依赖准备到
+`mods/bepinex/References/`，然后使用 `corepack pnpm test:dotnet6 ui-pinning-runtime`。
 
 工具链安装、完整构建和缓存治理见[本地开发与构建](../../../docs/local-development.md)；测试专用依赖与
 Harmony/MonoMod 容器入口见[验证指南](../../../docs/validation-guide.md)。本文件不重复维护通用工具版本或

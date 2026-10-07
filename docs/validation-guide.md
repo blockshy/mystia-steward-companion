@@ -1,6 +1,6 @@
 # 验证指南
 
-更新日期：2026-09-21
+更新日期：2026-10-07
 
 本文档负责回答“改动后应运行哪些验证”。它只记录测试入口、选择规则和平台边界；每项测试的完整断言、
 fixtures 和禁止路径以 `tests/` 下的源码为准，业务契约不在这里重复维护。
@@ -27,8 +27,8 @@ fixtures 和禁止路径以 `tests/` 下的源码为准，业务契约不在这�
 | --- | --- |
 | 仅 Markdown 文档 | `git diff --check`，检查相对链接和命令仍存在 |
 | React、TypeScript、CSS、前端数据 | `corepack pnpm lint`、`corepack pnpm build` |
-| Tauri Rust | `cargo check --manifest-path apps/companion/src-tauri/Cargo.toml` |
-| Tauri 窗口切换或聚焦 | 上项加 `cargo test --manifest-path apps/companion/src-tauri/Cargo.toml --lib` |
+| Tauri Rust | `cargo check --locked --manifest-path apps/companion/src-tauri/Cargo.toml` |
+| Tauri 窗口切换或聚焦 | 上项加 `cargo test --locked --manifest-path apps/companion/src-tauri/Cargo.toml --lib` |
 | 独立 updater | updater 单测、Linux Windows-UI 类型检查及 Windows 实机 |
 | C# Mod 或本地 API | `dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release`，再选专项 smoke |
 | Android Rust/Gradle/签名 | Android 工具链检查、对应 APK 构建及 Android 专项 audit |
@@ -54,7 +54,7 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 | 字号与缩放 | `corepack pnpm audit:font-scale` |
 | 浅深主题文字、控件边界与焦点对比度 | `corepack pnpm audit:theme-contrast` |
 | 设置与帮助 | `corepack pnpm audit:settings-help`、`corepack pnpm audit:settings-lifecycle` |
-| 导航迁移、推荐恢复、连接草稿与断线操作 | `corepack pnpm audit:ui-lifecycle` |
+| 导航与页面生命周期、推荐恢复、连接草稿与断线操作 | `corepack pnpm audit:ui-lifecycle` |
 | 库存修改占用与结果确认 | `corepack pnpm audit:inventory-ui` |
 | 桌面窗口请求与实际状态 | `corepack pnpm audit:desktop-window` |
 | 订单状态与展示 | `corepack pnpm audit:service-orders` |
@@ -104,18 +104,18 @@ corepack pnpm audit:runtime-missions:ui
 普通 Tauri 变更：
 
 ```bash
-cargo check --manifest-path apps/companion/src-tauri/Cargo.toml
-cargo test --manifest-path apps/companion/src-tauri/Cargo.toml --lib
+cargo check --locked --manifest-path apps/companion/src-tauri/Cargo.toml
+cargo test --locked --manifest-path apps/companion/src-tauri/Cargo.toml --lib
 ```
 
 独立 updater 逻辑和 DPI 换算：
 
 ```bash
-cargo test \
+cargo test --locked \
   --manifest-path apps/companion/src-tauri/Cargo.toml \
   --bin mystia-steward-companion-updater
 
-cargo check \
+cargo check --locked \
   --manifest-path apps/companion/src-tauri/Cargo.toml \
   --bin mystia-steward-companion-updater \
   --features updater-windows-ui-check
@@ -127,8 +127,8 @@ cargo check \
 ## C# smoke 选择
 
 先确保锁定 References 已恢复，再运行 Mod 构建。下列按生产模块分组，选择所有受影响组中的项目。
-`AutomationCookingJobSmoke`、`UiPinningRuntimeSmoke` 和 `RuntimeTargetRecipeVariantSmoke` 会安装真实动态补丁；
-Windows 可在支持的运行时直接执行，Linux 必须改用后文的锁定容器入口。
+`AutomationCookingJobSmoke`、`UiPinningRuntimeSmoke` 和 `RuntimeTargetRecipeVariantSmoke` 会安装真实动态补丁，
+统一通过下文的锁定 .NET 6 容器入口执行。
 
 ### 本地 API、存储、日志与更新
 
@@ -184,7 +184,7 @@ dotnet run --project tests/runtime-order-terminal-receipt/RuntimeOrderTerminalRe
 dotnet run --project tests/rare-order-identity-matching/RareOrderIdentityMatchingSmoke.csproj -c Release
 dotnet run --project tests/runtime-automation-control/RuntimeAutomationControlSmoke.csproj -c Release
 corepack pnpm test:dotnet6 runtime-rare-guest-participation
-dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release
+corepack pnpm test:dotnet6 automation-cooking-job
 dotnet run --project tests/rare-guest-invitation-readonly/RareGuestInvitationReadOnlySmoke.csproj -c Release
 corepack pnpm audit:automation
 corepack pnpm audit:rare-order-participation
@@ -196,8 +196,7 @@ corepack pnpm audit:rare-order-participation
 ### 游戏 UI 集成
 
 ```bash
-dotnet run --project tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj -c Release
-dotnet run --project tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release
+corepack pnpm test:dotnet6 ui-pinning-runtime runtime-target-recipe-variant
 dotnet run --project tests/runtime-seat-highlight/RuntimeSeatHighlightSmoke.csproj -c Release
 dotnet run --project tests/runtime-order-highlight/RuntimeOrderHighlightSmoke.csproj -c Release
 dotnet run --project tests/runtime-throw-delivery-order-highlight/RuntimeThrowDeliverOrderHighlightSmoke.csproj -c Release
@@ -207,12 +206,7 @@ corepack pnpm audit:ui-pinning
 这些 smoke 只验证 Mod 自有状态、订单标识和生命周期契约，仍需在锁定游戏/BepInEx 环境实测制作页、酒水页、
 HUD 订单、桌位和投掷送达面板。
 
-修改目标加料料理服务或专项测试后，为避免同秒增量时间戳导致测试误报通过，强制执行：
-
-```bash
-dotnet build tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release -t:Rebuild
-dotnet run --project tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release --no-build
-```
+`runtime-target-recipe-variant` 的锁定容器入口会先强制重新构建，再以 `--no-build` 执行，避免增量构建漏掉改动。
 
 ### 特殊经营与输入
 

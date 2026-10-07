@@ -19,8 +19,8 @@ apps/companion/src-tauri/gen/android/**/*.jks
 apps/companion/src-tauri/gen/android/**/*.keystore
 .game
 *.local
+# Local agent instructions, handover, development plans, and evidence
 AGENTS.md
-SESSION_HANDOVER.md
 dev/
 temp/
 .playwright-cli/

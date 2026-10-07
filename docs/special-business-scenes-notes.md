@@ -1,8 +1,8 @@
 # 特殊经营游戏规则
 
-更新日期：2026-09-02
+更新日期：2026-10-07
 
-本文只记录已由游戏元数据、BepInEx #783 interop、IDA/Hex-Rays 和实机日志确认的特殊经营原生规则。Mod 如何选择和执行方案见[特殊经营实现](special-business-implementation.md)，验证状态与复测清单见[特殊经营验证](special-business-validation.md)。不得把 Mod 的保守策略写成游戏原生门槛。
+本文只记录已由游戏元数据、BepInEx #783 interop、IDA/Hex-Rays 和实机日志确认的特殊经营原生规则。Mod 如何选择和执行方案见[特殊经营实现](special-business-implementation.md)，验证要求与复测清单见[特殊经营验证](special-business-validation.md)。不得把 Mod 的保守策略写成游戏原生门槛。
 
 ## 证据与术语
 

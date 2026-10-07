@@ -74,7 +74,7 @@
 
 - [开发环境、构建与打包](mods/bepinex/README.dev.md)
 - [开发约定](docs/development-conventions.md)
-- [本地构建与发布](docs/README.md)
+- [开发文档索引](docs/README.md)
 - [IL2CPP / IDA 分析流程](docs/il2cpp-analysis-workflow.md)
 - [项目机制与当前约束](docs/repo-memory.md)
 

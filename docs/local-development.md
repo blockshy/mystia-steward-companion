@@ -1,6 +1,6 @@
 # 本地开发与构建
 
-更新日期：2026-09-10
+更新日期：2026-10-07
 
 本文档只说明日常本地开发环境、构建入口和开发服务。测试选择见
 [验证指南](validation-guide.md)，Android 专用环境见
@@ -96,7 +96,7 @@ corepack pnpm preview
 ```bash
 corepack pnpm tauri:dev
 corepack pnpm tauri:build
-cargo check --manifest-path apps/companion/src-tauri/Cargo.toml
+cargo check --locked --manifest-path apps/companion/src-tauri/Cargo.toml
 ```
 
 `tauri:build` 使用 `--no-bundle`，适合日常验证 Rust 壳和嵌入式前端；完整安装包由后文的构建脚本生成。
@@ -218,8 +218,8 @@ Playwright 环境变量、浏览器安装和按功能选择的巡检命令见
 
 - Windows 游戏实测使用 Windows x64 IL2CPP BepInEx #783；不要把 Linux BepInEx 安装到通过 Proton 运行的
   Windows PE 游戏。
-- Linux 可完成源码分析、前端、Rust、普通 .NET 构建和大部分 smoke；Win32 窗口、WebView2、APK 签名及
-  真实游戏行为仍需对应平台验证。
+- Linux 可完成源码分析、前端、Rust、普通 .NET 构建和大部分 smoke；配置锁定 Android 工具链和签名材料后，
+  也可构建、签名及验签 APK。Win32 窗口、WebView2、Android 客户端行为与真实游戏行为仍需对应平台实测。
 - 游戏运行时结构的判断以锁定反编译资料为依据，流程见
   [IL2CPP 源码与 IDA 分析工作流](il2cpp-analysis-workflow.md)。
 - 日常构建不改变版本、不创建 Git 标签，也不发布产物；预览版和正式版操作统一见

@@ -1,6 +1,6 @@
 # 游戏界面辅助
 
-更新日期：2026-09-02
+更新日期：2026-10-07
 
 本文说明 Mod 如何把伴随窗口选出的普客与稀客目标显示到游戏原生 UI。目标如何选出见
 [推荐引擎](recommendation-engine.md)，订单标识和生命周期见
@@ -140,18 +140,17 @@ corepack pnpm audit:rare-order-participation
 后端各表面：
 
 ```bash
-dotnet run --project tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj -c Release
+corepack pnpm test:dotnet6 ui-pinning-runtime
 dotnet run --project tests/runtime-seat-highlight/RuntimeSeatHighlightSmoke.csproj -c Release
 dotnet run --project tests/runtime-order-highlight/RuntimeOrderHighlightSmoke.csproj -c Release
 dotnet run --project tests/runtime-throw-delivery-order-highlight/RuntimeThrowDeliverOrderHighlightSmoke.csproj -c Release
 ```
 
-加料事务修改后必须强制重建再运行，避免增量时间戳导致测试误报通过：
+加料事务修改后使用专项入口，它会在锁定容器内强制重建再运行：
 
 ```bash
-dotnet build tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release -t:Rebuild
-dotnet run --project tests/runtime-target-recipe-variant/RuntimeTargetRecipeVariantSmoke.csproj -c Release --no-build
+corepack pnpm test:dotnet6 runtime-target-recipe-variant
 ```
 
-需要锁定 .NET 6 + Harmony 的组合验证时运行 `corepack pnpm test:dotnet6`。完整验证分层见
+上述真实 Harmony 探针均通过唯一的 `test:dotnet6` 入口执行。完整矩阵的预构建要求与验证分层见
 [验证指南](validation-guide.md)。
