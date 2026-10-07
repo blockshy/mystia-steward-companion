@@ -3,6 +3,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateFlutterLock } from './flutter-toolchain.mjs';
 
 import {
   isCanonicalJavaReleaseSemver,
@@ -36,6 +37,9 @@ if (!supportedProfiles.has(profile)) {
 
 const failures = [];
 const toolchain = await readJson('toolchain.lock.json');
+// During migration the existing product does not require an installed Flutter SDK,
+// but every build still validates the shared version policy.
+validateFlutterLock(toolchain.flutter);
 const packageJson = await readJson('package.json');
 const globalJson = await readJson('global.json');
 const dotnet6GlobalJson = await readJson('tests/dotnet6/global.json');

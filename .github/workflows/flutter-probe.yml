@@ -1,0 +1,79 @@
+name: Flutter migration probes
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [migration/flutter]
+    paths:
+      - '.github/workflows/flutter-probe.yml'
+      - 'toolchain.lock.json'
+      - 'scripts/*flutter*'
+      - 'tests/flutter-*/**'
+
+permissions: {}
+
+jobs:
+  windows-updater-probe:
+    name: Build read-only Windows updater probe
+    runs-on: windows-2022
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Setup locked Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install and validate locked Flutter
+        shell: pwsh
+        run: |
+          node scripts/install-locked-flutter.mjs --install-root "$env:RUNNER_TEMP/flutter"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --test tests/flutter-toolchain/flutter-toolchain.test.mjs
+      - name: Install locked PowerShell and GitHub CLI
+        shell: pwsh
+        run: node scripts/install-locked-release-tools.mjs --install-root "$env:RUNNER_TEMP/probe-tools"
+      - name: Install locked Rust
+        shell: pwsh
+        run: |
+          $version = (Get-Content toolchain.lock.json -Raw | ConvertFrom-Json).rust
+          rustup toolchain install $version --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify network transport on Windows
+        shell: pwsh
+        run: node scripts/run-flutter-network-probe.mjs --sdk-root "$env:RUNNER_TEMP/flutter"
+      - name: Build Flutter and embedded bootstrap
+        shell: pwsh
+        run: ./scripts/build-flutter-updater-probe.ps1 -SdkRoot "$env:RUNNER_TEMP/flutter" -OutputDirectory "$env:RUNNER_TEMP/mystia-steward-companion-probe"
+      - name: Verify report verdicts on PowerShell 7
+        shell: pwsh
+        run: ./tests/flutter-platform-probe/Test-Start-Probe.ps1
+      - name: Verify consumer compatibility on Windows PowerShell 5.1
+        shell: powershell
+        run: ./tests/flutter-platform-probe/Test-Start-Probe.ps1
+      - name: Run delivered Flutter startup and cancellation
+        shell: pwsh
+        run: |
+          $env:MYSTIA_UPDATER_PROBE_AUTOMATION = 'cancel-after-ready'
+          & "$env:RUNNER_TEMP/mystia-steward-companion-probe/Start-Probe.ps1" -EvidenceParent $env:RUNNER_TEMP
+      - name: Upload runtime evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-steward-companion-windows-probe-runtime-evidence
+          path: |
+            ${{ runner.temp }}/mystia-steward-companion-p0-*/probe-report.json
+            ${{ runner.temp }}/mystia-steward-companion-p0-*/state/install-status.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload read-only probe package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-steward-companion-windows-updater-probe
+          path: ${{ runner.temp }}/mystia-steward-companion-probe/
+          if-no-files-found: error
+          retention-days: 14

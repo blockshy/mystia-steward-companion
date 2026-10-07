@@ -28,6 +28,7 @@
 | --- | --- |
 | [本地开发与构建](local-development.md) | 锁定工具链、依赖安装、桌面/Mod 构建、缓存和本地预览 |
 | [Android 开发](android-development.md) | Android 工具链、签名、双 ABI APK 构建和本地排障 |
+| [Flutter 开发与探针](flutter-development.md) | 迁移探针的锁定 SDK、Dart/原生边界、Windows 探针构建入口 |
 | [验证指南](validation-guide.md) | 按变更范围选择 lint、build、Cargo、dotnet、audit、smoke 与 Playwright |
 | [发布流程](local-release.md) | 正式 Actions 发布、预览版发布、审批、资产事务和失败处理 |
 | [本地构建引用](../mods/bepinex/References/README.md) | 私有引用包的标识、恢复和校验 |

@@ -1,0 +1,6 @@
+name: mystia_steward_companion_network_probe
+description: Isolated P0 checks for the Dart native local API transport.
+publish_to: none
+version: 0.0.0
+environment:
+  sdk: '>=3.13.5 <3.14.0'

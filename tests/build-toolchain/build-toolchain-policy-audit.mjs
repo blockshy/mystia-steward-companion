@@ -97,6 +97,7 @@ assert.deepEqual(
     'dotnet6Image',
     'dotnet6Sdk',
     'dotnetSdk',
+    'flutter',
     'githubCli',
     'node',
     'pnpm',

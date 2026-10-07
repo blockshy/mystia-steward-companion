@@ -7,6 +7,8 @@
 [Android 开发](android-development.md)，版本与发布操作见
 [发布流程](local-release.md)。
 
+Flutter 迁移探针的 SDK 安装、校验与构建入口见[Flutter 开发与探针](flutter-development.md)。
+
 ## 工具链基线
 
 根目录 [`toolchain.lock.json`](../toolchain.lock.json) 是本地与 CI 共用的唯一版本来源。文档中的版本仅帮助安装；

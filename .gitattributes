@@ -1,2 +1,7 @@
 # Tauri rewrites this manifest with LF line endings when synchronizing managed features.
 apps/companion/src-tauri/Cargo.toml text eol=lf
+
+# Dart formatting and Pigeon regeneration are compared across Linux and Windows.
+*.dart text eol=lf
+tests/flutter-platform-probe/windows/runner/probe_api.g.cpp text eol=lf
+tests/flutter-platform-probe/windows/runner/probe_api.g.h text eol=lf

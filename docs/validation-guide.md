@@ -30,6 +30,7 @@ fixtures 和禁止路径以 `tests/` 下的源码为准，业务契约不在这�
 | Tauri Rust | `cargo check --locked --manifest-path apps/companion/src-tauri/Cargo.toml` |
 | Tauri 窗口切换或聚焦 | 上项加 `cargo test --locked --manifest-path apps/companion/src-tauri/Cargo.toml --lib` |
 | 独立 updater | updater 单测、Linux Windows-UI 类型检查及 Windows 实机 |
+| Flutter 迁移探针 | [锁链、网络 JIT/AOT、Widget、Windows 构建与实测入口](flutter-development.md)；Rust 探针运行 `cargo test --locked --manifest-path tests/flutter-updater-probe/Cargo.toml` |
 | C# Mod 或本地 API | `dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release`，再选专项 smoke |
 | Android Rust/Gradle/签名 | Android 工具链检查、对应 APK 构建及 Android 专项 audit |
 | 构建、打包或引用恢复脚本 | 对应 build-artifacts/build-references audit |
