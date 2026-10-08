@@ -18,6 +18,10 @@
     <Compile Remove="tools/**/*.cs" />
   </ItemGroup>
 
+  <ItemGroup Condition="'$(CompanionControlBuildGitSha)' != ''">
+    <AssemblyMetadata Include="CompanionControlBuildGitSha" Value="$(CompanionControlBuildGitSha)" />
+  </ItemGroup>
+
   <ItemGroup>
     <Reference Include="BepInEx.Core">
       <HintPath>$(ReferenceDir)\BepInEx.Core.dll</HintPath>

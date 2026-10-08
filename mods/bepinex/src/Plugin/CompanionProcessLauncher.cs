@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using System.Text;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Plugin.CompanionControl;
 
 namespace MystiaStewardCompanion.Plugin;
 
@@ -16,11 +17,18 @@ internal static class CompanionProcessLauncher
     private static int _generation;
     private static bool _stopping;
     private static bool _launchPending;
+    private static CompanionControlProtocol _protocol;
+    private static IdentityControlSession? _identitySession;
+    internal static bool UsesIdentityControl => _protocol == CompanionControlProtocol.IdentityPipeV1;
+    internal static long IdentityHandoff => _identitySession?.Handoff ?? 0;
 
-    public static void BeginSession()
+    public static void BeginSession(StewardPluginConfig config)
     {
         lock (LifecycleLock)
         {
+            _identitySession?.Cancel();
+            _identitySession = null;
+            _protocol = config.CompanionControlProtocol.Value;
             _generation += 1;
             _stopping = false;
             _launchPending = false;
@@ -30,12 +38,22 @@ internal static class CompanionProcessLauncher
     public static void TryAutoLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
         if (!config.CompanionAutoLaunch.Value) return;
+        if (_protocol != CompanionControlProtocol.LegacyTcp)
+        {
+            GetIdentitySession(config, log, localApiToken)?.RequestAutoLaunch();
+            return;
+        }
         var options = CaptureLaunchOptions(config, log, localApiToken);
         if (options != null) QueueControlOrLaunch(ControlShow, options);
     }
 
-    public static void TryToggleOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
+    public static void TryToggleOrLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken, ControlInput input)
     {
+        if (_protocol != CompanionControlProtocol.LegacyTcp)
+        {
+            GetIdentitySession(config, log, localApiToken)?.Activate(input);
+            return;
+        }
         var options = CaptureLaunchOptions(config, log, localApiToken);
         if (options != null) QueueControlOrLaunch(ControlToggle, options);
     }
@@ -48,6 +66,11 @@ internal static class CompanionProcessLauncher
             if (_stopping) return;
             _stopping = true;
             generation = _generation;
+            if (_protocol != CompanionControlProtocol.LegacyTcp)
+            {
+                _identitySession?.NotifyExit();
+                return;
+            }
         }
 
         if (!ThreadPool.QueueUserWorkItem(_ =>
@@ -59,6 +82,33 @@ internal static class CompanionProcessLauncher
             }))
         {
             log?.LogWarning("Companion exit notification could not be queued.");
+        }
+    }
+
+    // Called from the existing real Unity Update path; registration never starts a process.
+    public static void PrepareIdentityControl(StewardPluginConfig config, ManualLogSource log, string localApiToken, uint thread)
+    {
+        if (_protocol == CompanionControlProtocol.LegacyTcp) return;
+        GetIdentitySession(config, log, localApiToken)?.Prepare(thread);
+    }
+
+    private static IdentityControlSession? GetIdentitySession(StewardPluginConfig config, ManualLogSource log, string token)
+    {
+        lock (LifecycleLock)
+        {
+            if (_stopping || _protocol != CompanionControlProtocol.IdentityPipeV1) return null;
+            if (_identitySession?.CanReplaceExitedClient == true)
+            {
+                var nextHandoff = checked(_identitySession.Handoff + 1);
+                _identitySession.Cancel();
+                _identitySession = new IdentityControlSession(new IdentityControlOptions(
+                    config.CompanionExecutablePath.Value, BuildLocalApiEndpoint(config.LocalApiPort.Value), token.Trim(),
+                    message => log.LogInfo(message)), nextHandoff);
+                log.LogInfo("companion_control protocol=IdentityPipeV1 event=session_replaced outcome=retained_client_exited");
+            }
+            return _identitySession ??= new IdentityControlSession(new IdentityControlOptions(
+                config.CompanionExecutablePath.Value, BuildLocalApiEndpoint(config.LocalApiPort.Value), token.Trim(),
+                message => log.LogInfo(message)));
         }
     }
 

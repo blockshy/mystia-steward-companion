@@ -5,3 +5,16 @@ apps/companion/src-tauri/Cargo.toml text eol=lf
 *.dart text eol=lf
 tests/flutter-platform-probe/windows/runner/probe_api.g.cpp text eol=lf
 tests/flutter-platform-probe/windows/runner/probe_api.g.h text eol=lf
+tests/flutter-window-probe/windows/runner/window_api.g.cpp text eol=lf
+tests/flutter-window-probe/windows/runner/window_api.g.h text eol=lf
+tests/flutter-window-probe/windows/runner/input_probe_api.g.cpp text eol=lf
+tests/flutter-window-probe/windows/runner/input_probe_api.g.h text eol=lf
+tests/flutter-window-probe/windows/runner/control_probe_api.g.cpp text eol=lf
+tests/flutter-window-probe/windows/runner/control_probe_api.g.h text eol=lf
+tests/flutter-window-probe/windows/flutter/generated_plugin_registrant.h text eol=lf
+tests/flutter-window-probe/windows/flutter/generated_plugin_registrant.cc text eol=lf
+tests/flutter-window-probe/windows/flutter/generated_plugins.cmake text eol=lf
+tests/flutter-window-probe/pubspec.lock text eol=lf
+# Cross-host game cooperator evidence binds these shared lock bytes directly.
+toolchain.lock.json text eol=lf
+mods/bepinex/References/references.lock.json text eol=lf

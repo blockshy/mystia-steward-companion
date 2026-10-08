@@ -6,6 +6,7 @@ using System.Text.Json;
 using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.LocalApi;
 using MystiaStewardCompanion.Plugin;
+using MystiaStewardCompanion.Plugin.CompanionControl;
 using MystiaStewardCompanion.Save;
 using MystiaStewardCompanion.Updates;
 using UnityEngine;
@@ -90,6 +91,9 @@ internal sealed class StewardOverlayController
     private bool _localApiSnapshotErrorLogged;
     private volatile bool _disposed;
     private readonly ControllerToggleState _controllerToggleState = new();
+    private ulong _controlInputSequence;
+    private readonly ControlInputGate _controlInputGate = new();
+    private bool _controlInputFailureLogged;
     private System.Reflection.PropertyInfo? _inputSystemCurrentProperty;
     private System.Reflection.PropertyInfo? _inputSystemRightStickButtonProperty;
     private System.Reflection.PropertyInfo? _inputSystemWasPressedProperty;
@@ -218,7 +222,7 @@ internal sealed class StewardOverlayController
     /// </remarks>
     public void Initialize(StewardPluginConfig config, ManualLogSource log)
     {
-        CompanionProcessLauncher.BeginSession();
+        CompanionProcessLauncher.BeginSession(config);
         _config = config;
         _log = log;
         _mainThreadId = Thread.CurrentThread.ManagedThreadId;
@@ -535,20 +539,64 @@ internal sealed class StewardOverlayController
     /// <remarks>
     /// 手柄右摇杆按下在新旧输入系统中的表现不同，因此额外通过 InputSystem 反射读取 pressed/held 状态。
     /// </remarks>
-    private bool IsTogglePressed()
+    private bool IsTogglePressed(out ControlInput? input)
     {
+        input = null;
         if (_config == null) return false;
-        if (Input.GetKeyDown(_config.ToggleKey.Value)) return true;
+        if (CompanionProcessLauncher.UsesIdentityControl) return CaptureIdentityToggleInput(out input);
+        if (Input.GetKeyDown(_config.ToggleKey.Value))
+        {
+            input = CaptureControlInput(ControlInputSource.F8);
+            return true;
+        }
 
         var legacyHeld = Input.GetKey(_config.ControllerToggleKey.Value);
         var legacyPressed = Input.GetKeyDown(_config.ControllerToggleKey.Value);
         var inputSystem = _config.ControllerToggleKey.Value == KeyCode.JoystickButton9
             ? CaptureInputSystemRightStick()
             : default;
-        return _controllerToggleState.Update(
+        if (!_controllerToggleState.Update(
             legacyHeld || inputSystem.Held,
-            legacyPressed || inputSystem.PressedThisFrame);
+            legacyPressed || inputSystem.PressedThisFrame)) return false;
+        input = CaptureControlInput(ControlInputSource.RightStick, legacyHeld, legacyPressed, inputSystem.Held, inputSystem.PressedThisFrame);
+        return true;
     }
+
+    private bool CaptureIdentityToggleInput(out ControlInput? input)
+    {
+        input = null;
+        try
+        {
+            var handoff = CompanionProcessLauncher.IdentityHandoff;
+            var foreground = OperatingSystem.IsWindows() ? ControlWindows.Foreground() : default;
+            var keyboard = Input.GetKeyDown(_config!.ToggleKey.Value);
+            var keyboardHeld = Input.GetKey(_config.ToggleKey.Value);
+            var legacyHeld = Input.GetKey(_config.ControllerToggleKey.Value);
+            var legacyPressed = Input.GetKeyDown(_config.ControllerToggleKey.Value);
+            var inputSystem = _config.ControllerToggleKey.Value == KeyCode.JoystickButton9 ? CaptureInputSystemRightStick() : default;
+            var source = _controlInputGate.Sample(foreground.Pid == (uint)Environment.ProcessId,
+                keyboard, legacyHeld || inputSystem.Held, legacyPressed || inputSystem.PressedThisFrame,
+                handoff, keyboardHeld);
+            if (source == null) return false;
+            input = new ControlInput(source.Value, checked(++_controlInputSequence), ControlWindows.CurrentThread,
+                legacyHeld, legacyPressed, inputSystem.Held, inputSystem.PressedThisFrame, foreground.Hwnd, foreground.Pid, handoff, keyboardHeld);
+            return true;
+        }
+        catch (Exception)
+        {
+            _controlInputGate.Sample(false, false, false, false, CompanionProcessLauncher.IdentityHandoff);
+            if (!_controlInputFailureLogged)
+            {
+                _controlInputFailureLogged = true;
+                _log?.LogWarning("companion_control protocol=IdentityPipeV1 event=input_rejected outcome=observation_failed");
+            }
+            return false;
+        }
+    }
+
+    private ControlInput CaptureControlInput(ControlInputSource source, bool legacyHeld = false, bool legacyPressed = false,
+        bool inputSystemHeld = false, bool inputSystemPressed = false) =>
+        new(source, checked(++_controlInputSequence), ControlWindows.CurrentThread, legacyHeld, legacyPressed, inputSystemHeld, inputSystemPressed);
 
     private ControllerButtonSnapshot CaptureInputSystemRightStick()
     {
@@ -668,8 +716,10 @@ internal sealed class StewardOverlayController
 
     private void ProcessToggleInput()
     {
-        if (_config == null || _log == null || !IsTogglePressed()) return;
-        CompanionProcessLauncher.TryToggleOrLaunch(_config, _log, _localApiToken);
+        if (_config == null || _log == null) return;
+        CompanionProcessLauncher.PrepareIdentityControl(_config, _log, _localApiToken, ControlWindows.CurrentThread);
+        if (!IsTogglePressed(out var input)) return;
+        CompanionProcessLauncher.TryToggleOrLaunch(_config, _log, _localApiToken, input!);
     }
 
     private void ThrowIfDisposed()

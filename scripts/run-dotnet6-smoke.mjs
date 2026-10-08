@@ -20,6 +20,12 @@ if (!/^mcr\.microsoft\.com\/dotnet\/sdk@sha256:[a-f0-9]{64}$/u.test(
 }
 
 const smokeTests = new Map([
+  ['companion-control', [
+    'dotnet run --project tests/companion-control/CompanionControlSmoke.csproj -c Release',
+  ]],
+  ['flutter-focus-cooperator', [
+    'dotnet run --project tests/flutter-focus-cooperator/tests/ForegroundGrantContractSmoke.csproj -c Release',
+  ]],
   ['local-api-storage', [
     'dotnet run --project tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release --no-build',
   ]],

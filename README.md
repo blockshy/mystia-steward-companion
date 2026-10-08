@@ -56,6 +56,8 @@
 
 ## 遇到问题时
 
+开发分支中的 `Companion.ControlProtocol` 保持默认 `LegacyTcp`，用于随附的现有客户端。`IdentityPipeV1` 仅用于 Flutter 迁移测试，需要另行准备支持该协议的客户端；普通安装无需修改。开发者见[Flutter 探针说明](docs/flutter-development.md)。
+
 1. 在 `设置 -> 外观窗口` 开启 `显示调试信息`。
 2. 进入 `设置 -> 日志` 开启总日志，并复现问题。
 3. 导出诊断包，必要时记录相关订单的 `R-xxxx` 或 `N-xxxx` 日志标识。

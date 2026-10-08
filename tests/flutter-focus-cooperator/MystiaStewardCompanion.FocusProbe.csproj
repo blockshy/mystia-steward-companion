@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MystiaStewardCompanion.FocusProbe</AssemblyName>
+    <RootNamespace>MystiaStewardCompanion.FocusProbe</RootNamespace>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <ReferenceDir Condition="'$(ReferenceDir)' == ''">$(MSBuildProjectDirectory)/../../mods/bepinex/References</ReferenceDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
+    <AssemblyMetadata Include="ProbeGitSha" Value="$(ProbeGitSha)" />
+    <Reference Include="BepInEx.Core"><HintPath>$(ReferenceDir)/BepInEx.Core.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(ReferenceDir)/BepInEx.Unity.IL2CPP.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(ReferenceDir)/Il2Cppmscorlib.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <Target Name="RequireProbeGitSha" BeforeTargets="PrepareForBuild">
+    <Error Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(ProbeGitSha)', '^[0-9a-f]{40}$'))" Text="ProbeGitSha must be the full lowercase 40-character source commit." />
+  </Target>
+</Project>

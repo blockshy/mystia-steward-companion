@@ -44,6 +44,7 @@
 | [本地 API](local-api.md) | 监听器、鉴权、请求限制、规范路由、主设备与共享配置 |
 | [游戏 UI 集成](game-ui-integration.md) | 置顶、加料变体、厨具/桌位/订单高亮及 Unity 资源归属 |
 | [伴随窗口 UI](companion-ui.md) | 导航、响应式布局、设计系统、手柄焦点和前端状态边界 |
+| [伴随客户端身份控制协议](../mods/bepinex/src/Plugin/CompanionControl/PROTOCOL.md) | 显式启用的 MSC1 身份注册、前台授权、输入序列和失败边界 |
 | [推荐引擎](recommendation-engine.md) | 候选生成、强制筛选、排序、执行计划和停止原因诊断 |
 | [任务系统](missions.md) | 已跟踪任务、可接取任务、调度来源与 ServeInWork 的只读边界 |
 | [更新系统](update-system.md) | 检查调度、版本目录、更新清单、更新页面与 Windows 更新程序 |

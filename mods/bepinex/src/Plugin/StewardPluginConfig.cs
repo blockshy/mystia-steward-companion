@@ -1,5 +1,6 @@
 using BepInEx.Configuration;
 using MystiaStewardCompanion.Save;
+using MystiaStewardCompanion.Plugin.CompanionControl;
 using UnityEngine;
 
 namespace MystiaStewardCompanion.Plugin;
@@ -29,6 +30,7 @@ public sealed class StewardPluginConfig
     public ConfigEntry<string> LocalApiToken { get; private init; } = null!;
     public ConfigEntry<bool> CompanionAutoLaunch { get; private init; } = null!;
     public ConfigEntry<string> CompanionExecutablePath { get; private init; } = null!;
+    public ConfigEntry<CompanionControlProtocol> CompanionControlProtocol { get; private init; } = null!;
     public ConfigEntry<bool> SetConsoleUtf8 { get; private init; } = null!;
     public ConfigEntry<bool> ShowBepInExConsoleOnStartup { get; private init; } = null!;
     public ConfigEntry<bool> EnableAggregateModLog { get; private init; } = null!;
@@ -68,6 +70,8 @@ public sealed class StewardPluginConfig
             LocalApiToken = config.Bind("LocalApi", "Token", "", "本地 API 的内部 Token。留空时，插件会在下次启动时自动生成。"),
             CompanionAutoLaunch = config.Bind("Companion", "AutoLaunch", true, "插件加载后，如果找到伴随程序，则自动启动伴随窗口。"),
             CompanionExecutablePath = config.Bind("Companion", "ExecutablePath", "", "伴随程序的可选路径。留空时在插件 DLL 所在目录旁查找。"),
+            CompanionControlProtocol = config.Bind("Companion", "ControlProtocol", Plugin.CompanionControl.CompanionControlProtocol.LegacyTcp,
+                "控制协议。LegacyTcp 保持现有 Tauri 行为；IdentityPipeV1 仅限 Windows 64 位、要求显式 ExecutablePath 和支持此版本协议的客户端，失败时不会回退。修改后重启游戏。"),
             SetConsoleUtf8 = config.Bind("Ui", "SetConsoleUtf8", true, "插件加载后，将 Windows 控制台代码页和 .NET 控制台编码设为 UTF-8。"),
             ShowBepInExConsoleOnStartup = config.Bind("Diagnostics", "ShowBepInExConsoleOnStartup", false, "插件加载时显示 BepInEx 控制台，供本机排查问题。默认关闭。"),
             EnableAggregateModLog = config.Bind("Diagnostics", "EnableAggregateModLog", false, "开启后写入汇总诊断日志，其中包含全部 BepInEx 日志来源。"),

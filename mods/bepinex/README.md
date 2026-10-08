@@ -396,6 +396,8 @@ BepInEx/plugins/mystia-steward-companion/companion/
 
 如果放在其他位置，请在 `Companion.ExecutablePath` 中填写绝对路径。
 
+`Companion.ControlProtocol` 默认 `LegacyTcp`，适用于现有客户端。开发分支的 `IdentityPipeV1` 只用于 Windows 64 位 Flutter 迁移验证，必须明确填写支持该协议的客户端绝对路径，并重启游戏后生效；握手失败不会自动换回旧协议。普通安装保持默认值，测试入口见[Flutter 开发说明](../../docs/flutter-development.md)。
+
 ### 伴随窗口鼠标点不到
 
 通常是开启了鼠标穿透。`F10` 注册可用时可按它关闭穿透；也可以按 `F8`、`RS Click` 唤起窗口，或通过托盘菜单关闭鼠标穿透。

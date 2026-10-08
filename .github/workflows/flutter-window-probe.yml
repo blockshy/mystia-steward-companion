@@ -1,0 +1,89 @@
+name: Flutter Windows window probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [migration/flutter]
+    paths:
+      - '.github/workflows/flutter-window-probe.yml'
+      - '.gitattributes'
+      - '.nvmrc'
+      - 'toolchain.lock.json'
+      - 'scripts/flutter-toolchain.mjs'
+      - 'scripts/install-locked-flutter.mjs'
+      - 'scripts/install-locked-release-tools.mjs'
+      - 'scripts/run-flutter-window-probe.mjs'
+      - 'scripts/build-flutter-window-probe.ps1'
+      - 'tests/flutter-window-probe/**'
+      - 'tests/flutter-old-mod-probe/Prepare-OldMod-Probe.Common.psm1'
+      - 'tests/flutter-focus-cooperator/**'
+      - 'scripts/build-flutter-focus-cooperator.mjs'
+      - 'scripts/build-flutter-control-mod.mjs'
+      - 'mods/bepinex/src/**'
+      - 'mods/bepinex/MystiaStewardCompanion.BepInEx.csproj'
+      - 'tests/companion-control/**'
+      - 'scripts/restore-build-references.mjs'
+      - 'scripts/run-dotnet6-smoke.mjs'
+      - 'global.json'
+      - 'mods/bepinex/References/references.lock.json'
+
+permissions: {}
+
+jobs:
+  linux-contracts:
+    name: Verify locked Flutter window contracts
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Setup locked Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install locked Flutter
+        run: node scripts/install-locked-flutter.mjs --install-root "$RUNNER_TEMP/flutter-window-sdk"
+      - name: Verify contracts, generation and widgets
+        run: node scripts/run-flutter-window-probe.mjs --sdk-root "$RUNNER_TEMP/flutter-window-sdk"
+
+  windows-release:
+    name: Build Windows Release probe bundle
+    runs-on: windows-2022
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Setup locked Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install locked Flutter and PowerShell
+        shell: pwsh
+        run: |
+          $node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          $expected = (Get-Content toolchain.lock.json -Raw | ConvertFrom-Json).node
+          if ((& $node --version) -cne "v$expected" -or $LASTEXITCODE -ne 0) { throw 'Node differs from the toolchain lock.' }
+          & $node scripts/install-locked-flutter.mjs --install-root "$env:RUNNER_TEMP/flutter-window-sdk"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Flutter installation failed.' }
+          & $node scripts/install-locked-release-tools.mjs --install-root "$env:RUNNER_TEMP/flutter-window-tools"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked PowerShell installation failed.' }
+      - name: Verify and build committed Windows bundle
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/flutter-window-tools/powershell/pwsh.exe" -NoLogo -NoProfile -NonInteractive -File scripts/build-flutter-window-probe.ps1 -SdkRoot "$env:RUNNER_TEMP/flutter-window-sdk" -OutputDirectory "$env:RUNNER_TEMP/mystia-flutter-window-probe"
+          if ($LASTEXITCODE -ne 0) { throw 'Window probe checks/build failed.' }
+      - name: Upload Windows probe bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-steward-companion-window-probe
+          path: ${{ runner.temp }}/mystia-flutter-window-probe/
+          if-no-files-found: error
+          retention-days: 14

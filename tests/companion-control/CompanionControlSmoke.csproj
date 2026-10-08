@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlProtocol.cs" Link="ControlProtocol.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlListenerIdentity.cs" Link="ControlListenerIdentity.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlWindows.cs" Link="ControlWindows.cs" />
+  </ItemGroup>
+</Project>
