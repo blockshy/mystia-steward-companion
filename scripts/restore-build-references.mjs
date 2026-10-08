@@ -24,6 +24,7 @@ const requiredReferenceNames = Object.freeze([
   'Il2Cppmscorlib.dll',
   'UnityEngine.CoreModule.dll',
   'UnityEngine.InputLegacyModule.dll',
+  'MonoMod.RuntimeDetour.dll',
 ]);
 const restoreStagePrefix = '.reference-restore-stage-';
 const maxLockBytes = 64 * 1024;
@@ -44,12 +45,13 @@ function main() {
     return;
   }
 
-  restoreReferenceBundle(options.archivePath, options.outputPath, lock);
+  restoreReferenceBundle(options.archivePath, options.outputPath, lock, options.bepInExArchivePath);
   console.log(`Build references restored and verified: ${path.resolve(options.outputPath)}`);
 }
 
 function parseArguments(args) {
   let archivePath = '';
+  let bepInExArchivePath = '';
   let outputPath = defaultOutputPath;
   let lockPath = defaultLockPath;
   let verifyOnly = false;
@@ -59,6 +61,9 @@ function parseArguments(args) {
     switch (argument) {
       case '--archive':
         archivePath = readArgumentValue(args, ++index, argument);
+        break;
+      case '--bepinex-archive':
+        bepInExArchivePath = readArgumentValue(args, ++index, argument);
         break;
       case '--output':
         outputPath = readArgumentValue(args, ++index, argument);
@@ -80,7 +85,10 @@ function parseArguments(args) {
     throw new Error(`Choose exactly one operation: --verify or --archive <zip>.\n${usage()}`);
   }
 
-  return { archivePath, outputPath, lockPath, verifyOnly };
+  if (verifyOnly ? Boolean(bepInExArchivePath) : !bepInExArchivePath) {
+    throw new Error('Restore requires --bepinex-archive; --verify accepts no archive.');
+  }
+  return { archivePath, bepInExArchivePath, outputPath, lockPath, verifyOnly };
 }
 
 function readArgumentValue(args, index, option) {
@@ -95,7 +103,7 @@ function usage() {
   return [
     'Usage:',
     '  node scripts/restore-build-references.mjs --verify [--output <directory>]',
-    '  node scripts/restore-build-references.mjs --archive <downloaded-zip> --output <directory>',
+    '  node scripts/restore-build-references.mjs --archive <reference-zip> --bepinex-archive <official-zip> --output <directory>',
   ].join('\n');
 }
 
@@ -120,7 +128,7 @@ function loadReferenceLock(lockPath = defaultLockPath) {
 function validateReferenceLock(lock) {
   assertPlainObject(lock, 'Reference lock');
   assertExactKeys(lock, ['schemaVersion', 'source', 'bundle', 'files'], 'Reference lock');
-  if (lock.schemaVersion !== 1) {
+  if (lock.schemaVersion !== 2) {
     throw new Error(`Unsupported reference lock schemaVersion: ${describe(lock.schemaVersion)}`);
   }
 
@@ -129,13 +137,22 @@ function validateReferenceLock(lock) {
   assertPlainObject(lock.source.bepInEx, 'Reference lock BepInEx source');
   assertExactKeys(
     lock.source.bepInEx,
-    ['build', 'version', 'asset', 'sha256'],
+    ['build', 'version', 'asset', 'url', 'size', 'referencePath', 'sha256'],
     'Reference lock BepInEx source',
   );
   assertPositiveInteger(lock.source.bepInEx.build, 'BepInEx build');
   assertNonEmptyString(lock.source.bepInEx.version, 'BepInEx version');
   assertFlatFileName(lock.source.bepInEx.asset, 'BepInEx asset');
   assertSha256(lock.source.bepInEx.sha256, 'BepInEx asset SHA-256');
+  assertPositiveInteger(lock.source.bepInEx.size, 'BepInEx asset size');
+  if (lock.source.bepInEx.size > maxArchiveBytes) throw new Error('BepInEx archive exceeds size limit.');
+  const official = new URL(lock.source.bepInEx.url);
+  if (official.protocol !== 'https:' || official.host !== 'builds.bepinex.dev' || official.username || official.password
+      || official.search || official.hash
+      || decodeURIComponent(official.pathname) !== `/projects/bepinex_be/${lock.source.bepInEx.build}/${lock.source.bepInEx.asset}`
+      || lock.source.bepInEx.referencePath !== 'BepInEx/core/MonoMod.RuntimeDetour.dll') {
+    throw new Error('BepInEx official coordinates or reference path differ.');
+  }
 
   assertPlainObject(lock.source.game, 'Reference lock game source');
   assertExactKeys(
@@ -217,7 +234,7 @@ function validateReferenceDirectory(referenceDirectory, lock) {
   return resolvedDirectory;
 }
 
-function readAndValidateReferenceBundle(archivePath, lock) {
+function readAndValidateReferenceBundle(archivePath, lock, bepInExArchivePath) {
   const resolvedArchivePath = path.resolve(archivePath);
   const archiveStats = assertRegularFile(resolvedArchivePath, 'Reference bundle archive');
   if (archiveStats.size !== lock.bundle.size) {
@@ -237,7 +254,68 @@ function readAndValidateReferenceBundle(archivePath, lock) {
     );
   }
 
-  return parseStrictZip(archive, lock.files);
+  const extracted = parseStrictZip(archive, lock.files.slice(0, -1));
+  if (!bepInExArchivePath) throw new Error('The exact official BepInEx archive is required.');
+  const officialStats = assertRegularFile(bepInExArchivePath, 'Official BepInEx archive');
+  if (officialStats.size !== lock.source.bepInEx.size || officialStats.size > maxArchiveBytes) {
+    throw new Error('Official BepInEx archive size mismatch.');
+  }
+  const official = readFileSync(bepInExArchivePath);
+  if (sha256(official) !== lock.source.bepInEx.sha256) throw new Error('Official BepInEx archive SHA-256 mismatch.');
+  const reference = lock.files.at(-1);
+  extracted.set(reference.name, parseBepInExReference(official, reference, lock.source.bepInEx.referencePath));
+  return extracted;
+}
+
+// Read exactly one member from the hash-verified official archive. Never extract
+// paths supplied by that archive or restore its other runtime/analysis files.
+function parseBepInExReference(archive, expected, memberPath) {
+  const end = archive.length - zipEndLength;
+  assertBufferRange(archive, end, zipEndLength, 'BepInEx ZIP end');
+  if (archive.readUInt32LE(end) !== zipEndSignature || archive.readUInt16LE(end + 20) !== 0
+      || archive.readUInt16LE(end + 4) !== 0 || archive.readUInt16LE(end + 6) !== 0
+      || archive.readUInt16LE(end + 8) !== archive.readUInt16LE(end + 10)) throw new Error('Invalid BepInEx ZIP end.');
+  const count = archive.readUInt16LE(end + 10);
+  const start = archive.readUInt32LE(end + 16);
+  if (count === 0xffff || start + archive.readUInt32LE(end + 12) !== end) throw new Error('Invalid BepInEx ZIP directory.');
+  let cursor = start;
+  let content;
+  for (let index = 0; index < count; index += 1) {
+    assertBufferRange(archive, cursor, 46, 'BepInEx ZIP central header');
+    if (archive.readUInt32LE(cursor) !== zipCentralHeaderSignature) throw new Error('Invalid BepInEx ZIP central header.');
+    const nameLength = archive.readUInt16LE(cursor + 28);
+    const extraLength = archive.readUInt16LE(cursor + 30);
+    const commentLength = archive.readUInt16LE(cursor + 32);
+    const next = cursor + 46 + nameLength + extraLength + commentLength;
+    if (next > end) throw new Error('BepInEx ZIP central entry exceeds directory.');
+    const name = archive.subarray(cursor + 46, cursor + 46 + nameLength);
+    if (name.equals(Buffer.from(memberPath, 'utf8'))) {
+      if (content) throw new Error('Duplicate BepInEx reference member.');
+      const flags = archive.readUInt16LE(cursor + 8), method = archive.readUInt16LE(cursor + 10);
+      const crc = archive.readUInt32LE(cursor + 16), compressedSize = archive.readUInt32LE(cursor + 20);
+      const size = archive.readUInt32LE(cursor + 24), local = archive.readUInt32LE(cursor + 42);
+      if ((flags & ~allowedZipFlags) || ![0, 8].includes(method) || size !== expected.size
+          || archive.readUInt16LE(cursor + 34) !== 0) throw new Error('Invalid BepInEx reference metadata.');
+      assertNotZipSymlink(archive.readUInt16LE(cursor + 4), archive.readUInt32LE(cursor + 38), memberPath);
+      assertBufferRange(archive, local, 30, 'BepInEx ZIP local header');
+      const localExtra = archive.readUInt16LE(local + 28);
+      const data = local + 30 + nameLength + localExtra;
+      if (archive.readUInt32LE(local) !== zipLocalHeaderSignature || archive.readUInt16LE(local + 6) !== flags
+          || archive.readUInt16LE(local + 8) !== method || archive.readUInt32LE(local + 14) !== crc
+          || archive.readUInt32LE(local + 18) !== compressedSize || archive.readUInt32LE(local + 22) !== size
+          || archive.readUInt16LE(local + 26) !== nameLength
+          || !archive.subarray(local + 30, local + 30 + nameLength).equals(name)
+          || data + compressedSize > start) throw new Error('BepInEx reference local/central metadata mismatch.');
+      const compressed = archive.subarray(data, data + compressedSize);
+      content = method === 0 ? Buffer.from(compressed) : inflateRawSync(compressed, { maxOutputLength: expected.size + 1 });
+      if (content.length !== expected.size || crc32(content) !== crc || sha256(content) !== expected.sha256) {
+        throw new Error('BepInEx reference content size/CRC/SHA-256 mismatch.');
+      }
+    }
+    cursor = next;
+  }
+  if (cursor !== end || !content) throw new Error('Missing BepInEx reference or invalid directory length.');
+  return content;
 }
 
 function parseStrictZip(archive, expectedFiles) {
@@ -418,8 +496,8 @@ function parseStrictZip(archive, expectedFiles) {
   return extracted;
 }
 
-function restoreReferenceBundle(archivePath, outputDirectory, lock) {
-  const extracted = readAndValidateReferenceBundle(archivePath, lock);
+function restoreReferenceBundle(archivePath, outputDirectory, lock, bepInExArchivePath) {
+  const extracted = readAndValidateReferenceBundle(archivePath, lock, bepInExArchivePath);
   const resolvedOutput = assertRealDirectory(outputDirectory, 'Reference output directory');
   assertNoPendingRestoreStages(resolvedOutput);
 
@@ -684,6 +762,7 @@ if (isMainModule()) {
 export {
   loadReferenceLock,
   parseStrictZip,
+  parseBepInExReference,
   readAndValidateReferenceBundle,
   requiredReferenceNames,
   restoreReferenceBundle,

@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +20,9 @@ if (!/^mcr\.microsoft\.com\/dotnet\/sdk@sha256:[a-f0-9]{64}$/u.test(
 }
 
 const smokeTests = new Map([
+  ['identity-migration', [
+    '/workspace/temp/toolchains/flutter-3.47.6/bin/cache/dart-sdk/bin/dart --disable-dart-dev /workspace/tests/flutter-identity-probe/.dart_tool/identity-probe.dill /workspace "$MYSTIA_IDENTITY_FIXTURES"',
+  ]],
   ['companion-control', [
     'dotnet run --project tests/companion-control/CompanionControlSmoke.csproj -c Release',
   ]],
@@ -49,7 +52,9 @@ const smokeTests = new Map([
 
 const requested = process.argv.slice(2);
 const selected = requested.length === 0 || (requested.length === 1 && requested[0] === 'all')
-  ? [...smokeTests.keys()]
+  // The identity probe consumes a fresh browser export and writes create-new
+  // evidence. It is an explicit P0 run, not a prerequisite for normal smokes.
+  ? [...smokeTests.keys()].filter((name) => name !== 'identity-migration')
   : requested;
 
 if (selected.length === 0
@@ -89,6 +94,18 @@ function runDocker(commands, name) {
     '--env',
     'DOTNET_CLI_TELEMETRY_OPTOUT=1',
   ];
+
+  if (name === 'identity-migration') {
+    const relative = process.env.MYSTIA_IDENTITY_FIXTURES;
+    if (!relative || !/^temp\/[A-Za-z0-9_-]+$/u.test(relative)) {
+      throw new Error('identity-migration requires MYSTIA_IDENTITY_FIXTURES=temp/<existing fresh fixture directory>.');
+    }
+    const directory = path.resolve(repoRoot, relative);
+    if (realpathSync(directory) !== directory || !statSync(directory).isDirectory()) {
+      throw new Error('Identity fixtures must be a real repository temp directory.');
+    }
+    dockerArgs.push('--env', `MYSTIA_IDENTITY_FIXTURES=/workspace/${relative}`);
+  }
 
   if (process.platform !== 'win32') {
     const repositoryOwner = statSync(repoRoot);

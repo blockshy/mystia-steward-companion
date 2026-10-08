@@ -40,7 +40,8 @@ function record(base, relative) {
 try {
   assertLockedNode();
   const args = process.argv.slice(2);
-  if (args.length !== 4 || args[0] !== '--dotnet' || args[2] !== '--output') throw new Error('Usage: --dotnet <absolute locked dotnet> --output <new absolute directory>');
+  const exitDiagnostic = args.length === 5 && args[4] === '--exit-diagnostic';
+  if ((!exitDiagnostic && args.length !== 4) || args[0] !== '--dotnet' || args[2] !== '--output') throw new Error('Usage: --dotnet <absolute locked dotnet> --output <new absolute directory> [--exit-diagnostic]');
   const [dotnet, output] = [args[1], args[3]];
   if (![dotnet, output].every(value => path.isAbsolute(value) && !/[\x00-\x1f]/u.test(value)) || existsSync(output)) throw new Error('Use absolute paths and a new output directory.');
   plain(dotnet);
@@ -60,6 +61,7 @@ try {
   const compiled = path.join(scratch, 'compiled');
   run(dotnet, ['build', 'mods/bepinex/MystiaStewardCompanion.BepInEx.csproj', '-c', 'Release',
     '--no-incremental', '-p:ContinuousIntegrationBuild=true', `-p:CompanionControlBuildGitSha=${commit}`,
+    `-p:CompanionControlExitDiagnostic=${exitDiagnostic}`,
     `-p:ReferenceDir=${path.join(root, 'mods/bepinex/References')}`, '-o', compiled]);
   if (cleanCommit() !== commit || JSON.stringify(sources.map(value => record(root, value))) !== JSON.stringify(sourceFiles)) throw new Error('Build identity/source bytes changed.');
   run(process.execPath, ['scripts/restore-build-references.mjs', '--verify', '--output', 'mods/bepinex/References']);
@@ -69,6 +71,7 @@ try {
   copyFileSync(path.join(compiled, entrypoint), path.join(output, entrypoint), constants.COPYFILE_EXCL);
   if (JSON.stringify(record(output, entrypoint)) !== JSON.stringify(dll)) throw new Error('Copied plugin changed.');
   const evidence = { schemaVersion: 1, kind: 'flutter-control-mod-bundle', commit, compiledGitSha: commit,
+    ...(exitDiagnostic ? { exitDiagnostic: true } : {}),
     cleanCheckout: true, target: 'net6.0-windows-in-game', entrypoint, builtUtc: new Date().toISOString(),
     tools: { node: process.versions.node, dotnetSdk: lock.dotnetSdk },
     toolchainLockSha256: record(root, 'toolchain.lock.json').sha256,

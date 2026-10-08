@@ -54,12 +54,14 @@ struct Configuration {
   std::wstring pipe;
   std::string session;
   DWORD parent_pid;
+  bool install_fixture = false;
 };
 
 Configuration ParseArguments(const std::vector<std::string>& arguments) {
   std::optional<std::string> pipe;
   std::optional<std::string> session;
   std::optional<std::string> parent;
+  std::optional<std::string> mode;
   const auto read = [](const std::string& argument, const std::string& prefix,
                        std::optional<std::string>& target) {
     if (argument.compare(0, prefix.size(), prefix) != 0) return false;
@@ -72,14 +74,15 @@ Configuration ParseArguments(const std::vector<std::string>& arguments) {
   for (const auto& argument : arguments) {
     if (read(argument, "--updater-probe-pipe=", pipe) ||
         read(argument, "--updater-probe-session=", session) ||
-        read(argument, "--updater-probe-parent-pid=", parent)) {
+        read(argument, "--updater-probe-parent-pid=", parent) ||
+        read(argument, "--updater-probe-mode=", mode)) {
       continue;
     }
     if (argument.compare(0, 16, "--updater-probe-") == 0) {
       throw Failure("probe.configuration", "Unknown updater probe argument.");
     }
   }
-  if (!pipe || !session || !parent) {
+  if (!pipe || !session || !parent || (mode && *mode != "install-fixture")) {
     throw Failure("probe.configuration",
                   "Launch this probe through its verified updater bootstrap.");
   }
@@ -121,7 +124,7 @@ Configuration ParseArguments(const std::vector<std::string>& arguments) {
     throw Failure("probe.configuration", "The UI cannot be its own bootstrap.");
   }
   return {std::wstring(pipe->begin(), pipe->end()), *session,
-          static_cast<DWORD>(parsed_pid)};
+          static_cast<DWORD>(parsed_pid), mode.has_value()};
 }
 
 void RequireActive(HANDLE stop, HANDLE parent) {
@@ -191,7 +194,7 @@ std::string ExchangeFrame(HANDLE pipe, HANDLE parent, HANDLE stop,
   const ULONGLONG deadline = GetTickCount64() + kExchangeTimeoutMs;
   // Both interpolated strings have a closed alphabet; no arbitrary JSON input
   // crosses this native API. Schema/state validation of the reply stays in Dart.
-  std::string request = "{\"protocolVersion\":1,\"session\":\"" +
+  std::string request = "{\"protocolVersion\":" + std::string(config.install_fixture ? "2" : "1") + ",\"session\":\"" +
                         config.session + "\",\"requestId\":" +
                         std::to_string(request_id) + ",\"command\":\"" +
                         command + "\"}\n";
@@ -312,7 +315,7 @@ struct ProbeBridge::State {
                                              *config, current->command,
                                              current->request_id);
         Complete({response, {}, {}});
-        if (current->command == "cancel") return;
+        if (current->command == (config->install_fixture ? "finish" : "cancel")) return;
       }
     } catch (const Failure& error) {
       Complete({{}, error.code, error.what()});
@@ -349,6 +352,8 @@ struct ProbeBridge::State {
   std::optional<Reply> callback;
   unsigned next_request = 1;
   bool failed = false;
+  bool install_started = false;
+  bool install_finished = false;
 };
 
 ProbeBridge::ProbeBridge(HWND window,
@@ -374,12 +379,18 @@ void ProbeBridge::Exchange(const std::string& command, Reply result) {
                                      "A probe request is already pending."));
     return;
   }
+  const bool fixture = state_->config && state_->config->install_fixture;
   const std::string expected = state_->next_request == 1 ? "hello" : "cancel";
-  if (state_->next_request > 2 || command != expected) {
+  const bool fixture_valid = !state_->install_finished && state_->next_request <= 10000 &&
+      (state_->next_request == 1 ? command == "hello" :
+       ((command == "start" && !state_->install_started) || command == "status" || command == "cancel" || command == "finish"));
+  if (fixture ? !fixture_valid : (state_->next_request > 2 || command != expected)) {
     result(mystia_probe::FlutterError("probe.command",
                                      "Expected one hello followed by one cancel."));
     return;
   }
+  if (fixture && command == "start") state_->install_started = true;
+  if (fixture && command == "finish") state_->install_finished = true;
   state_->callback = std::move(result);
   {
     std::lock_guard<std::mutex> guard(state_->mutex);

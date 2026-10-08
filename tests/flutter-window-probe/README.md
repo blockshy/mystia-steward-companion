@@ -158,9 +158,27 @@ corepack pnpm test:dotnet6 companion-control
 
 同一准备命令增加 `-Lifecycle` 时，创建新的 `control-lifecycle.json` 授权并仅在本次副本启用 `AutoLaunch=true`。节点仍使用 `hotkey`；原生控制进程先校验全部游戏/Mod 文件、准备证据、配置与 Flutter 程序，再启动游戏。游戏真实 Mod 启动 Flutter，原生适配核验父进程、PID/创建时间、实际参数及 token 的哈希；Dart 只收到脱敏的运行编号和代次。
 
+MSC1 冷启动客户端在整个 `MaterialApp` 外暂时排除 Flutter 焦点请求，内部 `Focus` 也不自动请求焦点。锁定 Flutter 3.47.6 的 `widgets/view.dart::_scopeFocusChangeListener` 会将框架焦点转换为引擎 `OnViewFocusChangeRequest` → `FlutterWindow::Focus` → Win32 `SetFocus`；仅使用 `SW_SHOWNOACTIVATE` 无法阻止这条路径。只有实际 MSC1 激活已由 Mod 消费确认，且原生观察到精确客户端前台、子窗口焦点与可见交互状态后，Dart 才开放焦点；记录 `client-native-activation-allows-dart-focus`。这不替代游戏 ASFW，也不先抢焦点再强制还回游戏。原 37 项宿主和下面的旧版兼容模式保留各自初始焦点行为。
+
 第一代完成注册、AutoLaunch 激活、原生/Dart 输入及 F8 归还后正常退出，保留游戏。控制进程观察保留客户端句柄 exit0、Mod 已建立新会话且无监听者后，只发送一次 F8 down/up；第二代必须由真实 Mod 启动并完成来源为 F8 的注册/激活，随后验证退出通知与游戏正常退出。没有用固定等待假定 Unity 就绪，注入返回成功也不代表游戏消费成功。
 
 每代各有六项独立结果和原生清理文件；控制进程复核结果、保留进程身份和文件哈希，写出 `kind=flutter-control-lifecycle` 的总报告。该报告与原十项 F8/RS 套件分别验收，`p0Verified=false`。失败证据保留；首次启动、新客户端换代、退出帧须实际通过后才能登记完成。
+
+### 原版 Mod 1.3.1 主客户端兼容
+
+原 1.3.1 的自动启动发生在控制器初始化，不能由窗口获得 OS 焦点推断 Unity 已推进到 Update。旧版兼容探针在首次归还精确游戏焦点后，只读固定 loopback API 的缓存 snapshot，要求出现晚于该焦点观察的 CapturedAtUtc 才发送唯一 F8。发合成凭据前核验 TCP listener 与连接两端的 OS PID/四元组，报告只保存时间和计数。总观察最多30秒，单次非阻塞请求最多3秒，不强制业务刷新或重放输入。原发布器会按内容去重，因此没有新时间戳只表示缺少正向证据，结果为 BLOCKED，不能推断 Update 停止；新时间戳也不代表游戏业务就绪。最后仍须实际旧 Mod 的 toggle EOF 才通过。
+
+新版本退出通知缺失的诊断使用独立 [P0共享页](../../mods/bepinex/src/Plugin/CompanionControl/EXIT-DIAGNOSTIC.md)。它仅允许显式诊断构建与授权配对，不改变普通包的退出成功条件。
+
+准备命令改为 `-LegacyClient`，并省略 `-ModBundleDirectory`、`-ModEvidenceSha256`；不得同时指定 `-Lifecycle`。它保留固定 SHA-256 为 `e1e3603ccb3a35e17f8ade9f70178d4f82f710b9ffb0df1cbbbddc901ec9bc33` 的原 DLL，在新副本启用 AutoLaunch，发布独立 `old-mod-legacy-client` 授权。相同控制进程核验游戏、配置和程序文件后启动游戏；Flutter 必须实际由原 Mod 启动，父进程、保留 HANDLE 的 PID/创建时间、完整路径、用户/会话、CLI 和随机 fixture token 哈希均绑定。Dart 不接收 token。
+
+此分支仅接受 loopback 32146 上 1024 字节以内、五秒内完成 EOF 的原始 `show` / `toggle` / `exit` 行协议。`show` / `toggle` 校验精确 game PID、API32755 和 fixture token 哈希；没有 MSC1 管道、ASFW 或虚构 ACK。TCP 本身不提供已认证的发送者 PID，报告不将其当成 OS 对端身份。原始 token 与消息内容不写日志。只有本探针已发出唯一游戏关闭请求后才允许观察不含 token 的原版 `exit`，它不替代保留进程 exit0。
+
+首次 `show` 仅尝试一次自动前台，五秒内只读观察真实窗口/焦点。报告区分实际获得前台与仍需点击恢复；后者不计为自动前台成功。已有实例的一次真实游戏 F8 产生 `toggle` 后，仅让窗口可见可交互，保持游戏前台并等待点击。本场景的点击由标记的 Win32 `SendInput` 自动执行，严格命中已绑定 Flutter 子窗口的惰性中心点，不是人工点击，也不声称旧 Mod 授予了前台权限。两次点击均须收到原生与 Dart 鼠标和 F24 键盘证据，最后只关闭精确游戏窗口一次并观察保留句柄 exit0。
+
+客户端要求六项独立检查，输出 `kind=flutter-legacy-control-client`；控制进程要求同一客户端正常退出、32146 释放与游戏 exit0，输出 `kind=flutter-legacy-control`。不运行第二代，不覆盖原 37 项受控协议套件或十项 MSC1/真实手柄套件；`gameReady` 仍为 false，原始 `show` 不被解释为 Unity Update 注册或游戏业务就绪。此场景仍是最小宿主的兼容性证据，不是成品客户端、普通用户权限或整个 P0 验收。
+
+2026-10-08，提交 `71b6607073a5ee3a9231ebc07c9d5d2758a11463` 的 `flutter-legacy-client-20261008-02` 在 Windows 11 build 26200、提权 Administrator 的物理桌面取得六项 PASS，独立核验一致。原 1.3.1 DLL 未改；29次只读响应后观察到焦点切换后的新 publication，再发送唯一 F8 down/up，实际收到一次 `show` 与一次 `toggle` 的 EOF。首次自动前台与已有实例的一次标记 OS 后台点击分别验证，未使用 ASFW 或伪造 ACK。游戏、客户端、控制进程均退出0，原游戏9287文件哈希不变，无自有进程或端口残留。独立证据 SHA-256 为 `86f029208b6f05f1deefd75a2c79afb2a104a3be9c8bd9893cb3884076551f3a`；旧 run01 的 toggle 失败保留，不据这次成功推定其唯一根因。
 
 - [DWM 扩展客户区](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmextendframeintoclientarea)和 [DWM alpha 合成](https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmenableblurbehindwindow)：API 成功之后仍以屏幕像素为准。
 - [Layered window 输入规则](https://learn.microsoft.com/en-us/windows/win32/winmsg/window-features)与 [WM_NCHITTEST](https://learn.microsoft.com/en-us/windows/win32/inputdev/wm-nchittest)：同线程命中返回不能证明跨进程穿透。

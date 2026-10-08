@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <ReferenceDir>../../mods/bepinex/References</ReferenceDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Run the actual server/router and stores. No copied HTTP route implementation. -->
+    <Compile Include="../../mods/bepinex/src/**/*.cs" LinkBase="Mod" />
+    <Reference Include="BepInEx.Core"><HintPath>$(ReferenceDir)/BepInEx.Core.dll</HintPath></Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(ReferenceDir)/BepInEx.Unity.IL2CPP.dll</HintPath></Reference>
+    <Reference Include="0Harmony"><HintPath>$(ReferenceDir)/0Harmony.dll</HintPath></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(ReferenceDir)/Il2Cppmscorlib.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(ReferenceDir)/UnityEngine.InputLegacyModule.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>

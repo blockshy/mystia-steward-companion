@@ -52,6 +52,11 @@ const PRODUCT_VERSION: &str = env!("MYSTIA_UPDATER_PROBE_EMBEDDED_VERSION");
 const UI_ENTRYPOINT: &str = "mystia-steward-companion-updater-ui.exe";
 type Outcome<T> = std::result::Result<T, String>;
 
+#[cfg(feature = "install-fixture")]
+#[allow(dead_code)]
+#[path = "windows_install_fixture.rs"]
+pub mod install_fixture;
+
 pub fn run() -> Outcome<()> {
     // Malformed CLI has no trusted output path. Never recover a status path by
     // partially parsing rejected arguments and then writing to it.

@@ -57,7 +57,12 @@ assert.equal(
   '995d1a08cac7a784d397927cf73ae71a8ce47cc8637cc4dd7ea534a3368b31e7',
 );
 assert.deepEqual(productionLock.files.map((item) => item.name), requiredReferenceNames);
-assert.equal(productionLock.files.length, 7);
+assert.equal(productionLock.schemaVersion, 2);
+assert.equal(productionLock.files.length, 8);
+assert.equal(requiredReferenceNames.at(-1), 'MonoMod.RuntimeDetour.dll');
+assert.equal(productionLock.source.bepInEx.size, 34335702);
+assert.equal(productionLock.source.bepInEx.referencePath, 'BepInEx/core/MonoMod.RuntimeDetour.dll');
+assert.match(productionLock.source.bepInEx.url, /^https:\/\/builds\.bepinex\.dev\//u);
 
 assert.match(preflightPowerShell, /restore-build-references\.mjs/u);
 assert.match(preflightPowerShell, /--verify/u);
@@ -65,7 +70,6 @@ assert.match(preflightPowerShell, /--output/u);
 assert.match(preflightBash, /restore-build-references\.mjs/u);
 assert.match(preflightBash, /--verify/u);
 assert.match(preflightBash, /--output/u);
-assert.doesNotMatch(sourceScript, /https?:\/\//u);
 assert.doesNotMatch(sourceScript, /\bfetch\s*\(/u);
 assert.doesNotMatch(sourceScript, /\bgh\b.*release/u);
 assert.doesNotMatch(sourceScript, /base64/iu);
@@ -76,7 +80,8 @@ try {
     name,
     Buffer.from(`locked-reference-${index}-${name}\n`, 'utf8'),
   ]));
-  const canonicalEntries = requiredReferenceNames.map((name) => ({
+  const privateNames = requiredReferenceNames.slice(0, -1);
+  const canonicalEntries = privateNames.map((name) => ({
     name,
     content: contents.get(name),
     unixMode: 0o100644,
@@ -84,10 +89,18 @@ try {
   const validArchive = createStoredZip(canonicalEntries);
   const validArchivePath = path.join(fixtureRoot, 'valid.zip');
   writeFileSync(validArchivePath, validArchive);
-  const fixtureLock = createFixtureLock(productionLock, contents, validArchive);
+  const officialEntries = [
+    { name: productionLock.source.bepInEx.referencePath, content: contents.get(requiredReferenceNames.at(-1)), unixMode: 0o100644 },
+    { name: 'doorstop_config.ini', content: Buffer.from('not-a-reference'), unixMode: 0o100644 },
+  ];
+  const officialArchive = createStoredZip(officialEntries);
+  const officialArchivePath = path.join(fixtureRoot, 'bepinex.zip');
+  writeFileSync(officialArchivePath, officialArchive);
+  const fixtureLock = createFixtureLock(productionLock, contents, validArchive, officialArchive);
+  const privateFiles = fixtureLock.files.slice(0, -1);
   validateReferenceLock(fixtureLock);
 
-  const extracted = readAndValidateReferenceBundle(validArchivePath, fixtureLock);
+  const extracted = readAndValidateReferenceBundle(validArchivePath, fixtureLock, officialArchivePath);
   assert.deepEqual([...extracted.keys()], requiredReferenceNames);
   for (const name of requiredReferenceNames) {
     assert.deepEqual(extracted.get(name), contents.get(name));
@@ -99,11 +112,11 @@ try {
   for (const name of requiredReferenceNames) {
     writeFileSync(path.join(outputPath, name), 'stale');
   }
-  restoreReferenceBundle(validArchivePath, outputPath, fixtureLock);
+  restoreReferenceBundle(validArchivePath, outputPath, fixtureLock, officialArchivePath);
   validateReferenceDirectory(outputPath, fixtureLock);
   assert.equal(readFileSync(path.join(outputPath, 'analysis-only.dll'), 'utf8'), 'preserve-me');
 
-  restoreReferenceBundle(validArchivePath, outputPath, fixtureLock);
+  restoreReferenceBundle(validArchivePath, outputPath, fixtureLock, officialArchivePath);
   validateReferenceDirectory(outputPath, fixtureLock);
 
   const missingPath = path.join(fixtureRoot, 'missing');
@@ -144,33 +157,33 @@ try {
     /regular non-symlink file/u,
   );
   assert.throws(
-    () => restoreReferenceBundle(validArchivePath, symlinkReferencePath, fixtureLock),
+    () => restoreReferenceBundle(validArchivePath, symlinkReferencePath, fixtureLock, officialArchivePath),
     /regular non-symlink file/u,
   );
 
   const archiveSizeDriftLock = structuredClone(fixtureLock);
   archiveSizeDriftLock.bundle.size += 1;
   assert.throws(
-    () => readAndValidateReferenceBundle(validArchivePath, archiveSizeDriftLock),
+    () => readAndValidateReferenceBundle(validArchivePath, archiveSizeDriftLock, officialArchivePath),
     /archive size mismatch/u,
   );
   const archiveHashDriftLock = structuredClone(fixtureLock);
   archiveHashDriftLock.bundle.sha256 = '0'.repeat(64);
   assert.throws(
-    () => readAndValidateReferenceBundle(validArchivePath, archiveHashDriftLock),
+    () => readAndValidateReferenceBundle(validArchivePath, archiveHashDriftLock, officialArchivePath),
     /archive SHA-256 mismatch/u,
   );
 
   const archiveSymlinkPath = path.join(fixtureRoot, 'archive-symlink.zip');
   symlinkSync(validArchivePath, archiveSymlinkPath);
   assert.throws(
-    () => readAndValidateReferenceBundle(archiveSymlinkPath, fixtureLock),
+    () => readAndValidateReferenceBundle(archiveSymlinkPath, fixtureLock, officialArchivePath),
     /regular non-symlink file/u,
   );
 
   const missingEntryArchive = createStoredZip(canonicalEntries.slice(0, -1));
   assert.throws(
-    () => parseStrictZip(missingEntryArchive, fixtureLock.files),
+    () => parseStrictZip(missingEntryArchive, privateFiles),
     /exactly 7 entries/u,
   );
   const extraEntryArchive = createStoredZip([
@@ -178,21 +191,21 @@ try {
     { name: 'unexpected.dll', content: Buffer.from('unexpected'), unixMode: 0o100644 },
   ]);
   assert.throws(
-    () => parseStrictZip(extraEntryArchive, fixtureLock.files),
+    () => parseStrictZip(extraEntryArchive, privateFiles),
     /exactly 7 entries/u,
   );
   const traversalEntries = canonicalEntries.map((entry, index) => (
     index === 0 ? { ...entry, name: '../BepInEx.Core.dll' } : entry
   ));
   assert.throws(
-    () => parseStrictZip(createStoredZip(traversalEntries), fixtureLock.files),
+    () => parseStrictZip(createStoredZip(traversalEntries), privateFiles),
     /traversal-free/u,
   );
   const symlinkEntries = canonicalEntries.map((entry, index) => (
     index === 0 ? { ...entry, unixMode: 0o120777 } : entry
   ));
   assert.throws(
-    () => parseStrictZip(createStoredZip(symlinkEntries), fixtureLock.files),
+    () => parseStrictZip(createStoredZip(symlinkEntries), privateFiles),
     /not a regular file/u,
   );
 
@@ -200,7 +213,7 @@ try {
     index === 0 ? { ...entry, content: Buffer.alloc(entry.content.length, 0x5a) } : entry
   ));
   assert.throws(
-    () => parseStrictZip(createStoredZip(wrongContentEntries), fixtureLock.files),
+    () => parseStrictZip(createStoredZip(wrongContentEntries), privateFiles),
     /SHA-256 mismatch/u,
   );
 
@@ -208,14 +221,14 @@ try {
   mkdirSync(pendingOutputPath);
   mkdirSync(path.join(pendingOutputPath, '.reference-restore-stage-orphan'));
   assert.throws(
-    () => restoreReferenceBundle(validArchivePath, pendingOutputPath, fixtureLock),
+    () => restoreReferenceBundle(validArchivePath, pendingOutputPath, fixtureLock, officialArchivePath),
     /previous reference restore transaction is incomplete/u,
   );
 
   const outputSymlinkPath = path.join(fixtureRoot, 'output-symlink');
   symlinkSync(outputPath, outputSymlinkPath, 'dir');
   assert.throws(
-    () => restoreReferenceBundle(validArchivePath, outputSymlinkPath, fixtureLock),
+    () => restoreReferenceBundle(validArchivePath, outputSymlinkPath, fixtureLock, officialArchivePath),
     /symlink or junction/u,
   );
 
@@ -231,16 +244,99 @@ try {
     () => validateReferenceLock(duplicateLockFile),
     /must be BepInEx\.Unity\.IL2CPP\.dll/u,
   );
+
+  // All eight references are validated, even though the private archive stays
+  // at seven members and the additional DLL has an independent official source.
+  const missingDetourPath = path.join(fixtureRoot, 'missing-detour');
+  mkdirSync(missingDetourPath);
+  for (const name of privateNames) writeFileSync(path.join(missingDetourPath, name), contents.get(name));
+  assert.throws(() => validateReferenceDirectory(missingDetourPath, fixtureLock), /MonoMod\.RuntimeDetour\.dll.*is missing/u);
+  assert.throws(() => readAndValidateReferenceBundle(validArchivePath, fixtureLock), /archive|path|argument/iu);
+  assert.throws(
+    () => readAndValidateReferenceBundle(validArchivePath, fixtureLock, path.join(fixtureRoot, 'missing-official.zip')),
+    /is missing/u,
+  );
+  const officialSizeDriftLock = structuredClone(fixtureLock);
+  officialSizeDriftLock.source.bepInEx.size += 1;
+  assert.throws(
+    () => readAndValidateReferenceBundle(validArchivePath, officialSizeDriftLock, officialArchivePath),
+    /archive size mismatch/u,
+  );
+  const officialHashDriftLock = structuredClone(fixtureLock);
+  officialHashDriftLock.source.bepInEx.sha256 = '0'.repeat(64);
+  assert.throws(
+    () => readAndValidateReferenceBundle(validArchivePath, officialHashDriftLock, officialArchivePath),
+    /archive SHA-256 mismatch/u,
+  );
+  const officialSymlinkPath = path.join(fixtureRoot, 'official-symlink.zip');
+  symlinkSync(officialArchivePath, officialSymlinkPath);
+  assert.throws(
+    () => readAndValidateReferenceBundle(validArchivePath, fixtureLock, officialSymlinkPath),
+    /regular non-symlink file/u,
+  );
+  // Failure to validate the second archive must not replace any existing DLL.
+  const untouchedOutput = path.join(fixtureRoot, 'untrusted-official-output');
+  mkdirSync(untouchedOutput);
+  for (const name of requiredReferenceNames) writeFileSync(path.join(untouchedOutput, name), `old-${name}`);
+  assert.throws(
+    () => restoreReferenceBundle(validArchivePath, untouchedOutput, officialHashDriftLock, officialArchivePath),
+    /archive SHA-256 mismatch/u,
+  );
+  for (const name of requiredReferenceNames) assert.equal(readFileSync(path.join(untouchedOutput, name), 'utf8'), `old-${name}`);
+
+  let invalidOfficialIndex = 0;
+  function rejectsOfficial(entries, expectedError) {
+    const archive = createStoredZip(entries);
+    const candidate = path.join(fixtureRoot, `official-invalid-${invalidOfficialIndex++}.zip`);
+    writeFileSync(candidate, archive);
+    const candidateLock = createFixtureLock(productionLock, contents, validArchive, archive);
+    // Deliberately bind the altered archive identity, so these checks exercise
+    // member metadata/content validation after the whole-archive hash succeeds.
+    assert.throws(() => readAndValidateReferenceBundle(validArchivePath, candidateLock, candidate), expectedError);
+  }
+  rejectsOfficial([...officialEntries, officialEntries[0]], /duplicate|exactly one/iu);
+  rejectsOfficial(officialEntries.map((entry, index) => index === 0
+    ? { ...entry, name: 'Elsewhere/MonoMod.RuntimeDetour.dll' } : entry), /missing|not found|exactly one/iu);
+  rejectsOfficial(officialEntries.map((entry, index) => index === 0
+    ? { ...entry, unixMode: 0o120777 } : entry), /regular|symlink/iu);
+  rejectsOfficial(officialEntries.map((entry, index) => index === 0
+    ? { ...entry, content: Buffer.alloc(entry.content.length, 0x5a) } : entry), /SHA-256 mismatch/u);
+  rejectsOfficial(officialEntries.map((entry, index) => index === 0
+    ? { ...entry, content: Buffer.concat([entry.content, Buffer.of(0)]) } : entry), /reference metadata/u);
+
+  const mismatchArchive = createStoredZip(officialEntries);
+  // Change only the local filename, preserving the central name and payload.
+  mismatchArchive[30] ^= 1;
+  const mismatchPath = path.join(fixtureRoot, 'official-local-mismatch.zip');
+  writeFileSync(mismatchPath, mismatchArchive);
+  const mismatchLock = createFixtureLock(productionLock, contents, validArchive, mismatchArchive);
+  assert.throws(
+    () => readAndValidateReferenceBundle(validArchivePath, mismatchLock, mismatchPath),
+    /local\/central metadata mismatch/u,
+  );
+
+  for (const changedSource of [
+    { url: fixtureLock.source.bepInEx.url.replace('builds.bepinex.dev', 'example.com') },
+    { url: `${fixtureLock.source.bepInEx.url}?mirror=1` },
+    { referencePath: '../MonoMod.RuntimeDetour.dll' },
+    { size: 64 * 1024 * 1024 + 1 },
+  ]) {
+    const invalidCoordinates = structuredClone(fixtureLock);
+    Object.assign(invalidCoordinates.source.bepInEx, changedSource);
+    assert.throws(() => validateReferenceLock(invalidCoordinates), /coordinates|size limit/u);
+  }
 } finally {
   rmSync(fixtureRoot, { recursive: true, force: true });
 }
 
 console.log('Build reference bundle audit passed.');
 
-function createFixtureLock(baseLock, contents, archive) {
+function createFixtureLock(baseLock, contents, archive, officialArchive) {
   const lock = structuredClone(baseLock);
   lock.bundle.size = archive.length;
   lock.bundle.sha256 = sha256(archive);
+  lock.source.bepInEx.size = officialArchive.length;
+  lock.source.bepInEx.sha256 = sha256(officialArchive);
   lock.files = requiredReferenceNames.map((name) => ({
     name,
     size: contents.get(name).length,

@@ -5,6 +5,11 @@ edition = "2021"
 rust-version = "1.97.1"
 publish = false
 
+[features]
+install-fixture = []
+# The reused product cancellation module declares this cfg for its own checks.
+updater-windows-ui-check = []
+
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.150"
@@ -26,5 +31,15 @@ windows-sys = { version = "=0.61.2", features = [
 [[bin]]
 name = "mystia-steward-companion-updater"
 path = "src/bin/bootstrap.rs"
+
+[[bin]]
+name = "mystia-steward-companion-updater-install-probe"
+path = "src/bin/install_fixture_bootstrap.rs"
+required-features = ["install-fixture"]
+
+[[bin]]
+name = "mystia-updater-install-node-driver"
+path = "src/bin/install_node_driver.rs"
+required-features = ["install-fixture"]
 
 [workspace]

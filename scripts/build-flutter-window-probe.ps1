@@ -48,7 +48,7 @@ $sourceScopes = @('tests/flutter-window-probe', 'tests/flutter-focus-cooperator/
     'mods/bepinex/src/Plugin/CompanionControl',
     'mods/bepinex/References/references.lock.json', 'tests/flutter-old-mod-probe/Prepare-OldMod-Probe.Common.psm1',
     'scripts/run-flutter-window-probe.mjs',
-    'scripts/build-flutter-window-probe.ps1', 'scripts/flutter-toolchain.mjs', 'scripts/install-locked-flutter.mjs',
+    'scripts/build-flutter-window-probe.ps1', 'scripts/flutter-toolchain.mjs', 'scripts/flutter-windows-toolchain.mjs', 'scripts/install-locked-flutter.mjs',
     'scripts/install-locked-release-tools.mjs', '.github/workflows/flutter-window-probe.yml', 'toolchain.lock.json', '.nvmrc', '.gitattributes')
 $sourcePaths = @(& git ls-files -- @sourceScopes)
 if ($LASTEXITCODE -ne 0 -or $sourcePaths.Count -eq 0) { throw 'Cannot enumerate committed build sources.' }
@@ -73,14 +73,10 @@ if (!(Test-Path -LiteralPath (Join-Path $bundle 'data/flutter_assets') -PathType
 foreach ($entry in @((Get-Item -LiteralPath $bundle -Force)) + @(Get-ChildItem -LiteralPath $bundle -Recurse -Force)) {
     if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Release bundle links are forbidden.' }
 }
-$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-$vsJson = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json
-if ($LASTEXITCODE -ne 0) { throw 'Visual Studio C++ tools query failed.' }
-$instances = @($vsJson -join "`n" | ConvertFrom-Json)
-if ($instances.Count -ne 1) { throw 'Expected one selected Visual Studio C++ installation.' }
-$vs = $instances[0]
-$redistVersion = (Get-Content -LiteralPath (Join-Path $vs.installationPath 'VC/Auxiliary/Build/Microsoft.VCRedistVersion.default.txt') -Raw).Trim()
-$crtDirectories = @(Get-ChildItem -LiteralPath (Join-Path $vs.installationPath "VC/Redist/MSVC/$redistVersion/x64") -Directory -Filter 'Microsoft.VC*.CRT')
+$windowsTools = Get-Content -LiteralPath (Join-Path $project 'build/windows/x64/windows-toolchain-evidence.json') -Raw | ConvertFrom-Json
+if (!$windowsTools.actualFlutterBuildVerified) { throw 'Actual Windows build toolchain was not verified.' }
+$redistVersion = $windowsTools.identity.vcRuntimeVersion
+$crtDirectories = @(Get-ChildItem -LiteralPath (Join-Path $windowsTools.identity.visualStudioPath "VC/Redist/MSVC/$redistVersion/x64") -Directory -Filter 'Microsoft.VC*.CRT')
 if ($crtDirectories.Count -ne 1) { throw 'Expected exactly one x64 VC CRT directory.' }
 $crt = $crtDirectories[0]
 if ($crt.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'VC CRT source must be a real directory.' }
@@ -143,7 +139,7 @@ $evidence = [ordered]@{
     schemaVersion = 1; product = 'mystia-steward-companion'; kind = 'flutter-window-probe-bundle'
     commit = $commit; dartBuildGitSha = $commit; nativeBuildGitSha = $commit; cleanCheckout = $true
     builtUtc = [DateTime]::UtcNow.ToString('o'); target = 'windows-x64'; entrypoint = $entrypoint
-    tools = [ordered]@{ node = $nodeVersion; powershell = $PSVersionTable.PSVersion.ToString(); flutter = $lock.flutter; dart = $lock.flutter.dartVersion; pigeon = $pigeonVersion; visualStudio = $vs.installationVersion; vcRuntime = $redistVersion }
+    tools = [ordered]@{ node = $nodeVersion; powershell = $PSVersionTable.PSVersion.ToString(); flutter = $lock.flutter; dart = $lock.flutter.dartVersion; pigeon = $pigeonVersion; visualStudio = $windowsTools.identity.visualStudioVersion; vcRuntime = $redistVersion; windowsBuildTools = $windowsTools }
     vcRuntimeSource = $crt.FullName; vcRuntimeFiles = $crtRecords
     checks = [ordered]@{ lockedDependencies = 'passed'; pigeon = 'passed'; format = 'passed'; analyze = 'passed'; dartTests = 'passed'; fixturePreparation = 'passed'; windowsRelease = 'passed'; packagedLoader = 'passed'; desktopRuntime = 'not-run' }
     sourceFiles = $sources; files = $files

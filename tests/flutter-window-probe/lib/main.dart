@@ -18,8 +18,19 @@ const compiledGitSha = String.fromEnvironment('MYSTIA_WINDOW_PROBE_GIT_SHA');
 
 void main(List<String> arguments) {
   final binding = WidgetsFlutterBinding.ensureInitialized();
-  if (arguments.isNotEmpty && arguments.first == '--control-client') {
-    unawaited(startControlProbe(arguments, compiledGitSha, client: true));
+  if (arguments.isNotEmpty &&
+      [
+        '--control-client',
+        '--control-legacy-client',
+      ].contains(arguments.first)) {
+    unawaited(
+      startControlProbe(
+        arguments,
+        compiledGitSha,
+        client: true,
+        legacy: arguments.first == '--control-legacy-client',
+      ),
+    );
     return;
   }
   if (arguments.length == 7 &&

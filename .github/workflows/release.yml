@@ -414,8 +414,12 @@ jobs:
             --pattern $ReferenceAsset `
             --dir $ArchiveDir
           if ($LASTEXITCODE -ne 0) { throw "Build-reference asset download failed." }
+          $BepInExArchivePath = Join-Path $ArchiveDir $ReferenceLock.source.bepInEx.asset
+          node scripts/download-bepinex-reference.mjs --output $BepInExArchivePath
+          if ($LASTEXITCODE -ne 0) { throw "Official BepInEx archive verification failed." }
           node scripts/restore-build-references.mjs `
             --archive $ArchivePath `
+            --bepinex-archive $BepInExArchivePath `
             --output mods/bepinex/References
           if ($LASTEXITCODE -ne 0) { throw "Build-reference restore failed." }
 

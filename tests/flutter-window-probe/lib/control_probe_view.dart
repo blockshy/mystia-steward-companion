@@ -2,10 +2,19 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 class ControlUi extends ChangeNotifier {
+  ControlUi({bool deferNativeFocus = false})
+    : focusRequestsEnabled = !deferNativeFocus;
   String detail = '正在准备真实 Mod F8/RS 控制链';
   bool focused = false;
+  bool focusRequestsEnabled;
   int f8Down = 0, f24Down = 0, pointerDown = 0;
   void Function(int count)? onF8;
+  void allowFocusAfterNativeActivation() {
+    if (focusRequestsEnabled) return;
+    focusRequestsEnabled = true;
+    notifyListeners();
+  }
+
   void show(String message) {
     detail = message;
     notifyListeners();
@@ -41,6 +50,7 @@ class ControlUi extends ChangeNotifier {
 
   Map<String, Object> toJson() => {
     'focused': focused,
+    'focusRequestsEnabled': focusRequestsEnabled,
     'f8Down': f8Down,
     'f24Down': f24Down,
     'pointerDown': pointerDown,
@@ -51,37 +61,46 @@ class ControlProbeApp extends StatelessWidget {
   const ControlProbeApp({super.key, required this.ui});
   final ControlUi ui;
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    debugShowCheckedModeBanner: false,
-    home: Scaffold(
-      backgroundColor: const Color(0xff2040c0),
-      body: Focus(
-        autofocus: true,
-        onFocusChange: ui.focusChanged,
-        onKeyEvent: (_, event) => ui.key(event),
-        child: Listener(
-          behavior: HitTestBehavior.opaque,
-          onPointerDown: (_) => ui.clicked(),
-          child: SizedBox.expand(
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: ListenableBuilder(
-                listenable: ui,
-                builder: (_, _) => DefaultTextStyle(
-                  style: const TextStyle(color: Colors.white, fontSize: 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('mystia-steward-companion · F8 / RS 控制探针'),
-                      const SizedBox(height: 28),
-                      Text(ui.detail),
-                      const SizedBox(height: 24),
-                      Text(
-                        'Flutter F8 ${ui.f8Down} · F24 ${ui.f24Down} · 点击 ${ui.pointerDown}',
-                      ),
-                      const SizedBox(height: 24),
-                      const Text('隔离游戏副本；请勿操作游戏菜单。RS 指向下按右摇杆。'),
-                    ],
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: ui,
+    builder: (_, child) =>
+        ExcludeFocus(excluding: !ui.focusRequestsEnabled, child: child!),
+    child: MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        backgroundColor: const Color(0xff2040c0),
+        body: ListenableBuilder(
+          listenable: ui,
+          builder: (_, child) => Focus(
+            autofocus: ui.focusRequestsEnabled,
+            onFocusChange: ui.focusChanged,
+            onKeyEvent: (_, event) => ui.key(event),
+            child: child!,
+          ),
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (_) => ui.clicked(),
+            child: SizedBox.expand(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: ListenableBuilder(
+                  listenable: ui,
+                  builder: (_, _) => DefaultTextStyle(
+                    style: const TextStyle(color: Colors.white, fontSize: 20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('mystia-steward-companion · F8 / RS 控制探针'),
+                        const SizedBox(height: 28),
+                        Text(ui.detail),
+                        const SizedBox(height: 24),
+                        Text(
+                          'Flutter F8 ${ui.f8Down} · F24 ${ui.f24Down} · 点击 ${ui.pointerDown}',
+                        ),
+                        const SizedBox(height: 24),
+                        const Text('隔离游戏副本；请勿操作游戏菜单。RS 指向下按右摇杆。'),
+                      ],
+                    ),
                   ),
                 ),
               ),

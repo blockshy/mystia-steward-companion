@@ -1,0 +1,18 @@
+name: mystia_steward_companion_android_probe
+description: "Isolated Android Release HTTP and page-size feasibility probe."
+publish_to: 'none'
+version: 0.1.0+1
+environment:
+  sdk: '>=3.13.5 <3.14.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  mystia_steward_companion_network_probe:
+    path: ../flutter-network-probe
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+  pigeon: 29.0.7
+flutter:
+  uses-material-design: true

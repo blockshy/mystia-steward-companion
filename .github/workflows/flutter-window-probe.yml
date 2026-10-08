@@ -10,6 +10,8 @@ on:
       - '.nvmrc'
       - 'toolchain.lock.json'
       - 'scripts/flutter-toolchain.mjs'
+      - 'scripts/flutter-windows-toolchain.mjs'
+      - 'tests/flutter-toolchain/**'
       - 'scripts/install-locked-flutter.mjs'
       - 'scripts/install-locked-release-tools.mjs'
       - 'scripts/run-flutter-window-probe.mjs'

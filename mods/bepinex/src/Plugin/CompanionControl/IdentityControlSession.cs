@@ -20,6 +20,7 @@ internal sealed class IdentityControlSession
     private readonly object _sync = new();
     private readonly ControlRequestSequence _sequence = new();
     private readonly ControlLifecycle _lifecycle = new();
+    private readonly ControlExitCompletion _exit = new();
     private bool _prepared, _autoRequested, _faulted;
     private bool _workerEnded;
     private uint _updateThread;
@@ -30,6 +31,7 @@ internal sealed class IdentityControlSession
     private ControlFrame? _registration;
     private string _path = "";
     private long _handoff;
+    private int _diagnosticSession;
     internal long Handoff => Interlocked.Read(ref _handoff);
 
     internal IdentityControlSession(IdentityControlOptions options, long initialHandoff = 0)
@@ -67,6 +69,14 @@ internal sealed class IdentityControlSession
         lock (_sync)
         {
             if (_prepared || _lifecycle.Stopping || _faulted) return;
+            ControlExitDiagnostic.Prepare(_options.ExecutablePath, updateThread, ref _diagnosticSession);
+            try { NativeExitRegistration.EnsureRegistered(updateThread); }
+            catch (Exception ex)
+            {
+                _faulted = true; _exit.Complete(ControlExitOutcome.Failed); _work.Writer.TryComplete(); _cancel.Cancel();
+                Log("native_exit_registration_failed", ex is ControlFailure ? ex.Message : ex.GetType().Name, null);
+                return;
+            }
             _prepared = true;
             _updateThread = updateThread;
             Enqueue(new Work(WorkKind.Prepare, new ControlInput(ControlInputSource.AutoLaunch, 0, updateThread)));
@@ -81,23 +91,47 @@ internal sealed class IdentityControlSession
             Enqueue(new Work(WorkKind.Activate, input));
         }
     }
-    internal void NotifyExit()
+    internal ControlExitCompletion NotifyExit(ControlExitBudget? budget = null)
     {
+        ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.NotifyEntered);
         lock (_sync)
         {
-            if (_lifecycle.Stopping || _faulted) return;
+            _exit.Constrain(budget);
+            if (budget != null && budget.Remaining == TimeSpan.Zero)
+            { _exit.Complete(ControlExitOutcome.TimedOut); return _exit; }
+            if (_lifecycle.Stopping) { ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.NotifyStopping); return _exit; }
+            if (_faulted || _workerEnded)
+            {
+                ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.NotifyFaulted);
+                _exit.Complete(ControlExitOutcome.Failed);
+                return _exit;
+            }
+            if (!_exit.Start(budget)) return _exit;
             _lifecycle.Stop();
-            Log("exit_requested", "queued", null);
+            ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.StopSet);
+            if (!_prepared)
+            {
+                _exit.Complete(ControlExitOutcome.NoRegistration);
+                _work.Writer.TryComplete();
+                _cancel.Cancel();
+                return _exit;
+            }
+            // A logging exception cannot prevent enqueueing; a blocked logger
+            // may consume the shared deadline. Keep its order before worker ACK.
+            try { Log("exit_requested", "queued", null); } catch { }
             Enqueue(new Work(WorkKind.Exit, new ControlInput(ControlInputSource.Exit, 0, _updateThread)));
+            ControlExitDiagnostic.Session(_diagnosticSession, _faulted ? ExitSessionStage.QueueRejected : ExitSessionStage.Queued);
             _work.Writer.TryComplete();
-            _cancel.CancelAfter(TimeSpan.FromSeconds(13));
+            if (!_exit.Completion.IsCompleted) _cancel.CancelAfter(_exit.Remaining);
+            return _exit;
         }
     }
     internal void Cancel()
     {
+        ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.Cancelled);
         lock (_sync)
         {
-            _lifecycle.Stop(); _work.Writer.TryComplete(); _cancel.Cancel();
+            _lifecycle.Stop(); _exit.Complete(ControlExitOutcome.Cancelled); _work.Writer.TryComplete(); _cancel.Cancel();
             if (_workerEnded) { _clientHandle?.Dispose(); _clientHandle = null; }
         }
     }
@@ -105,6 +139,7 @@ internal sealed class IdentityControlSession
     {
         if (_work.Writer.TryWrite(work)) return;
         _faulted = true;
+        _exit.Complete(ControlExitOutcome.Failed);
         _cancel.Cancel();
         Log("queue_rejected", "capacity", work.Input);
     }
@@ -117,7 +152,13 @@ internal sealed class IdentityControlSession
                 _cancel.Token.ThrowIfCancellationRequested();
                 if (work.Kind == WorkKind.Exit)
                 {
-                    if (_registration != null) await ExitAsync().ConfigureAwait(false);
+                    ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.WorkerDequeued);
+                    if (_registration == null)
+                    {
+                        ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.NoRegistration);
+                        _exit.Complete(ControlExitOutcome.NoRegistration);
+                    }
+                    else await ExitAsync().ConfigureAwait(false);
                     return;
                 }
                 lock (_sync) { if (_lifecycle.Stopping) continue; }
@@ -132,12 +173,20 @@ internal sealed class IdentityControlSession
         }
         catch (Exception ex)
         {
+            ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.Failed);
             lock (_sync) _faulted = true;
+            _exit.Complete(ex is OperationCanceledException && _cancel.IsCancellationRequested
+                ? (_lifecycle.Stopping && !_exit.Completion.IsCompleted && _exit.Remaining == TimeSpan.Zero
+                    ? ControlExitOutcome.TimedOut : ControlExitOutcome.Cancelled)
+                : ControlExitOutcome.Failed);
             // Never expose exception messages, process arguments, API credentials or pipe nonce.
             Log("session_failed", ex is ControlFailure ? ex.Message : ex.GetType().Name, null);
         }
         finally
         {
+            // Faulted logging or a completed channel must not strand a caller
+            // waiting at the final native exit boundary.
+            _exit.Complete(ControlExitOutcome.Failed);
             _work.Writer.TryComplete();
             _pipe?.Dispose(); _gameHandle?.Dispose(); _startedProcess?.Dispose();
             lock (_sync)
@@ -191,6 +240,7 @@ internal sealed class IdentityControlSession
         _clientHandle = ControlWindows.Open(pid);
         _client = ControlWindows.Observe(_clientHandle);
         ControlWindows.CheckClient(_game!, _client, _path);
+        ControlExitDiagnostic.BindClient(_diagnosticSession, _client.Pid, _client.Creation);
         if (_startedProcess != null)
             ControlFrame.Require(ControlWindows.Observe(_startedProcess.SafeHandle) == _client, "launched_identity_mismatch");
         var gameWindow = ControlWindows.UniqueWindow(_game!.Pid, game: true);
@@ -294,18 +344,30 @@ internal sealed class IdentityControlSession
             (ControlField.RequestId, _sequence.Exit()), (ControlField.Source, (ulong)ControlInputSource.Exit));
         var reply = await ExchangeAsync(request).ConfigureAwait(false);
         ControlFrame.ValidateAcknowledgement(request, reply);
-        Log("exit_notification", "acknowledged", null, request[ControlField.RequestId]);
+        ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.AckValidated);
+        try { Log("exit_notification", "acknowledged", null, request[ControlField.RequestId]); }
+        finally { _exit.Complete(ControlExitOutcome.Acknowledged); }
     }
     private async Task<ControlFrame> ExchangeAsync(ControlFrame frame)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(_cancel.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(frame.Kind == ControlKind.Activate ? 6 : 3));
+        if (frame.Kind == ControlKind.Exit) ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.WriteStarted);
         await _pipe!.WriteAsync(frame.Encode(), timeout.Token).ConfigureAwait(false);
         await _pipe.FlushAsync(timeout.Token).ConfigureAwait(false);
+        if (frame.Kind == ControlKind.Exit) ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.WriteCompleted);
         return await ControlFrame.ReadAsync(_pipe, timeout.Token).ConfigureAwait(false);
     }
     private void Log(string action, string outcome, ControlInput? input, ulong request = 0, uint error = 0)
     {
+#if COMPANION_CONTROL_EXIT_DIAGNOSTIC
+        try
+        {
+#endif
         _options.Log($"companion_control protocol=IdentityPipeV1 event={action} outcome={outcome} gamePid={_game?.Pid ?? 0} clientPid={_client?.Pid ?? 0} requestId={request} source={input?.Source.ToString() ?? "none"} inputSequence={input?.Sequence ?? 0} inputThread={input?.ThreadId ?? 0} keyboardHeld={input?.KeyboardHeld ?? false} legacyHeld={input?.LegacyHeld ?? false} legacyPressed={input?.LegacyPressed ?? false} inputSystemHeld={input?.InputSystemHeld ?? false} inputSystemPressed={input?.InputSystemPressed ?? false} win32Error={error}");
+#if COMPANION_CONTROL_EXIT_DIAGNOSTIC
+        }
+        catch { ControlExitDiagnostic.Session(_diagnosticSession, ExitSessionStage.LogThrew); throw; }
+#endif
     }
 }

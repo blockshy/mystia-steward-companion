@@ -22,6 +22,44 @@ internal static class CompanionProcessLauncher
     internal static bool UsesIdentityControl => _protocol == CompanionControlProtocol.IdentityPipeV1;
     internal static long IdentityHandoff => _identitySession?.Handoff ?? 0;
 
+    // Invoked only at the verified, irreversible native application-exit entry.
+    // A prior best-effort notification and this final wait share one task/deadline.
+    internal static ControlExitOutcome NotifyNativeExitAndWait(ControlExitBudget budget, uint nativeThread, uint registrationThread) =>
+        ControlExitDispatch.Run(budget, remaining =>
+        {
+            NativeExitRegistration.LogWorker("native_exit_worker_entered", "dispatched", nativeThread, registrationThread);
+            var outcome = NotifyIdentityExitFromWorker(remaining);
+            NativeExitRegistration.LogWorker("native_exit_worker_completion", outcome.ToString(), nativeThread, registrationThread);
+            return outcome;
+        });
+
+    private static ControlExitOutcome NotifyIdentityExitFromWorker(ControlExitBudget budget)
+    {
+        try
+        {
+            ControlExitCompletion completion;
+            ControlExitDiagnostic.Global(ExitGlobalStage.LauncherEntered);
+            if (budget.Remaining == TimeSpan.Zero) return ControlExitOutcome.TimedOut;
+            lock (LifecycleLock)
+            {
+                if (budget.Remaining == TimeSpan.Zero) return ControlExitOutcome.TimedOut;
+                if (_protocol != CompanionControlProtocol.IdentityPipeV1) return ControlExitOutcome.NotApplicable;
+                if (_stopping) ControlExitDiagnostic.Global(ExitGlobalStage.LauncherStopping);
+                _stopping = true;
+                if (_identitySession == null)
+                {
+                    ControlExitDiagnostic.Global(ExitGlobalStage.LauncherSessionMissing);
+                    return ControlExitOutcome.NoSession;
+                }
+                completion = _identitySession.NotifyExit(budget);
+            }
+            // The worker needs its submission lock and may finish activation
+            // observation before Exit. No launcher/session lock is held here.
+            return completion.Wait(budget);
+        }
+        catch { return ControlExitOutcome.Failed; }
+    }
+
     public static void BeginSession(StewardPluginConfig config)
     {
         lock (LifecycleLock)
@@ -60,14 +98,16 @@ internal static class CompanionProcessLauncher
 
     public static void TryNotifyExit(ManualLogSource? log)
     {
+        ControlExitDiagnostic.Global(ExitGlobalStage.LauncherEntered);
         int generation;
         lock (LifecycleLock)
         {
-            if (_stopping) return;
+            if (_stopping) { ControlExitDiagnostic.Global(ExitGlobalStage.LauncherStopping); return; }
             _stopping = true;
             generation = _generation;
             if (_protocol != CompanionControlProtocol.LegacyTcp)
             {
+                if (_identitySession == null) ControlExitDiagnostic.Global(ExitGlobalStage.LauncherSessionMissing);
                 _identitySession?.NotifyExit();
                 return;
             }

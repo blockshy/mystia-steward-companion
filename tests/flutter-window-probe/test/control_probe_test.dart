@@ -1,13 +1,29 @@
 import 'dart:convert';
+import 'dart:ui' show ViewFocusDirection, ViewFocusEvent, ViewFocusState;
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mystia_steward_companion_window_probe/control_probe_contract.dart';
+import 'package:mystia_steward_companion_window_probe/control_probe_runner.dart';
 import 'package:mystia_steward_companion_window_probe/control_probe_view.dart';
 import 'package:mystia_steward_companion_window_probe/generated/control_probe_api.g.dart';
 
 const sha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const runId = 'fixture-control-1';
+Map<String, dynamic> publication({bool ready = false}) => {
+  'kind': 'original-mod-cached-snapshot-publication',
+  'started': ready,
+  'ready': ready,
+  'gamePid': ready ? 17 : 0,
+  'startedUtcFileTime': ready ? '134358048000000000' : '0',
+  'capturedUtcFileTime': ready ? '134358048010000000' : '0',
+  'requestCount': ready ? 1 : 0,
+  'responseCount': ready ? 1 : 0,
+  'capturedAtUtc': ready ? '2026-10-08T00:00:01Z' : null,
+  'completedMonotonicMs': ready ? 1000 : 0,
+  'businessReadinessClaimed': false,
+  'foregroundGrantClaimed': false,
+};
 final args = [
   '--probe',
   '--run-id',
@@ -23,6 +39,7 @@ Map<String, dynamic> nativeFixture() => {
   'kind': 'real-mod-control-native',
   'runId': runId,
   'error': null,
+  'errorBlocked': false,
   'gameCreationHex': '1dd000123',
   'rsUnavailableReason': '',
   'events': <Object>[],
@@ -110,6 +127,7 @@ ControlState parse(
   int previous = 0,
   String nativeSha = sha,
   int nativePid = 7,
+  bool legacy = false,
 }) => ControlState.parse(
   ControlSnapshot(
     gitSha: nativeSha,
@@ -121,9 +139,405 @@ ControlState parse(
   runId,
   7,
   previous,
+  legacy: legacy,
 );
 
 void main() {
+  testWidgets(
+    'cold MSC1 first frame and progress updates issue no native view-focus request',
+    (tester) async {
+      final dispatcher = tester.binding.platformDispatcher;
+      dispatcher.resetFocusedViewTestValues();
+      addTearDown(dispatcher.resetFocusedViewTestValues);
+      final ui = ControlUi(deferNativeFocus: true);
+      await tester.pumpWidget(ControlProbeApp(ui: ui));
+      await tester.pumpAndSettle();
+      ui.show('真实注册已完成，正在等待游戏授权');
+      await tester.pumpAndSettle();
+      expect(dispatcher.testFocusEvents, isEmpty);
+      expect(ui.focused, false);
+      await tester.sendKeyEvent(LogicalKeyboardKey.f24, platform: 'windows');
+      expect(ui.f24Down, 0);
+      // Synthetic native-focus delivery is explicit. This proves framework
+      // ordering, not Windows permission or an actual game foreground grant.
+      dispatcher.onViewFocusChange?.call(
+        ViewFocusEvent(
+          viewId: tester.view.viewId,
+          state: ViewFocusState.focused,
+          direction: ViewFocusDirection.undefined,
+        ),
+      );
+      ui.allowFocusAfterNativeActivation();
+      await tester.pumpAndSettle();
+      expect(ui.focused, true);
+      await tester.sendKeyEvent(LogicalKeyboardKey.f24, platform: 'windows');
+      expect(ui.f24Down, 1);
+    },
+  );
+  testWidgets('ordinary and legacy hosts retain their initial autofocus', (
+    tester,
+  ) async {
+    final dispatcher = tester.binding.platformDispatcher;
+    dispatcher.resetFocusedViewTestValues();
+    addTearDown(dispatcher.resetFocusedViewTestValues);
+    final ui = ControlUi();
+    await tester.pumpWidget(ControlProbeApp(ui: ui));
+    await tester.pumpAndSettle();
+    expect(ui.focusRequestsEnabled, true);
+    expect(ui.focused, true);
+    expect(dispatcher.testFocusEvents, isNotEmpty);
+  });
+  for (final changed in <String, Object?>{
+    'none': null,
+    'activationCount': 0,
+    'source': 1,
+    'activationPending': true,
+    'clientForeground': false,
+    'childFocused': false,
+    'visible': false,
+    'interactive': false,
+  }.entries) {
+    test(
+      'Dart focus gate requires consumed real activation: ${changed.key}',
+      () async {
+        final ui = ControlUi(deferNativeFocus: true);
+        final value = nativeFixture()
+          ..addAll({
+            'registered': true,
+            'registrationCount': 1,
+            'gameWindowBound': true,
+            'gameThreadId': 19,
+            'activationCount': 1,
+            'source': 0,
+            'clientForeground': true,
+            'foregroundPid': 7,
+            'childFocused': true,
+            'visible': true,
+            'interactive': true,
+          });
+        if (changed.key != 'none') value[changed.key] = changed.value;
+        var calls = 0;
+        final runner = ControlRunner(
+          report: ControlReport(ControlLaunch(runId), sha, clientGeneration: 1),
+          ui: ui,
+          processId: 7,
+          frame: () async {},
+          execute: (_) async {
+            if (++calls > 1) {
+              throw const ControlFailure(
+                'synthetic stop after native observation',
+              );
+            }
+            return ControlSnapshot(
+              gitSha: sha,
+              processId: 7,
+              sequence: calls,
+              evidenceJson: jsonEncode(value),
+            );
+          },
+        );
+        await expectLater(runner.runClient(), throwsA(isA<ControlFailure>()));
+        expect(ui.focusRequestsEnabled, changed.key == 'none');
+      },
+    );
+  }
+  for (final automatic in [true, false]) {
+    test(
+      'legacy runner preserves EOF toggle and click ordering (startup automatic=$automatic)',
+      () async {
+        final report = ControlReport(
+          ControlLaunch(runId),
+          sha,
+          clientGeneration: 1,
+          legacy: true,
+        );
+        final ui = ControlUi();
+        final value = nativeFixture()
+          ..addAll({
+            'gamePid': 17,
+            'gameThreadId': 19,
+            'gameWindowBound': true,
+            'gameAlive': true,
+            'gameFocusOwned': true,
+            'visible': true,
+            'interactive': true,
+            'clientGeneration': 1,
+            'modLaunchedClient': true,
+            'listenerOwnerPid': 7,
+            'legacyControl': <String, dynamic>{
+              'scenario': 'old-mod-legacy-client',
+              'ready': true,
+              'showCount': 1,
+              'toggleCount': 0,
+              'exitCount': 0,
+              'startupAttempted': true,
+              'automaticForeground': automatic,
+              'clickRequired': !automatic,
+              'clickCount': 0,
+              'backgroundClickCount': 0,
+              'asfwCalled': false,
+              'automatedOsInput': true,
+              'snapshotPublication': publication(),
+            },
+          });
+        final legacy = value['legacyControl'] as Map<String, dynamic>;
+        final operations = <ControlOperation>[];
+        var sequence = 0, commandId = 0;
+        void foreground(bool client) {
+          value['clientForeground'] = client;
+          value['gameForeground'] = !client;
+          value['childFocused'] = client;
+          value['foregroundPid'] = client ? 7 : 17;
+          ui.focused = client;
+        }
+
+        foreground(automatic);
+        final runner = ControlRunner(
+          report: report,
+          ui: ui,
+          processId: 7,
+          frame: () async {},
+          execute: (command) async {
+            if (command.operation == ControlOperation.inspect) {
+              expect(command.requestId, commandId);
+            } else {
+              expect(command.requestId, ++commandId);
+              operations.add(command.operation);
+            }
+            switch (command.operation) {
+              case ControlOperation.initialize:
+              case ControlOperation.inspect:
+                break;
+              case ControlOperation.clickProbe:
+                if (legacy['clickRequired'] == true) {
+                  expect(value['gameForeground'], true);
+                  legacy['backgroundClickCount'] =
+                      (legacy['backgroundClickCount'] as int) + 1;
+                }
+                expect(value['injectedF8Held'], false);
+                foreground(true);
+                legacy['clickRequired'] = false;
+                legacy['clickCount'] = (legacy['clickCount'] as int) + 1;
+                value['nativeMouseDown'] = legacy['clickCount'];
+                value['nativeMouseUp'] = legacy['clickCount'];
+                ui.clicked();
+              case ControlOperation.sendFocusKey:
+                expect(ui.focused, true);
+                value['nativeF24Down'] = (value['nativeF24Down'] as int) + 1;
+                ui.f24Down++;
+              case ControlOperation.focusGame:
+                foreground(false);
+                value['focusGameCount'] = (value['focusGameCount'] as int) + 1;
+                legacy['snapshotPublication'] = publication(ready: true);
+              case ControlOperation.pressF8:
+                expect(value['gameForeground'], true);
+                expect(
+                  legacyPublicationReady(legacy['snapshotPublication'], 17),
+                  true,
+                );
+                value['injectedF8Held'] = true;
+                value['injectedDownCount'] = 1;
+                legacy['toggleCount'] = 1;
+                legacy['clickRequired'] = true;
+              case ControlOperation.releaseF8:
+                expect(legacy['toggleCount'], 1);
+                expect(value['gameForeground'], true);
+                value['injectedF8Held'] = false;
+                value['injectedUpCount'] = 1;
+              case ControlOperation.closeGame:
+                expect(value['gameForeground'], true);
+                expect(value['focusGameCount'], 2);
+                value['closeRequested'] = true;
+                value['gameAlive'] = false;
+                value['gameExitCode'] = 0;
+              default:
+                fail('Unexpected legacy action: ${command.operation}');
+            }
+            return ControlSnapshot(
+              gitSha: sha,
+              processId: 7,
+              sequence: ++sequence,
+              evidenceJson: jsonEncode(value),
+            );
+          },
+        );
+        await runner.runLegacyClient();
+        expect(
+          report.checks.map((check) => check['name']).toSet(),
+          requiredLegacyControlChecks,
+        );
+        expect(report.context['startupAutomaticForeground'], automatic);
+        expect(operations, [
+          ControlOperation.initialize,
+          ControlOperation.clickProbe,
+          ControlOperation.sendFocusKey,
+          ControlOperation.focusGame,
+          ControlOperation.pressF8,
+          ControlOperation.releaseF8,
+          ControlOperation.clickProbe,
+          ControlOperation.sendFocusKey,
+          ControlOperation.focusGame,
+          ControlOperation.closeGame,
+        ]);
+        expect(ui.onF8, null);
+      },
+    );
+  }
+  test('legacy sanitized role is separate and only permits its original generation', () {
+    expect(
+      ControlLaunch.client(
+        ['--control-legacy-client', runId, '1'],
+        sha,
+        legacy: true,
+      ).runId,
+      runId,
+    );
+    for (final invalid in [
+      ['--control-legacy-client', runId, '2'],
+      ['--control-client', runId, '1'],
+      ['--control-legacy-client', runId, '1', '--token=credential'],
+    ]) {
+      expect(
+        () => ControlLaunch.client(invalid, sha, legacy: true),
+        throwsFormatException,
+      );
+    }
+    expect(
+      () => ControlLaunch.client(['--control-legacy-client', runId, '1'], sha),
+      throwsFormatException,
+    );
+  });
+  test('legacy raw readiness cannot masquerade as actual Mod Update registration or ASFW', () {
+    Map<String, dynamic> fixture() => nativeFixture()
+      ..['gameWindowBound'] = true
+      ..['legacyControl'] = <String, dynamic>{
+        'scenario': 'old-mod-legacy-client',
+        'ready': true,
+        'showCount': 1,
+        'toggleCount': 0,
+        'exitCount': 0,
+        'startupAttempted': true,
+        'automaticForeground': false,
+        'clickRequired': true,
+        'clickCount': 0,
+        'backgroundClickCount': 0,
+        'asfwCalled': false,
+        'automatedOsInput': true,
+        'snapshotPublication': publication(),
+      };
+    expect(parse(fixture(), legacy: true).legacy['clickRequired'], true);
+    expect(() => parse(fixture()), throwsA(isA<ControlFailure>()));
+    expect(
+      () => parse(nativeFixture(), legacy: true),
+      throwsA(isA<ControlFailure>()),
+    );
+    for (final key in ['registered', 'pipeConnected', 'gameReady']) {
+      expect(
+        () => parse(fixture()..[key] = true, legacy: true),
+        throwsA(isA<ControlFailure>()),
+      );
+    }
+    for (final change in <String, Object>{
+      'asfwCalled': true,
+      'showCount': 0,
+      'startupAttempted': false,
+      'clickCount': -1,
+    }.entries) {
+      final value = fixture();
+      (value['legacyControl'] as Map)[change.key] = change.value;
+      expect(() => parse(value, legacy: true), throwsA(isA<ControlFailure>()));
+    }
+  });
+  test('legacy publication is only positive evidence after exact focus, not a heartbeat or grant', () {
+    expect(legacyPublicationReady(publication(), 17), false);
+    expect(legacyPublicationReady(publication(ready: true), 17), true);
+    for (final entry in <String, Object?>{
+      'started': false,
+      'gamePid': 18,
+      'capturedUtcFileTime': '134358048000000000',
+      'capturedAtUtc': 'unknown',
+      'responseCount': 0,
+      'businessReadinessClaimed': true,
+      'foregroundGrantClaimed': true,
+    }.entries) {
+      expect(
+        () => legacyPublicationReady(
+          publication(ready: true)..[entry.key] = entry.value,
+          17,
+        ),
+        throwsA(isA<ControlFailure>()),
+      );
+    }
+    final stale = publication(ready: true)
+      ..['ready'] = false
+      ..['capturedUtcFileTime'] = '134358048000000000';
+    expect(legacyPublicationReady(stale, 17), false);
+  });
+  for (final blocked in [false, true]) {
+    test(
+      'native first-error classification survives polling: blocked=$blocked',
+      () async {
+        final runner = ControlRunner(
+          report: ControlReport(ControlLaunch(runId), sha, clientGeneration: 1),
+          ui: ControlUi(deferNativeFocus: true),
+          processId: 7,
+          frame: () async {},
+          execute: (_) async => ControlSnapshot(
+            gitSha: sha,
+            processId: 7,
+            sequence: 1,
+            evidenceJson: jsonEncode(
+              nativeFixture()
+                ..['error'] = 'bounded native observation stopped'
+                ..['errorBlocked'] = blocked,
+            ),
+          ),
+        );
+        await expectLater(
+          runner.runClient(),
+          throwsA(
+            predicate<Object>(
+              (error) =>
+                  error.runtimeType ==
+                  (blocked ? ControlBlocked : ControlFailure),
+            ),
+          ),
+        );
+      },
+    );
+  }
+  test('legacy PASS requires all six separate checks and reports automated click limits', () {
+    final report = ControlReport(
+      ControlLaunch(runId),
+      sha,
+      clientGeneration: 1,
+      legacy: true,
+    )..status = 'PASS';
+    expect(report.encode, throwsA(isA<ControlFailure>()));
+    expect(
+      () => report.check('client-msc1-registration'),
+      throwsA(isA<ControlFailure>()),
+    );
+    for (final check in requiredLegacyControlChecks) {
+      report.check(check);
+    }
+    final decoded = jsonDecode(report.encode()) as Map<String, dynamic>;
+    expect(decoded['kind'], 'flutter-legacy-control-client');
+    expect(
+      decoded['executionMode'],
+      'original-mod-legacy-tcp-and-automated-os-click',
+    );
+    expect(decoded['p0Verified'], false);
+    expect(
+      () => ControlReport(
+        ControlLaunch(runId),
+        sha,
+        clientGeneration: 2,
+        legacy: true,
+      ),
+      throwsA(isA<ControlFailure>()),
+    );
+  });
   test('sanitized cold client invocation rejects credentials and unknown generations', () {
     for (final generation in ['1', '2']) {
       expect(

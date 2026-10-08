@@ -6,8 +6,24 @@ import 'package:flutter/services.dart';
 
 import 'generated/probe_api.g.dart';
 import 'probe_protocol.dart';
+import 'install_fixture.dart';
 
 void main(List<String> arguments) {
+  if (arguments.contains('--updater-probe-mode=install-fixture')) {
+    runApp(
+      InstallFixtureApp(
+        arguments: arguments,
+        exchange: ProbeHostApi().exchange,
+        autoInstall:
+            Platform.environment['MYSTIA_UPDATER_PROBE_AUTOMATION'] ==
+            'install-fixture-after-ready',
+        close: () async {
+          await ServicesBinding.instance.exitApplication(AppExitType.required);
+        },
+      ),
+    );
+    return;
+  }
   runApp(
     ProbeApp(
       arguments: arguments,

@@ -1,0 +1,43 @@
+name: Flutter storage P0 probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [migration/flutter]
+    paths:
+      - '.github/workflows/flutter-storage-probe.yml'
+      - '.gitattributes'
+      - '.nvmrc'
+      - 'toolchain.lock.json'
+      - 'scripts/flutter-toolchain.mjs'
+      - 'scripts/flutter-windows-toolchain.mjs'
+      - 'tests/flutter-toolchain/**'
+      - 'scripts/install-locked-flutter.mjs'
+      - 'scripts/run-flutter-storage-probe.mjs'
+      - 'scripts/audit-flutter-android-apk.py'
+      - 'tests/flutter-storage-probe/**'
+permissions: {}
+jobs:
+  windows-release:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Install locked Flutter
+        shell: pwsh
+        run: node scripts/install-locked-flutter.mjs --install-root "$env:RUNNER_TEMP/flutter-storage-sdk"
+      - name: Check and build committed storage probe
+        shell: pwsh
+        run: node scripts/run-flutter-storage-probe.mjs --sdk-root "$env:RUNNER_TEMP/flutter-storage-sdk" --build windows --output "$env:RUNNER_TEMP/mystia-flutter-storage-probe"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-steward-companion-storage-p0-windows
+          path: ${{ runner.temp }}/mystia-flutter-storage-probe/
+          if-no-files-found: error
+          retention-days: 14

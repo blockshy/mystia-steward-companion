@@ -18,7 +18,7 @@
 
 ## 最短上手
 
-先按[本地开发与构建](../../docs/local-development.md)安装锁定工具链并执行冻结依赖安装。Mod 构建前还要按 [References 说明](References/README.md)恢复并校验 7 个正式引用。
+先按[本地开发与构建](../../docs/local-development.md)安装锁定工具链并执行冻结依赖安装。Mod 构建前还要按 [References 说明](References/README.md)从原私有包与锁定 BepInEx 官方包恢复并校验 8 个正式引用。
 
 在仓库根目录运行：
 

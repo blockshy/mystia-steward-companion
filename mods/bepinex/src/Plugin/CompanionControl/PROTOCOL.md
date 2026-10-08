@@ -68,17 +68,27 @@ ActivationAck 原样回显请求，只有 14/15/21/22/23 可变化。status=1 �
 
 Exit 继承注册身份和窗口值，6 为下一个 requestId、7=3、20 为已绑定 gameThread；所有动作字段 12–19、21–23 为零。ExitAck 仅修改 kind=6、23=1，其余逐项回显。退出不重新枚举可能已销毁的游戏窗口；仍核对保留的进程与管道 OS 对端身份。该 ACK 只确认收到退出通知，真实 game exit0 必须由客户端另行观察保留 HANDLE。
 
+Identity 模式在首次真实 Update 的 Prepare 中、worker 注册/激活入队前，注册当前游戏已核实的最终原生退出导出 `ApplicationExitHelper.dll!ApplicationExit`。`NativeExitRegistration` 固定实际游戏目录、helper 完整 SHA/长度、x64 PE、导出 RVA 与原始入口字节，通过锁定 #783 的 `INativeDetour` 创建并强引用原 trampoline 后才 Apply；拒绝已有修改、歧义模块或不同路径。没有已加载模块时，只加载已验证的绝对路径，依赖搜索限 System32；保留文件/模块/委托/detour 至进程结束，不重试失败注册。LegacyTcp 模式不安装此入口。
+
+该游戏的 `GamePlatformManagerImpl.OnApplicationQuit` 原生实现会直接调用此 helper，helper 最终调用 CRT `exit(0)`；UnityPlayer 对 MonoBehaviour 的退出分派又先于 `Application.quitting`。因此只订阅后者不能保证在该游戏中获得退出通知，已移除该订阅实现。此次入口限定已确定结束进程的实际 export，不在可取消的 WM_CLOSE 或 wantsToQuit 阶段提前停止控制。回调不访问 Unity 对象，不 Dispose Controller，不修改退出码；任何结果最终都调用原 trampoline，不能以通信失败取消或替换原游戏退出。
+
+最终 export 首次进入即创建单调的 13 秒预算，再调用当前 launcher 的 `NotifyNativeExitAndWait`。它只派发一次托管任务；全部普通日志、launcher/session 锁获取和通知都在该任务中执行，原生线程只有限等待该任务，不同步调用日志或获取产品锁。任务在日志之后、每次获得产品锁之后重新检查预算，过期则不再提交通知。它复用当前会话单次完成任务，将入口预算与会话已有截止时间取最早值，在释放两把锁之后等待严格 ExitAck；后台 worker 全程只使用托管值、管道和 Win32 身份查询，不要求主线程继续执行 Unity Update。ACK 经 `ValidateAcknowledgement` 全字段校验且未超时才完成为 `Acknowledged`。失败、取消、队列拒绝、未注册、worker 结束均完成明确结果，不留下永不完成的任务；无会话立即返回，绝不为了退出启动客户端。既有 OnApplicationQuit/OnDestroy 的 best-effort 通知若先发生，最终入口仍取同一任务/截止时间，不再提交一帧。
+
 ## 串行、停止和输入边界
 
 单 worker、容量 8 的有界队列、一个持久管道连接；任意时刻仅一项请求等待响应。注册/退出 exchange 最多 3 秒，激活 exchange 最多 6 秒（P0 服务端实际焦点观察界为 5 秒），ActivationObserved 写入最多 3 秒。EOF、取消、错误版本、身份漂移、非法/额外帧、未知 ACK、满队列或其他未确定结果关闭会话；不自动重连、重放或回退。只读监听等待不提交控制动作。
 
 每次提交前、注册/激活 ACK 验证时，用 PeekNamedPipe 拒绝尚未请求的积压数据。写入使用固定完整帧，读取处理分片并在 EOF 时拒绝不完整帧。
 
-NotifyExit 与唯一 Process.Start、注册首 write、ASFW/激活首 write 使用同一停止门禁。停止后丢弃尚未提交的 Prepare/Activate；已经提交的激活仍可读取 ACK、核验真实状态并发送唯一 ActivationObserved，完成后才允许 Exit，不借此提交新的前台动作。整体最多 13 秒，覆盖激活 6 秒、确认 3 秒、退出 3 秒及调度余量。新会话取消旧 worker，不销毁客户端进程。该后台通知不阻塞 Unity 退出等待 ACK。
+NotifyExit 与唯一 Process.Start、注册首 write、ASFW/激活首 write 使用同一停止门禁。停止后丢弃尚未提交的 Prepare/Activate；已经提交的激活仍可读取 ACK、核验真实状态并发送唯一 ActivationObserved，完成后才允许 Exit，不借此提交新的前台动作。会话首次停止最多 13 秒，覆盖在途激活 6 秒、确认 3 秒、退出 3 秒及调度余量；最终原生入口的预算还会约束此前的任务排队、日志和锁竞争，重复调用不能延长任一截止时间。空闲已注册会话的 Exit exchange 仍最多 3 秒。最终原生线程等待任务完成或入口剩余预算，不固定 sleep；即使工作线程卡在日志或产品锁，也会超时继续原函数，不重发。超过截止时间的 ACK 不能把超时结果改为成功。新会话取消旧 worker，不销毁客户端进程。此有界等待可能延长游戏最终退出，须用普通构建实测 kind5/6、Mod ACK 消费日志和保留游戏 HANDLE exit0，不能把入队、进入 hook 或诊断包通过算作普通产品通过。
+
+普通日志 `native_exit_registered` 记录初始化；`native_exit_worker_entered/completion` 记录原生入口派发任务的执行阶段及捕获的原生线程 ID。后两项不证明原生线程实际等到了该结果：日志本身可能晚于其预算。实际原生等待结果只在显式 v3 诊断页以 Interlocked 记录，诊断不能替代普通构建。普通实测须分别核验工作阶段、Mod 严格 ACK 消费、原始 5/6 和进程 exit0。
 
 采样时非游戏前台的 F8/RS 不入队；即便如此仍观察 held 状态并让键盘和 RS 分别等待回焦后的真实 released/neutral 采样。键盘在新模式额外调用既有 `Input.GetKey(config.ToggleKey)` 读取 held；不会改变 Legacy 路径。成功的客户端激活 ACK 还发布纯托管 handoff epoch，保证游戏后台没有 Update 时，下一次游戏帧也必须先观察对应按键释放；客户端归还游戏时仍按住的 F8/RS 不能变成新游戏 edge。每个输入冻结采样 epoch；worker 在实际提交时再次核对 epoch 与 HWND/PID，旧输入不能在同一游戏窗口重新获前台后被重放。该本地 epoch 不占用协议字段。前台或 epoch 已改变的、尚未提交的样本只丢弃，不消耗 requestId。客户端注入 key-up 成功不等于 Unity 已消费 released 帧；实机自动步骤若缺少该证据，应记录缺口，不用固定延迟假定就绪。
 
 诊断仅输出结构化事件、来源、PID、输入序号/TID、可用的输入布尔值、Win32 error 和可选编译 SHA；不输出 nonce、API token、命令行或任意异常消息。`CompanionControlBuildGitSha` 非空时写入同名 AssemblyMetadata，P0 构建必须另行校验其值与完整源码提交一致。
+
+退出通知缺失的 [P0 共享页诊断](EXIT-DIAGNOSTIC.md) 由独立编译开关和 fresh fixture 授权启用，不改变 MSC1；普通构建不含共享页访问。诊断页中的随机实例标识与 MSC1 nonce 无关；诊断运行不能替代普通产品退出证据。
 
 ## 依据与验证范围
 
@@ -89,7 +99,10 @@ NotifyExit 与唯一 Process.Start、注册首 write、ASFW/激活首 write 使�
 - `UnityEngine.Input.GetKeyDown(KeyCode)`：token `0x06000020`，RVA `0x2C89260`，对应原生 `GetKeyDownInt` icall；`GetKey` token `0x0600001F`，RVA `0x2C892A0`，对应 `GetKeyInt` icall。
 - 默认 KeyCode：F8=289、JoystickButton9=339。InputSystem `Gamepad.current` token `0x060005E6` / RVA `0x2A17F80`；`rightStickButton` token `0x060005C9` / RVA `0x483190`，metadata backing offset `0x180`。该 RVA 与其他 getter 共享，IDA 自动命名不是 Gamepad 字段语义证据。
 - `ButtonControl.isPressed` token `0x06001284` / RVA `0x2ACDD70`；`wasPressedThisFrame` token `0x06001285` / RVA `0x2ACDE20`，原生需本帧设备更新且当前按下、前帧未按下。沿用当前代码中每帧局部 wrapper 的反射读取，不新增对象缓存。
+- `GamePlatform.MonoScripts.GamePlatformManagerImpl.OnApplicationQuit`：metadata token `0x060000C2` / RVA `0x2318910`；实际原生体先执行 Platform.Dispose，再直接解析/调用 helper export。它没有经过 metadata 中同 RVA `0x2317380` 的 `Exit/NativeApplicationExit` wrapper；只 Hook wrapper 会漏掉该退出路径。`SaveManagement.ExitGameEX` RVA `0x593400` 也汇合到相同 helper。
+- helper `ApplicationExit` 导出 RVA `0x15a0` 的原生体调用 `exit`，其 thunk RVA `0x2bf0` 经 IAT 指向 ucrtbase。完整 SHA、大小与入口字节只在 [NativeExitContract.cs](NativeExitContract.cs) 定义。#783 `INativeDetour` 及 `IDetour` 分别来自已锁 BepInEx.Unity.IL2CPP / MonoMod.RuntimeDetour，不能用系统或额外未核验的 DLL 代替。
+- 同版本 UnityPlayer 的退出控制流先运行 wantsToQuit，再分派 MonoBehaviour.OnApplicationQuit，之后才调用 `Internal_ApplicationQuit`（GameAssembly RVA `0x2BEEC60`）。这解释了后者在 helper 提前结束进程时不保证到达；静态链本身不替代本次 export 实际命中及双方 ACK 的实机证据。
 
 分析输出按工作流保留在仓库外 `new/managed-source/{metadata,interop-783}` 和 `new/ida/export/pseudocode`，不是提交的游戏源码；Cpp2IL `ldnull; throw` 桩不能当实现。这里的 OS TID 绑定来自真实 Update 与窗口核验，不把托管 ManagedThreadId 当 OS TID。
 
-[纯托管 smoke](../../../../../tests/companion-control/Program.cs) 覆盖 wire/身份规则、OS 表字节解析、序列、输入 neutral/epoch、分片/EOF/取消；它不证明 Windows API 或实物手柄通过。当前实机矩阵针对已存在最小 Flutter 宿主、新 Mod、真实 F8/RS 输入链。首次启动、旧 Mod、完整客户端、其他 DPI/普通用户、拔插等须各自取得证据；不得从此契约或独立合作插件结果推断已经完成。
+[纯托管 smoke](../../../../../tests/companion-control/Program.cs) 覆盖 wire/身份规则、OS 表字节解析、序列、输入 neutral/epoch、分片/EOF/取消，以及一次注册、失败不重试、helper 身份/入口拒绝、同任务同截止时间和终止结果。可注入的短预算负例让日志或产品锁实际阻塞，验证调用线程有限返回、worker 不内联、过期后不继续操作；不每例等待真实 13 秒。它还直接编译生产 session，使用明确拒绝的注册桩验证未 Prepare 即退出、退休后重复通知、注册/日志失败不会悬挂任务；该桩不执行 Unity、Hook 或任何 Windows 进程/管道操作。这些测试不证明原生 detour、Windows API 或实物手柄通过。各首次启动、换代、旧 Mod、完整客户端、其他 DPI/普通用户、拔插场景须各自取得实机证据；不得从此契约或独立合作插件结果推断已经完成。

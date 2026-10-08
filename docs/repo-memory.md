@@ -30,7 +30,7 @@
 | 领域 | 决策摘要 | 主文档 |
 | --- | --- | --- |
 | 工具链 | `toolchain.lock.json` 是本地与 CI 的唯一版本基准；不接受全局工具或最新版本替代 | [本地开发与构建](local-development.md) |
-| 构建引用 | 正式 Mod 只使用 `references.lock.json` 指向的 7 个精确 DLL；不从游戏目录临时拼接 | [本地构建引用](../mods/bepinex/References/README.md) |
+| 构建引用 | 正式 Mod 只使用 `references.lock.json` 指向的 8 个精确 DLL；原私有包 7 个加锁定官方包的 RuntimeDetour，不从游戏目录临时拼接 | [本地构建引用](../mods/bepinex/References/README.md) |
 | 游戏证据 | 元数据、interop、IDA 与实机日志交叉验证；未知状态停止相关功能 | [IL2CPP / IDA 分析工作流](il2cpp-analysis-workflow.md) |
 | 游戏数据 | 静态目录、玩家状态和业务快照分层；完整目录按内容签名独立获取 | [游戏数据提供器](runtime-provider.md) |
 | 订单 | 普客与稀客都以原生创建成功后形成的精确捕获作为唯一业务依据；HUD 只补充展示，不证明控制归属 | [订单捕获与生命周期](runtime-order-lifecycle.md) |

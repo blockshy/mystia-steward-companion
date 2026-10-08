@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import './flutter-windows-toolchain.test.mjs';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,

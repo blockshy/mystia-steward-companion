@@ -82,10 +82,20 @@ function New-ControlRun([string]$Name) {
     [IO.File]::WriteAllText((Join-Path $payload 'mystia-steward-companion-window-probe.exe'), 'Non-executable Flutter host fixture.')
     return $path
 }
-function Invoke-ControlFixture($Source, [string]$Run, [int]$FixturePort = 32755, [switch]$Lifecycle) {
+function Invoke-ControlFixture($Source, [string]$Run, [int]$FixturePort = 32755, [switch]$Lifecycle, [switch]$LegacyClient, [switch]$ExitDiagnostic) {
+    if ($LegacyClient) {
+        Invoke-ControlPreparation -RunDirectory $Run -RunId ([IO.Path]::GetFileName($Run)) -GitSha $gitSha `
+            -SourceGameDirectory $Source.source -SteamAppManifestPath $Source.manifest -Port $FixturePort -LegacyClient
+        return
+    }
     Invoke-ControlPreparation -RunDirectory $Run -RunId ([IO.Path]::GetFileName($Run)) -GitSha $gitSha `
         -SourceGameDirectory $Source.source -SteamAppManifestPath $Source.manifest -Port $FixturePort `
-        -ModBundleDirectory $controlModBundle -ModEvidenceSha256 $controlModEvidenceHash -Lifecycle:$Lifecycle
+        -ModBundleDirectory $controlModBundle -ModEvidenceSha256 $controlModEvidenceHash -Lifecycle:$Lifecycle -ExitDiagnostic:$ExitDiagnostic
+}
+
+Test-ControlCase 'legacy-mode-refuses-replacement-bundle-or-mixed-scenario' {
+    Expect-ControlFailure { Invoke-ControlPreparation -RunId 'reject' -GitSha $gitSha -LegacyClient -Lifecycle } 'exactly one'
+    Expect-ControlFailure { Invoke-ControlPreparation -RunId 'reject' -GitSha $gitSha -LegacyClient -ModBundleDirectory $controlModBundle } 'replacement bundle is forbidden'
 }
 
 $source = New-ControlSource 'source-library'
@@ -102,6 +112,56 @@ Test-ControlCase 'consumer-rejects-unpinned-synthetic-game-before-copy' {
 $fixturePins = [ordered]@{}
 foreach ($relative in $productionPins.Keys) { $fixturePins[$relative] = Get-ControlHash (Join-Path $source.source $relative) }
 function Get-ControlPinnedFiles { return $fixturePins }
+
+Test-ControlCase 'exit-diagnostic-requires-explicit-new-mod-lifecycle-and-diagnostic-build' {
+    Expect-ControlFailure { Invoke-ControlPreparation -RunId 'reject' -GitSha $gitSha -ExitDiagnostic -LegacyClient } 'requires only'
+    Expect-ControlFailure { Invoke-ControlPreparation -RunId 'reject' -GitSha $gitSha -ExitDiagnostic } 'requires only'
+    $run = New-ControlRun 'wrong-diagnostic-build'
+    Expect-ControlFailure { Invoke-ControlFixture $source $run -Lifecycle -ExitDiagnostic } 'must match'
+    Require-ControlTest (!(Test-Path (Join-Path $run 'workspace'))) 'Diagnostic mismatch copied game files.'
+}
+Test-ControlCase 'diagnostic-manifest-cannot-silently-enable-ordinary-run-and-explicit-pair-publishes-seven-fields' {
+    $manifestPath = Join-Path $controlModBundle 'build-evidence.json'
+    $original = [IO.File]::ReadAllBytes($manifestPath); $originalHash = $controlModEvidenceHash
+    try {
+        $changed = Get-Content $manifestPath -Raw | ConvertFrom-Json -AsHashtable
+        $changed.exitDiagnostic = $true
+        [IO.File]::WriteAllText($manifestPath, ($changed | ConvertTo-Json -Depth 20))
+        $script:controlModEvidenceHash = Get-ControlHash $manifestPath
+        $wrong = New-ControlRun 'silent-diagnostic'
+        Expect-ControlFailure { Invoke-ControlFixture $source $wrong -Lifecycle } 'must match'
+        $run = New-ControlRun 'explicit-diagnostic'
+        Invoke-ControlFixture $source $run -Lifecycle -ExitDiagnostic *> (Join-Path $testRoot 'diagnostic-prepare.log')
+        $authorization = Get-Content (Join-Path $run 'control-exit-diagnostic.json') -Raw | ConvertFrom-Json -AsHashtable
+        Require-ControlTest ($authorization.Count -eq 7 -and $authorization.diagnosticOnly -ceq $true -and
+            $authorization.kind -ceq 'control-exit-diagnostic-authorization' -and $authorization.modBuildEvidenceSha256 -ceq $controlModEvidenceHash -and
+            $authorization.preparedEvidenceSha256 -ceq (Get-ControlHash (Join-Path $run 'workspace/prepared-evidence.json'))) 'Diagnostic authorization differs.'
+        $ordinary = Get-Content (Join-Path $run 'control-lifecycle.json') -Raw | ConvertFrom-Json -AsHashtable
+        Require-ControlTest ($ordinary.Count -eq 7) 'Diagnostic mode changed the ordinary lifecycle authorization schema.'
+    } finally { [IO.File]::WriteAllBytes($manifestPath, $original); $script:controlModEvidenceHash = $originalHash }
+}
+
+Test-ControlCase 'legacy-client-preserves-exact-original-dll-and-publishes-separate-authorization' {
+    $run = New-ControlRun 'legacy-client'
+    Invoke-ControlFixture $source $run -LegacyClient *> (Join-Path $testRoot 'legacy-client-prepare.log')
+    $evidencePath = Join-Path $run 'workspace/prepared-evidence.json'
+    $evidence = Get-Content $evidencePath -Raw | ConvertFrom-Json
+    $identity = Get-Content (Join-Path $run 'workspace/mod-build-evidence.json') -Raw | ConvertFrom-Json
+    $authorization = Get-Content (Join-Path $run 'control-lifecycle.json') -Raw | ConvertFrom-Json
+    $relative = 'BepInEx/plugins/mystia-steward-companion/MystiaStewardCompanion.BepInEx.dll'
+    Require-ControlTest ((Get-ControlHash (Join-Path $run "workspace/game/$relative")) -ceq $fixturePins[$relative]) 'Legacy preparation replaced the original DLL.'
+    Require-ControlTest ($identity.kind -ceq 'original-mod-identity' -and $identity.replacementPerformed -ceq $false -and
+        $identity.dllSha256 -ceq $fixturePins[$relative] -and $evidence.modReplacement.scope -ceq 'original-mod-preserved') 'Legacy identity evidence differs.'
+    Require-ControlTest ($evidence.config.autoLaunch -ceq $true -and $evidence.config.controlProtocol -ceq 'LegacyTcp' -and
+        $authorization.scenario -ceq 'old-mod-legacy-client' -and $authorization.preparedEvidenceSha256 -ceq (Get-ControlHash $evidencePath)) 'Legacy configuration/authorization differs.'
+    $cfg = Get-Content (Join-Path $run 'workspace/game/BepInEx/config/com.tyukki.mystia-steward-companion.cfg') -Raw
+    Require-ControlTest ($cfg -match '(?m)^Token = ([a-f0-9]{64})$') 'Legacy token is missing.'
+    $token = $Matches[1]
+    foreach ($file in @(Get-ChildItem $run -Recurse -Filter '*.json')) {
+        Require-ControlTest (!(Get-Content $file.FullName -Raw).Contains($token)) 'Legacy token leaked into evidence.'
+    }
+    Assert-OldModSnapshotEqual $baseline (Get-OldModSnapshot $source.source) 'Legacy source after preparation'
+}
 
 Test-ControlCase 'complete-fixture-transaction-preserves-source-and-publishes-bound-sidecar' {
     $run = New-ControlRun 'prepared-fixture'

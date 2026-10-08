@@ -6,9 +6,11 @@ import { fileURLToPath } from 'node:url';
 import {
   assertLockedNode, checkedPath, checkInstalledFlutter, resolveFlutterCommand,
 } from './flutter-toolchain.mjs';
+import { mergeWindowsEnvironment, prepareWindowsToolchain, verifyProjectToolchain } from './flutter-windows-toolchain.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const project = path.join(root, 'tests/flutter-window-probe');
+let windowsTools;
 
 function toolEnvironment() {
   const env = {
@@ -19,7 +21,7 @@ function toolEnvironment() {
     'FLUTTER_TOOL_ARGS', 'FLUTTER_ENGINE', 'FLUTTER_ENGINE_SRC_PATH',
     'FLUTTER_PREBUILT_ENGINE_VERSION', 'FLUTTER_ROOT',
   ]) delete env[name];
-  return env;
+  return windowsTools ? mergeWindowsEnvironment(env, windowsTools.environment) : env;
 }
 
 function run(command, args, extra = {}) {
@@ -63,6 +65,7 @@ try {
   const buildWindows = args[2] === '--build-windows';
   if (buildWindows && process.platform !== 'win32') throw new Error('Windows builds require a Windows host.');
   const commit = buildWindows ? committedBuildIdentity() : null;
+  if (buildWindows) windowsTools = prepareWindowsToolchain();
   const sdk = checkedPath(args[1]);
   checkInstalledFlutter(sdk);
   const dart = path.join(sdk, 'bin/cache/dart-sdk/bin', process.platform === 'win32' ? 'dart.exe' : 'dart');
@@ -97,6 +100,7 @@ try {
     flutter(['build', 'windows', '--release', '--no-pub', `--dart-define=MYSTIA_WINDOW_PROBE_GIT_SHA=${commit}`], {
       env: { ...toolEnvironment(), MYSTIA_WINDOW_PROBE_GIT_SHA: commit },
     });
+    verifyProjectToolchain(project, windowsTools);
     if (committedBuildIdentity() !== commit) throw new Error('Checkout changed during the Windows build.');
   }
   console.log('Flutter window probe checks passed. Windows compilation does not establish desktop runtime results.');

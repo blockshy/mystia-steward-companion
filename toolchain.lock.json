@@ -53,6 +53,56 @@
       }
     }
   },
+  "flutterWindows": {
+    "profiles": [
+      {
+        "id": "vs2022-ci",
+        "visualStudio": "17.14.37710.0",
+        "generator": "Visual Studio 17 2022",
+        "msvcTools": { "minInclusive": "14.44.35207", "maxExclusive": "14.44.35208" },
+        "compiler": { "minInclusive": "19.44.35229.0", "maxExclusive": "19.44.35229.1" },
+        "cmake": { "minInclusive": "3.31.6", "maxExclusive": "3.31.7" },
+        "windowsSdk": "10.0.26100.0",
+        "vcRuntime": "14.44.35112"
+      },
+      {
+        "id": "vs2026-local",
+        "visualStudio": "18.3.11520.95",
+        "generator": "Visual Studio 18 2026",
+        "msvcTools": { "minInclusive": "14.50.35717", "maxExclusive": "14.50.35718" },
+        "compiler": { "minInclusive": "19.50.35725.0", "maxExclusive": "19.50.35725.1" },
+        "cmake": { "minInclusive": "4.1.2", "maxExclusive": "4.1.3" },
+        "windowsSdk": "10.0.26100.0",
+        "vcRuntime": "14.50.35710"
+      }
+    ]
+  },
+  "flutterAndroid": {
+    "androidGradlePlugin": "8.11.1",
+    "kotlin": "2.2.20"
+  },
+  "flutterAndroidProbe": {
+    "api37Windows": {
+      "emulator": {
+        "version": "37.2.12",
+        "url": "https://dl.google.com/android/repository/emulator-windows_x64-16428233.zip",
+        "size": 455342868,
+        "sha1": "488ed747e82de7e9bb5247becd1ac043c7e5e85d"
+      },
+      "image": {
+        "package": "system-images;android-37.0;google_apis;x86_64",
+        "api": "37.0",
+        "revision": "6",
+        "abi": "x86_64",
+        "minEmulator": "36.5.11",
+        "url": "https://dl.google.com/android/repository/sys-img/google_apis/x86_64-37.0_r06.zip",
+        "size": 2234615040,
+        "sha1": "629e507fd5b737c2c836b12b52c81cd0e3b12399"
+      },
+      "memoryMb": 4096,
+      "cores": 2
+    }
+  },
   "android": {
     "jdkDistribution": "temurin",
     "jdkVendor": "Eclipse Adoptium",

@@ -1,12 +1,13 @@
 import 'dart:convert';
 
 class ProbeLaunch {
-  ProbeLaunch._(this.session);
+  ProbeLaunch._(this.session, this.installFixture);
 
   final String session;
+  final bool installFixture;
 
   factory ProbeLaunch.parse(List<String> arguments) {
-    const names = {'pipe', 'session', 'parent-pid'};
+    const names = {'pipe', 'session', 'parent-pid', 'mode'};
     final values = <String, String>{};
     for (final argument in arguments) {
       final match = RegExp(r'^--updater-probe-([^=]+)=(.+)$')
@@ -20,7 +21,9 @@ class ProbeLaunch {
     }
     final session = values['session'] ?? '';
     final parent = values['parent-pid'] ?? '';
-    if (values.length != 3 ||
+    final fixture = values['mode'] == 'install-fixture';
+    if ((values.containsKey('mode') && !fixture) ||
+        values.length != (fixture ? 4 : 3) ||
         !RegExp(r'^[a-f0-9]{32}$').hasMatch(session) ||
         !RegExp(r'^[1-9][0-9]*$').hasMatch(parent) ||
         (int.tryParse(parent) ?? 0) > 0xffffffff ||
@@ -28,7 +31,7 @@ class ProbeLaunch {
             '\\\\.\\pipe\\mystia-steward-companion-p0-$parent-$session') {
       throw const FormatException('请通过探针启动脚本运行。');
     }
-    return ProbeLaunch._(session);
+    return ProbeLaunch._(session, fixture);
   }
 }
 

@@ -1,10 +1,13 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "source": {
     "bepInEx": {
       "build": 783,
       "version": "6.0.0-be.783+c58c42d",
       "asset": "BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783+c58c42d.zip",
+      "url": "https://builds.bepinex.dev/projects/bepinex_be/783/BepInEx-Unity.IL2CPP-win-x64-6.0.0-be.783%2Bc58c42d.zip",
+      "size": 34335702,
+      "referencePath": "BepInEx/core/MonoMod.RuntimeDetour.dll",
       "sha256": "108d982dcd363cbe65e3bcdfb152d67703b4793e8f04f2011f59c73dfdd3e182"
     },
     "game": {
@@ -56,6 +59,11 @@
       "name": "UnityEngine.InputLegacyModule.dll",
       "size": 47616,
       "sha256": "bd88d217bbb2b7ad16df5b0dcf7b7d67279bbe283152ed6723234e99bf3ebd2e"
+    },
+    {
+      "name": "MonoMod.RuntimeDetour.dll",
+      "size": 112640,
+      "sha256": "1b3d55f53cb9f9f2550daed4dfd300b247d71698a0ace82bc7b9ff38d563594f"
     }
   ]
 }

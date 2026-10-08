@@ -63,10 +63,14 @@ class ControlRunner {
         report.launch.runId,
         processId,
         _sequence,
+        legacy: report.legacy,
       );
       _sequence = snapshot.sequence;
       _last = state;
       final error = state.value['error'];
+      if (error != null && error != '' && state.flag('errorBlocked')) {
+        throw ControlBlocked('Native control blocked: $error');
+      }
       requireControl(
         error == null || error == '',
         'Native control failed: $error',
@@ -75,6 +79,24 @@ class ControlRunner {
         state.number('legacyUnsupportedCount') == 0,
         'An unsupported legacy control message reached the new host.',
       );
+      // Flutter's View maps an autofocus request to native SetFocus on
+      // Windows. Cold MSC1 clients must not issue that request before the
+      // game grants foreground and consumes the actual activation ACK.
+      if (!ui.focusRequestsEnabled &&
+          report.clientGeneration != 0 &&
+          !report.legacy &&
+          state.flag('registered') &&
+          state.number('registrationCount') == 1 &&
+          state.number('activationCount') == 1 &&
+          state.number('source') == (report.clientGeneration == 1 ? 0 : 1) &&
+          !state.flag('activationPending') &&
+          state.flag('clientForeground') &&
+          state.flag('childFocused') &&
+          state.flag('visible') &&
+          state.flag('interactive')) {
+        ui.allowFocusAfterNativeActivation();
+        _record('client-native-activation-allows-dart-focus', state);
+      }
       return state;
     });
     _tail = result.then<void>((_) {}, onError: (Object _) {});
@@ -447,14 +469,144 @@ class ControlRunner {
       if (_last != null) _record('client-final', _last!);
     }
   }
+
+  Future<void> runLegacyClient() async {
+    report.context.addAll({
+      'processId': processId,
+      'generation': 1,
+      'protocol': 'legacy-tcp-eof',
+      'scenario': 'old-mod-legacy-client',
+      'mouseRecovery': 'marked-automated-os-input',
+      'asfwCalled': false,
+    });
+    try {
+      ui.show('正在验证旧 Mod 首次启动与已有实例。鼠标点击由受限 OS 自动化执行，无需操作游戏。');
+      await _send(ControlOperation.initialize);
+      var state = await _wait(
+        (s) => s.legacy['ready'] == true,
+        'original Mod EOF show and actual startup foreground outcome',
+        seconds: 90,
+      );
+      requireControl(
+        state.value['modLaunchedClient'] == true &&
+            state.value['clientGeneration'] == 1 &&
+            state.number('listenerOwnerPid') == processId &&
+            state.legacy['showCount'] == 1 &&
+            state.legacy['toggleCount'] == 0,
+        'Original Mod did not launch this exact retained client and complete its first show.',
+      );
+      _record('legacy-real-mod-launch', state);
+      report.check('legacy-real-mod-launch');
+      report.context['startupAutomaticForeground'] =
+          state.legacy['automaticForeground'];
+      report.context['startupClickRequired'] = state.legacy['clickRequired'];
+      report.check(
+        'legacy-startup-show',
+        detail: state.legacy['automaticForeground'] == true
+            ? 'One startup foreground attempt was actually observed.'
+            : 'Startup automatic foreground was not obtained; visible interactive recovery is required.',
+      );
+
+      Future<ControlState> actualInput(int count, String label) async {
+        await _send(ControlOperation.clickProbe);
+        await _wait(
+          (s) =>
+              _client(s) &&
+              ui.pointerDown == count &&
+              s.number('nativeMouseDown') == count &&
+              s.number('nativeMouseUp') == count,
+          '$label actual click recovery',
+        );
+        await _send(ControlOperation.sendFocusKey);
+        final observed = await _wait(
+          (s) =>
+              _client(s) &&
+              ui.f24Down == count &&
+              s.number('nativeF24Down') == count,
+          '$label native and Dart keyboard',
+        );
+        _record(label, observed);
+        return observed;
+      }
+
+      state = await actualInput(1, 'legacy-first-native-and-dart-input');
+      report.check('legacy-native-and-dart-input');
+      await _send(ControlOperation.focusGame);
+      await _wait(
+        _game,
+        'legacy exact game foreground before existing-instance F8',
+      );
+      state = await _wait(
+        (s) =>
+            _game(s) &&
+            legacyPublicationReady(
+              s.legacy['snapshotPublication'],
+              s.number('gamePid'),
+            ),
+        'original cached snapshot published after actual game focus',
+        seconds: 35,
+      );
+      _record('legacy-post-focus-publication', state);
+      await _send(ControlOperation.pressF8);
+      state = await _wait(
+        (s) =>
+            s.legacy['toggleCount'] == 1 &&
+            s.legacy['clickRequired'] == true &&
+            _game(s),
+        'original Mod existing-instance EOF toggle',
+      );
+      requireControl(
+        state.legacy['showCount'] == 1 &&
+            state.number('listenerOwnerPid') == processId &&
+            state.flag('visible') &&
+            state.flag('interactive') &&
+            !state.flag('clientForeground'),
+        'Legacy existing-instance fallback changed identity or claimed automatic foreground.',
+      );
+      await _send(ControlOperation.releaseF8);
+      state = await _wait(
+        (s) => !s.flag('injectedF8Held') && _game(s),
+        'legacy F8 release',
+      );
+      _record('legacy-existing-instance-toggle', state);
+      report.check('legacy-existing-instance-toggle');
+      state = await actualInput(2, 'legacy-existing-instance-click-recovery');
+      requireControl(
+        (state.legacy['backgroundClickCount'] as int) >= 1 &&
+            state.legacy['clickCount'] == 2,
+        'Legacy fallback lacks an actual marked background mouse recovery.',
+      );
+      report.check('legacy-click-recovery');
+      await _send(ControlOperation.focusGame);
+      await _wait(_game, 'legacy final exact game foreground');
+      await _send(ControlOperation.closeGame);
+      state = await _wait(
+        (s) => !s.flag('gameAlive') && s.value['gameExitCode'] == 0,
+        'legacy retained game normal exit',
+        seconds: 35,
+      );
+      requireControl(
+        state.flag('closeRequested') &&
+            state.number('injectedDownCount') == 1 &&
+            state.number('injectedUpCount') == 1 &&
+            !state.flag('injectedF8Held'),
+        'Legacy exit/input evidence is incomplete.',
+      );
+      _record('legacy-retained-game-exit-zero', state);
+      report.check('legacy-retained-game-close-exit-zero');
+    } finally {
+      if (_last != null) _record('legacy-client-final', _last!);
+    }
+  }
 }
 
 Future<void> startControlProbe(
   List<String> arguments,
   String compiledGitSha, {
   bool client = false,
+  bool legacy = false,
 }) async {
-  final ui = ControlUi();
+  final ui = ControlUi(deferNativeFocus: client && !legacy);
   var finishing = false;
   try {
     if (!Platform.isWindows) {
@@ -462,10 +614,11 @@ Future<void> startControlProbe(
     }
     final report = ControlReport(
       client
-          ? ControlLaunch.client(arguments, compiledGitSha)
+          ? ControlLaunch.client(arguments, compiledGitSha, legacy: legacy)
           : ControlLaunch.parse(arguments, compiledGitSha),
       compiledGitSha,
       clientGeneration: client ? int.parse(arguments[2]) : 0,
+      legacy: legacy,
     );
     final binding = WidgetsFlutterBinding.ensureInitialized();
     final api = ControlProbeHostApi();
@@ -479,7 +632,9 @@ Future<void> startControlProbe(
         processId: pid,
         frame: () => binding.endOfFrame,
       );
-      if (client) {
+      if (legacy) {
+        await runner.runLegacyClient();
+      } else if (client) {
         await runner.runClient();
       } else {
         await runner.run();

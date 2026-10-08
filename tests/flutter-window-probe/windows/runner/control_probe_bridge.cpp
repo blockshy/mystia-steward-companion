@@ -21,6 +21,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 namespace {
@@ -30,6 +31,7 @@ constexpr UINT_PTR kPollTimer = 0x43504f;
 constexpr UINT_PTR kFinishTimer = 0x435046;
 constexpr wchar_t kExecutable[] = L"mystia-steward-companion-window-probe.exe";
 constexpr wchar_t kGameExecutable[] = L"Touhou Mystia Izakaya.exe";
+constexpr char kOriginalModSha[] = "e1e3603ccb3a35e17f8ade9f70178d4f82f710b9ffb0df1cbbbddc901ec9bc33";
 thread_local ControlProbeBridge* queued_bridge = nullptr;
 
 class ProbeFailure : public std::runtime_error {
@@ -38,6 +40,12 @@ class ProbeFailure : public std::runtime_error {
       : std::runtime_error(message), blocked(is_blocked) {}
   bool blocked;
 };
+void RememberControlFailure(const std::exception& failure, std::string& error, bool& blocked) {
+  if (!error.empty()) return;
+  error = failure.what();
+  const auto* known = dynamic_cast<const ProbeFailure*>(&failure);
+  blocked = known && known->blocked;
+}
 void Require(bool condition, const char* message) {
   if (!condition) throw ProbeFailure(message);
 }
@@ -196,6 +204,9 @@ struct Invocation {
   std::string run, suite;
   std::wstring root, result;
   bool client = false;
+  bool legacy = false;
+  std::string token_hash;
+  std::string legacy_snapshot_token;  // Fixture credential, private only; never serialize Invocation.
   unsigned generation = 0;
   DWORD expected_game_pid = 0;
   uint64_t expected_game_creation = 0;
@@ -596,6 +607,38 @@ uint64_t CanonicalUnsigned(const std::string& text, int base = 10) {
           "Lifecycle integer is not canonical.");
   return value;
 }
+// Exact old 1.3.1 line protocol, committed only after EOF. No reply/ACK is added.
+// Raw TCP has no OS peer process identity; the initial real parent/retained game
+// and fixture credential bind show/toggle. Exit is accepted only in our close phase.
+unsigned ParseLegacyControl(std::string_view message, DWORD game_pid, const std::string& token_hash) {
+  Require(!message.empty() && message.size() <= 1024, "Legacy control exceeds its byte bound.");
+  size_t at = 0; std::vector<std::string> lines;
+  while (at < message.size()) {
+    const auto end = message.find('\n', at);
+    auto line = message.substr(at, end == std::string_view::npos ? message.size() - at : end - at);
+    if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+    Require(!line.empty() && std::all_of(line.begin(), line.end(), [](unsigned char c) { return c > 32 && c < 127; }),
+            "Legacy control contains an empty or non-ASCII line.");
+    lines.emplace_back(line); at = end == std::string_view::npos ? message.size() : end + 1;
+  }
+  unsigned action = lines.front() == "mystia-steward-companion:show" ? 1 :
+      lines.front() == "mystia-steward-companion:toggle" ? 2 : lines.front() == "mystia-steward-companion:exit" ? 3 : 0;
+  Require(action != 0 && lines.size() == (action == 3 ? 2U : 4U), "Legacy action or exact field count differs.");
+  std::map<std::string, std::string> fields;
+  for (size_t index = 1; index < lines.size(); ++index) {
+    const auto separator = lines[index].find('=');
+    Require(separator != std::string::npos && fields.emplace(lines[index].substr(0, separator), lines[index].substr(separator + 1)).second,
+            "Legacy control has a duplicate or malformed field.");
+  }
+  Require(fields.count("--game-pid") && fields.at("--game-pid") == std::to_string(game_pid), "Legacy game identity differs.");
+  if (action != 3)
+    Require(fields.size() == 3 && fields.count("--api") && fields.count("--token") &&
+                fields.at("--api") == "http://127.0.0.1:32755" && HashText(fields.at("--token")) && TextHash(fields.at("--token")) == token_hash,
+            "Legacy endpoint/fixture credential differs.");
+  return action;
+}
+#include "legacy_snapshot_probe.h"
+
 ReportValue ReadLifecycleRecord(const std::wstring& path, size_t members) {
   auto file = OpenPinned(path);
   auto record = ReportReader(ReadSmall(file.value, 32768)).Read();
@@ -606,7 +649,8 @@ ReportValue LifecycleAuthorization(const Invocation& invocation) {
   const auto value = ReadLifecycleRecord(invocation.root + L"\\control-lifecycle.json", 7);
   ReportField(value, "schemaVersion", 'n', "1"); ReportField(value, "kind", 's', "control-lifecycle-authorization");
   ReportField(value, "runId", 's', invocation.run); ReportField(value, "gitSha", 's', MYSTIA_WINDOW_PROBE_GIT_SHA);
-  ReportField(value, "scenario", 's', "new-mod-cold-restart");
+  const auto scenario = ReportText(value, "scenario");
+  Require(scenario == "new-mod-cold-restart" || scenario == "old-mod-legacy-client", "Unknown control lifecycle scenario.");
   const auto token_hash = ReportText(value, "tokenSha256"), prepared_hash = ReportText(value, "preparedEvidenceSha256");
   Require(HashText(token_hash) && HashText(prepared_hash), "Lifecycle authorization hashes are invalid.");
   auto prepared = OpenPinned(invocation.root + L"\\workspace\\prepared-evidence.json");
@@ -633,8 +677,12 @@ Invocation ParseClientInvocation(const std::vector<std::string>& args) {
       Utf8(prefix + Wide(run) + L"\\probe-result.json")});
   invocation.client = true;
   const auto authorization = LifecycleAuthorization(invocation);
+  invocation.legacy = ReportText(authorization, "scenario") == "old-mod-legacy-client";
+  invocation.token_hash = ReportText(authorization, "tokenSha256");
   Require(TextHash(values.at("--token")) == ReportText(authorization, "tokenSha256"), "Mod credential does not match fixture authorization.");
+  if (invocation.legacy) invocation.legacy_snapshot_token = values.at("--token");
   invocation.generation = GetFileAttributesW((invocation.root + L"\\control-launch-2.json").c_str()) == INVALID_FILE_ATTRIBUTES ? 1 : 2;
+  Require(!invocation.legacy || invocation.generation == 1, "Old-Mod client does not authorize a replacement generation.");
   const auto generation = std::to_string(invocation.generation);
   const auto launch = ReadLifecycleRecord(invocation.root + L"\\control-launch-" + Wide(generation) + L".json", 8);
   ReportField(launch, "schemaVersion", 'n', "1"); ReportField(launch, "kind", 's', "control-client-launch");
@@ -664,7 +712,7 @@ Invocation ParseRuntimeInvocation(const std::vector<std::string>& args) {
   return !args.empty() && args.front().rfind("--api=", 0) == 0 ? ParseClientInvocation(args) : ParseInvocation(args);
 }
 void ValidateClientPassReport(const ReportValue& report, const Invocation& invocation) {
-  ReportField(report, "schemaVersion", 'n', "1"); ReportField(report, "kind", 's', "flutter-control-client");
+  ReportField(report, "schemaVersion", 'n', "1"); ReportField(report, "kind", 's', invocation.legacy ? "flutter-legacy-control-client" : "flutter-control-client");
   ReportField(report, "suite", 's', "hotkey"); ReportField(report, "runId", 's', invocation.run);
   ReportField(report, "gitSha", 's', MYSTIA_WINDOW_PROBE_GIT_SHA); ReportField(report, "status", 's', "PASS");
   ReportField(report, "generation", 'n', std::to_string(invocation.generation)); ReportField(report, "p0Verified", 'b', "false");
@@ -675,12 +723,40 @@ void ValidateClientPassReport(const ReportValue& report, const Invocation& invoc
   std::map<std::string, bool> required = {{"client-real-mod-launch", false}, {"client-msc1-registration", false},
       {"client-activation", false}, {"client-native-and-dart-input", false}, {"client-dart-return", false},
       {invocation.generation == 1 ? "client-retired-game-alive" : "client-exit-notified", false}};
+  if (invocation.legacy) required = {{"legacy-real-mod-launch", false}, {"legacy-startup-show", false},
+      {"legacy-native-and-dart-input", false}, {"legacy-existing-instance-toggle", false},
+      {"legacy-click-recovery", false}, {"legacy-retained-game-close-exit-zero", false}};
   for (const auto& check : checks->second.array) {
     const auto name = ReportText(check, "name");
     Require(check.object.size() == 3 && required.count(name) && !required.at(name), "Unknown or duplicated client check.");
     required.at(name) = true; ReportField(check, "status", 's', "PASS");
     const auto detail = check.object.find("detail");
     Require(detail != check.object.end() && (detail->second.kind == '0' || detail->second.kind == 's'), "Invalid client check detail.");
+  }
+}
+void ValidateClientBlockedReport(const ReportValue& report, const Invocation& invocation) {
+  ReportField(report, "schemaVersion", 'n', "1"); ReportField(report, "kind", 's', invocation.legacy ? "flutter-legacy-control-client" : "flutter-control-client");
+  ReportField(report, "suite", 's', "hotkey"); ReportField(report, "runId", 's', invocation.run);
+  ReportField(report, "gitSha", 's', MYSTIA_WINDOW_PROBE_GIT_SHA); ReportField(report, "status", 's', "BLOCKED");
+  ReportField(report, "generation", 'n', std::to_string(invocation.generation)); ReportField(report, "p0Verified", 'b', "false");
+  const auto errors = report.object.find("errors"), checks = report.object.find("checks");
+  Require(errors != report.object.end() && errors->second.kind == 'a' && errors->second.array.size() == 1 &&
+              errors->second.array.front().kind == 's' && !errors->second.array.front().text.empty() &&
+              checks != report.object.end() && checks->second.kind == 'a' && !checks->second.array.empty() &&
+              checks->second.array.size() <= 6, "Client BLOCKED requires one error and an incomplete check prefix.");
+  std::vector<std::string> required = {"client-real-mod-launch", "client-msc1-registration", "client-activation",
+      "client-native-and-dart-input", "client-dart-return", invocation.generation == 1 ? "client-retired-game-alive" : "client-exit-notified"};
+  if (invocation.legacy) required = {"legacy-real-mod-launch", "legacy-startup-show", "legacy-native-and-dart-input",
+      "legacy-existing-instance-toggle", "legacy-click-recovery", "legacy-retained-game-close-exit-zero"};
+  for (size_t index = 0; index < checks->second.array.size(); ++index) {
+    const auto& check = checks->second.array[index];
+    Require(check.object.size() == 3, "Invalid blocked client check schema.");
+    ReportField(check, "name", 's', required[index]);
+    const bool last = index + 1 == checks->second.array.size();
+    ReportField(check, "status", 's', last ? "BLOCKED" : "PASS");
+    const auto detail = check.object.find("detail");
+    Require(detail != check.object.end() && (detail->second.kind == '0' || detail->second.kind == 's'), "Invalid blocked client check detail.");
+    if (last) ReportField(check, "detail", 's', errors->second.array.front().text);
   }
 }
 void ValidatePassReport(const std::string& report, const std::string& run) {
@@ -861,6 +937,110 @@ class ControlPipe {
  private:
   std::unique_ptr<State> state_;
 };
+// Explicit P0-only observation page. The controller retains it after the game
+// exits; game shutdown publishes only aligned Interlocked words, never file IO.
+// It is unrelated to MSC1 and cannot authorize a foreground/exit operation.
+class ExitDiagnosticPage {
+ public:
+  static constexpr size_t kSize = 4096, kHeader = 512;
+  ExitDiagnosticPage(const Invocation& invocation, DWORD game_pid, uint64_t game_creation,
+                    const std::string& client_hash, const std::string& mod_hash,
+                    const std::string& manifest_hash, const std::string& game_hash)
+      : invocation_(invocation), game_pid_(game_pid), game_creation_(game_creation) {
+    name_ = "Local\\mystia-steward-companion.exitdiag.v3." + std::to_string(game_pid) + "." + Hex(game_creation);
+    auto sid = UserSid(GetCurrentProcess()); LPWSTR text = nullptr;
+    Require(ConvertSidToStringSidW(sid.data(), &text), "Cannot format diagnostic mapping user.");
+    const std::wstring sddl = L"D:P(A;;GA;;;" + std::wstring(text) + L")"; LocalFree(text);
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    Require(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr),
+            "Cannot create current-user diagnostic ACL.");
+    SECURITY_ATTRIBUTES attributes{sizeof(SECURITY_ATTRIBUTES), descriptor, FALSE};
+    mapping_.value = CreateFileMappingW(INVALID_HANDLE_VALUE, &attributes, PAGE_READWRITE, 0,
+        static_cast<DWORD>(kSize), Wide(name_).c_str());
+    const auto error = GetLastError(); LocalFree(descriptor);
+    Require(mapping_.value && error != ERROR_ALREADY_EXISTS, "Diagnostic mapping is unavailable or already exists.");
+    view_.value = MapViewOfFile(mapping_.value, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, kSize);
+    Require(view_.value != nullptr, "Cannot map the retained diagnostic page.");
+    std::memset(view_.value, 0, kSize);
+    auto words = static_cast<uint64_t*>(view_.value);
+    words[0] = 0x333030445845434dULL; words[1] = 3; words[2] = kSize; words[3] = kHeader;
+    words[4] = game_pid; words[5] = game_creation; words[6] = GetCurrentProcessId(); words[7] = Creation(GetCurrentProcess());
+    DWORD session = 0; Require(ProcessIdToSessionId(GetCurrentProcessId(), &session) && session != 0, "Diagnostic session is unknown.");
+    words[8] = session;
+    Require(BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&words[9]), 16, BCRYPT_USE_SYSTEM_PREFERRED_RNG) == 0,
+            "Cannot generate the diagnostic instance nonce.");
+    words[9] &= 0x7fffffffffffffffULL; words[10] &= 0x7fffffffffffffffULL;
+    Require(words[9] && words[10], "Diagnostic instance nonce is invalid."); words[11] = 2;
+    auto bytes = static_cast<unsigned char*>(view_.value);
+    const auto copy = [&](size_t offset, size_t size, const std::string& value) {
+      Require(!value.empty() && value.size() <= size, "Diagnostic header text is invalid.");
+      std::memcpy(bytes + offset, value.data(), value.size());
+    };
+    copy(128, 40, MYSTIA_WINDOW_PROBE_GIT_SHA); copy(168, 80, invocation.run);
+    for (const auto& hash : {client_hash, mod_hash, manifest_hash, game_hash}) Require(HashText(hash), "Diagnostic SHA is invalid.");
+    copy(248, 64, client_hash); copy(312, 64, mod_hash); copy(376, 64, manifest_hash); copy(440, 64, game_hash);
+    std::memcpy(header_.data(), view_.value, kHeader);
+  }
+  std::string Capture(HANDLE game, const std::vector<DWORD>& clients, const std::vector<uint64_t>& creations) const {
+    Require(GetProcessId(game) == game_pid_ && Creation(game) == game_creation_ &&
+        std::memcmp(header_.data(), view_.value, kHeader) == 0, "Diagnostic retained process/header identity changed.");
+    const auto read = [&](size_t offset) {
+      auto pointer = reinterpret_cast<volatile LONG64*>(static_cast<unsigned char*>(view_.value) + offset);
+      const auto value = InterlockedCompareExchange64(pointer, 0, 0);
+      Require(value >= 0, "Diagnostic atomic value is negative."); return static_cast<uint64_t>(value);
+    };
+    const auto wait = WaitForSingleObject(game, 0); DWORD exit = STILL_ACTIVE;
+    Require((wait == WAIT_OBJECT_0 || wait == WAIT_TIMEOUT) && GetExitCodeProcess(game, &exit), "Cannot inspect diagnostic game lifetime.");
+    const auto sequence = read(512), count = read(520), thread = read(528), native_thread = read(536);
+    Require(sequence <= 1000000 && count <= 2 && thread <= MAXDWORD && native_thread <= MAXDWORD, "Diagnostic counters exceed their fixed bounds.");
+    const std::array<const char*, 19> global = {"attached", "quitEntered", "quitReturned", "destroyEntered", "destroyReturned",
+        "disposeEntered", "disposeAlreadyDisposed", "disposeFirst", "disposeReturned", "launcherEntered", "launcherStopping", "launcherSessionMissing",
+        "nativeRegistered", "nativeRegistrationFailed", "nativeEntered", "nativeAcknowledged", "nativeUnconfirmed", "nativeFailed", "nativeOriginalInvoked"};
+    const std::array<const char*, 16> stages = {"prepared", "clientBound", "notifyEntered", "notifyStopping", "notifyFaulted", "stopSet",
+        "queued", "queueRejected", "workerDequeued", "noRegistration", "writeStarted", "writeCompleted", "ackValidated", "failed", "cancelled", "logThrew"};
+    bool complete = wait == WAIT_OBJECT_0 && read(544) != 0 && count == 2 && clients.size() == 2 && creations.size() == 2;
+    std::ostringstream raw_page; raw_page << std::hex << std::setfill('0');
+    const auto page_bytes = static_cast<const unsigned char*>(view_.value);
+    for (size_t index = 0; index < kSize; ++index) raw_page << std::setw(2) << static_cast<unsigned>(page_bytes[index]);
+    std::ostringstream out;
+    out << "{\"schemaVersion\":3,\"kind\":\"control-exit-diagnostic\",\"diagnosticOnly\":true,\"productExitVerified\":false,\"runId\":"
+        << Quote(invocation_.run) << ",\"gitSha\":\"" MYSTIA_WINDOW_PROBE_GIT_SHA "\",\"mappingName\":" << Quote(name_)
+        << ",\"headerSha256\":" << Quote(TextHash(std::string(reinterpret_cast<const char*>(header_.data()), header_.size())))
+        << ",\"pageHex\":" << Quote(raw_page.str())
+        << ",\"gamePid\":" << game_pid_ << ",\"gameCreationHex\":" << Quote(Hex(game_creation_))
+        << ",\"controllerPid\":" << GetCurrentProcessId() << ",\"controllerCreationHex\":" << Quote(Hex(Creation(GetCurrentProcess())))
+        << ",\"gameExited\":" << (wait == WAIT_OBJECT_0 ? "true" : "false") << ",\"gameExitCode\":" << exit
+        << ",\"mainThreadId\":" << thread << ",\"nativeExitThreadId\":" << native_thread << ",\"sequence\":" << sequence << ",\"global\":{";
+    for (size_t index = 0; index < global.size(); ++index) {
+      const auto value = read(544 + index * 8); Require(value <= sequence, "Diagnostic global sequence exceeds its counter.");
+      if (index) out << ','; out << Quote(global[index]) << ':' << value;
+    }
+    out << "},\"sessions\":[";
+    for (size_t index = 0; index < 2; ++index) {
+      const auto offset = 768 + index * 512;
+      const auto number = read(offset), pid = read(offset + 8), creation = read(offset + 16), input_thread = read(offset + 24);
+      Require(number <= 2 && pid <= MAXDWORD && input_thread <= MAXDWORD, "Diagnostic session identity exceeds its bounds.");
+      const bool matched = index < clients.size() && index < creations.size() && number == index + 1 && pid == clients[index] && creation == creations[index] && input_thread == thread;
+      complete = complete && matched;
+      if (index) out << ',';
+      out << "{\"session\":" << number << ",\"clientPid\":" << pid << ",\"clientCreationHex\":" << Quote(Hex(creation))
+          << ",\"inputThreadId\":" << input_thread << ",\"retainedClientMatched\":" << (matched ? "true" : "false") << ",\"stages\":{";
+      for (size_t stage = 0; stage < stages.size(); ++stage) {
+        const auto value = read(offset + 32 + stage * 8); Require(value <= sequence, "Diagnostic worker sequence exceeds its counter.");
+        if (stage) out << ','; out << Quote(stages[stage]) << ':' << value;
+      }
+      out << "}}";
+    }
+    out << "],\"captureComplete\":" << (complete ? "true" : "false")
+        << ",\"limitations\":[\"P0-instrumented scheduling only; received Exit/ExitAck is not evidence for an ordinary product build.\","
+        << "\"Zero stages require attached and matching identities; the ordinary native exit hook has its own bounded completion wait.\"]}\n";
+    return out.str();
+  }
+ private:
+  struct View { void* value = nullptr; ~View() { if (value) UnmapViewOfFile(value); } };
+  Invocation invocation_; DWORD game_pid_; uint64_t game_creation_;
+  std::string name_; Handle mapping_; View view_; std::array<unsigned char, kHeader> header_{};
+};
 }  // namespace
 
 struct ControlProbeBridge::Impl {
@@ -876,6 +1056,11 @@ struct ControlProbeBridge::Impl {
   bool activation_confirmation_pending = false;
   bool child_focus_requested = false, last_flutter_focused = false, last_client_foreground = false;
   bool injected_f8_held = false, rs_armed = false;
+  bool legacy_ready = false, legacy_startup_attempted = false, legacy_startup_foreground = false;
+  bool legacy_click_required = false;
+  uint64_t legacy_show_count = 0, legacy_toggle_count = 0, legacy_exit_count = 0;
+  uint64_t legacy_click_count = 0, legacy_background_clicks = 0, legacy_peer_deadline = 0, legacy_startup_deadline = 0;
+  std::string legacy_bytes;
   bool activation_hidden = false, activation_pass = false, rs_held_verified = false;
   bool cursor_saved = false, cursor_injected = false, cursor_restored = false;
   bool close_requested = false, close_send_result = false, close_foreground_required = false, close_foreground_matched = false;
@@ -895,12 +1080,15 @@ struct ControlProbeBridge::Impl {
   uint32_t marker = 0;
   UINT send_requested = 0, send_inserted = 0;
   std::string error, cleanup_error, pipe_name, rs_unavailable_reason;
+  bool error_blocked = false;
   std::string game_hash, unity_hash, metadata_hash, assembly_hash, prepared_hash, mod_hash, mod_build_hash, bep_hash, client_hash;
   std::wstring game_path, game_root;
   std::vector<unsigned char> user_sid;
   Handle game;
   Socket listener;
+  Socket legacy_peer;
   std::unique_ptr<ControlPipe> pipe;
+  std::unique_ptr<LegacySnapshotProbe> legacy_snapshot;
   std::vector<Handle> pinned_files;
   std::vector<std::string> events;
   Frame registration{}, pending_activation{}, pending_ack{};
@@ -924,6 +1112,7 @@ struct ControlProbeBridge::Impl {
       : top(owner), child(controller->view()->GetNativeWindow()), owner_thread(GetCurrentThreadId()) {
     try {
       invocation = ParseRuntimeInvocation(args); invocation_valid = true;
+      if (invocation.legacy) legacy_snapshot = std::make_unique<LegacySnapshotProbe>();
       OwnWindows();
       Require(ProcessIdToSessionId(owner_pid, &session), "Cannot identify the client console session.");
       user_sid = UserSid(GetCurrentProcess());
@@ -938,7 +1127,7 @@ struct ControlProbeBridge::Impl {
               "Cannot observe exact Flutter child input.");
       subclassed = true; ApplyMode(false); LoadXInput();
       Require(SetTimer(top, kPollTimer, 16, nullptr) != 0, "Cannot schedule native control observation.");
-    } catch (const std::exception& failure) { error = failure.what(); }
+    } catch (const std::exception& failure) { RememberControlFailure(failure, error, error_blocked); }
   }
   ~Impl() {
     KillTimer(top, kPollTimer); KillTimer(top, kFinishTimer);
@@ -947,6 +1136,8 @@ struct ControlProbeBridge::Impl {
     try { RestoreCursor(); } catch (...) {}
     if (subclassed && IsWindow(child)) RemoveWindowSubclass(child, ChildProc, kSubclass);
     pipe.reset();
+    legacy_snapshot.reset();
+    if (legacy_peer.value != INVALID_SOCKET) { closesocket(legacy_peer.value); legacy_peer.value = INVALID_SOCKET; }
     if (listener.value != INVALID_SOCKET) { closesocket(listener.value); listener.value = INVALID_SOCKET; }
     if (winsock_started) WSACleanup();
     if (xinput) FreeLibrary(xinput);
@@ -1069,10 +1260,12 @@ struct ControlProbeBridge::Impl {
     sockaddr_in address{}; address.sin_family = AF_INET; address.sin_addr.s_addr = htonl(INADDR_LOOPBACK); address.sin_port = htons(32146);
     Available(bind(listener.value, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0,
               "Port 32146 became occupied before exclusive bind; no existing listener was changed.");
-    // Publish the listener only after its identity pipe exists. A real Mod may
-    // discover the first LISTEN row immediately after a cold process starts.
-    pipe_name = "mystia-steward-companion.control.v1." + std::to_string(owner_pid) + "." + Hex(owner_creation);
-    pipe = std::make_unique<ControlPipe>(pipe_name, user_sid);
+    // In the MSC1 scenario publish only after its identity pipe exists. The
+    // explicitly authorized original-Mod scenario has no identity pipe.
+    if (!invocation.legacy) {
+      pipe_name = "mystia-steward-companion.control.v1." + std::to_string(owner_pid) + "." + Hex(owner_creation);
+      pipe = std::make_unique<ControlPipe>(pipe_name, user_sid);
+    }
     Require(listen(listener.value, 4) == 0, "Cannot listen on the exclusively owned legacy port.");
     u_long nonblocking = 1;
     Require(ioctlsocket(listener.value, FIONBIO, &nonblocking) == 0 && ListenerOwner() == owner_pid,
@@ -1080,16 +1273,86 @@ struct ControlProbeBridge::Impl {
     Event("listener-bound", "{\"port\":32146,\"ownerPid\":" + std::to_string(owner_pid) + "}");
   }
   void PollLegacy() {
+    if (invocation.legacy) { PollLegacyControl(); return; }
     if (listener.value == INVALID_SOCKET) return;
     for (int attempt = 0; attempt < 4; ++attempt) {
       sockaddr_in address{}; int size = sizeof(address);
       Socket peer; peer.value = accept(listener.value, reinterpret_cast<sockaddr*>(&address), &size);
       if (peer.value == INVALID_SOCKET) { Require(WSAGetLastError() == WSAEWOULDBLOCK, "Legacy reservation accept failed."); return; }
-      Require(size == sizeof(address) && address.sin_family == AF_INET && address.sin_addr.s_addr == htonl(INADDR_LOOPBACK),
+      Require(size == static_cast<int>(sizeof(address)) && address.sin_family == AF_INET && address.sin_addr.s_addr == htonl(INADDR_LOOPBACK),
               "Non-loopback connection reached the legacy reservation.");
       ++raw_unsupported_count;
       Event("legacy-unsupported");  // Never authorize or mutate identity from untrusted raw TCP bytes.
     }
+  }
+  bool ControlReady() const { return invocation.legacy ? legacy_ready : registered; }
+  void LegacyDiscoverable() {
+    DesktopGuard(); OwnWindows(); BoundGameWindow(); ApplyMode(false);
+    ShowWindow(top, SW_SHOWNOACTIVATE);
+    Require(SetWindowPos(top, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE),
+            "Cannot expose the exact legacy recovery window without activating it.");
+    Require(IsWindowVisible(top), "Legacy recovery window is not visible.");
+  }
+  void PollLegacyControl() {
+    if (listener.value == INVALID_SOCKET) return;
+    CheckGameIdentity();
+    Require(ListenerOwner() == owner_pid, "Legacy fixture listener ownership changed.");
+    if (legacy_peer.value == INVALID_SOCKET) {
+      sockaddr_in address{}; int size = sizeof(address);
+      legacy_peer.value = accept(listener.value, reinterpret_cast<sockaddr*>(&address), &size);
+      if (legacy_peer.value == INVALID_SOCKET) { Require(WSAGetLastError() == WSAEWOULDBLOCK, "Legacy accept failed."); return; }
+      Require(size == sizeof(address) && address.sin_family == AF_INET && address.sin_addr.s_addr == htonl(INADDR_LOOPBACK),
+              "Legacy fixture received a non-loopback connection.");
+      u_long nonblocking = 1;
+      Require(ioctlsocket(legacy_peer.value, FIONBIO, &nonblocking) == 0, "Cannot bound legacy receive.");
+      legacy_bytes.clear(); legacy_peer_deadline = GetTickCount64() + 5000;
+    }
+    Require(GetTickCount64() < legacy_peer_deadline, "Legacy EOF receive exceeded five seconds.");
+    std::array<char, 1025> bytes{};
+    const int count = recv(legacy_peer.value, bytes.data(), static_cast<int>(bytes.size()), 0);
+    if (count == SOCKET_ERROR) { Require(WSAGetLastError() == WSAEWOULDBLOCK, "Legacy receive failed."); return; }
+    if (count > 0) {
+      Require(legacy_bytes.size() + static_cast<size_t>(count) <= 1024, "Legacy wire exceeds 1024 bytes.");
+      legacy_bytes.append(bytes.data(), static_cast<size_t>(count)); return;
+    }
+    const auto action = ParseLegacyControl(legacy_bytes, game_pid, invocation.token_hash);
+    const auto wire_hash = TextHash(legacy_bytes);
+    closesocket(legacy_peer.value); legacy_peer.value = INVALID_SOCKET; legacy_bytes.clear();
+    if (action == 1) {
+      Require(legacy_show_count == 0 && legacy_toggle_count == 0 && !close_requested, "Legacy startup show was replayed or late.");
+      ++legacy_show_count;
+    } else if (action == 2) {
+      Require(legacy_ready && legacy_toggle_count == 0 && !close_requested && injected_f8_held && !return_pending,
+              "Legacy existing-instance toggle lacks the sole owned F8 action.");
+      GameForegroundGuard(); LegacyDiscoverable(); GameForegroundGuard();
+      ++legacy_toggle_count; legacy_click_required = true;
+      // An old sender cannot authorize this already-running process. Do not
+      // retry/forge foreground grants; its discoverable window awaits a click.
+    } else {
+      Require(close_requested && legacy_exit_count == 0, "Unauthenticated legacy exit is only observed after our exact close.");
+      ++legacy_exit_count;
+    }
+    Event("legacy-wire-received", "{\"action\":" + std::to_string(action) + ",\"wireSha256\":" + Quote(wire_hash) +
+        ",\"eofObserved\":true,\"ackSent\":false}");
+  }
+  void ObserveLegacyStartup() {
+    if (legacy_ready || legacy_show_count == 0 || !game_window) return;
+    DesktopGuard(); OwnWindows(); BoundGameWindow();
+    if (!legacy_startup_attempted) {
+      LegacyDiscoverable(); legacy_startup_attempted = true; legacy_startup_deadline = GetTickCount64() + 5000;
+      SetLastError(ERROR_SUCCESS); foreground_result = SetForegroundWindow(top) != FALSE; foreground_error = GetLastError();
+      SetFocus(child);
+      Event("legacy-startup-foreground-attempt", "{\"setForegroundResult\":" + std::string(foreground_result ? "true" : "false") +
+          ",\"error\":" + std::to_string(foreground_error) + ",\"asfwCalled\":false}");
+    }
+    const auto foreground = GetForegroundWindow();
+    Available(!foreground || foreground == top || foreground == game_window, "An unrelated window interrupted legacy startup observation.");
+    if (foreground == top && GetFocus() == child) { legacy_startup_foreground = true; legacy_ready = true; }
+    else if (GetTickCount64() >= legacy_startup_deadline) {
+      GameForegroundGuard(); legacy_click_required = true; legacy_ready = true;
+    }
+    if (legacy_ready) Event("legacy-startup-foreground-observed", "{\"automaticForeground\":" + std::string(legacy_startup_foreground ? "true" : "false") +
+        ",\"clickRequired\":" + std::string(legacy_click_required ? "true" : "false") + "}");
   }
   void PinHash(const std::wstring& path, const std::string& expected, std::string& actual) {
     Require(HashText(expected), "Sidecar hash is not canonical lowercase SHA-256.");
@@ -1103,6 +1366,7 @@ struct ControlProbeBridge::Impl {
     const auto values = SidecarParser(ReadSmall(sidecar.value, 32768)).Parse(); pinned_files.push_back(std::move(sidecar));
     Require(values.at("runId") == invocation.run && values.at("gitSha") == MYSTIA_WINDOW_PROBE_GIT_SHA &&
                 values.at("steamAppId") == "1584090" && values.at("steamBuildId") == "23158340", "Control sidecar run/build/Steam identity differs.");
+    Require(!invocation.legacy || values.at("expectedModSha256") == kOriginalModSha, "Legacy mode requires the unchanged physical Mod 1.3.1 DLL.");
     game_root = invocation.root + L"\\workspace\\game"; game_path = game_root + L"\\" + kGameExecutable;
     auto supplied = Wide(values.at("gameExecutable")); std::replace(supplied.begin(), supplied.end(), L'/', L'\\');
     Require(SamePath(supplied, game_path), "Control sidecar points outside the fixed copied game."); PlainPath(game_root, true);
@@ -1282,7 +1546,7 @@ struct ControlProbeBridge::Impl {
     }
   }
   void BeginReturn(int kind) {
-    Require(registered && !activation_pending && !return_pending && !close_requested && !exit_received,
+    Require(ControlReady() && !activation_pending && !return_pending && !close_requested && !exit_received,
             "Game handoff is unready, repeated or overlaps another action.");
     if (kind != 1) ClientForegroundGuard();
     else {
@@ -1308,6 +1572,13 @@ struct ControlProbeBridge::Impl {
       else if (pending_return_kind == 2) ++f8_return_count;
       else if (pending_return_kind == 3) ++rs_return_count;
       Event("game-handoff-observed", "{\"source\":" + std::to_string(pending_return_kind) + "}");
+      if (invocation.legacy && pending_return_kind == 1 && focus_game_count == 1) {
+        Require(legacy_snapshot != nullptr, "Legacy snapshot observer is unavailable.");
+        legacy_snapshot->Start(invocation.legacy_snapshot_token, game_pid);
+        std::fill(invocation.legacy_snapshot_token.begin(), invocation.legacy_snapshot_token.end(), '\0');
+        invocation.legacy_snapshot_token.clear();
+        Event("legacy-post-focus-publication-started", legacy_snapshot->Json());
+      }
       return;
     }
     Available(GetTickCount64() < deadline, "The sole game handoff did not reach exact game foreground/focus within five seconds.");
@@ -1370,9 +1641,12 @@ struct ControlProbeBridge::Impl {
     Require(send_inserted == send_requested, "SendInput inserted an incomplete sequence; it must not be replayed.");
   }
   void PressF8() {
-    Require(registered && !injected_f8_held && !activation_pending && !return_pending, "F8 press is unready or already in progress.");
+    Require(ControlReady() && !injected_f8_held && !activation_pending && !return_pending, "F8 press is unready or already in progress.");
     DesktopGuard(); OwnWindows(); BoundGameWindow();
-    if (GetForegroundWindow() == game_window) GameForegroundGuard(); else ClientForegroundGuard();
+    if (invocation.legacy) {
+      Require(legacy_snapshot && legacy_snapshot->ready(), "Legacy F8 needs a fresh post-focus cached publication observation.");
+      GameForegroundGuard();
+    } else if (GetForegroundWindow() == game_window) GameForegroundGuard(); else ClientForegroundGuard();
     for (const int key : {VK_F8, VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN})
       Available((GetAsyncKeyState(key) & 0x8000) == 0, "A real F8 or modifier is held; synthetic key ownership cannot be established.");
     INPUT input{}; input.type = INPUT_KEYBOARD; input.ki.wVk = VK_F8; input.ki.dwExtraInfo = marker;
@@ -1399,7 +1673,9 @@ struct ControlProbeBridge::Impl {
     }
   }
   void Click() {
-    ClientForegroundGuard();
+    const bool recovery = invocation.legacy && legacy_click_required;
+    if (recovery) { GameForegroundGuard(); LegacyDiscoverable(); GameForegroundGuard(); }
+    else ClientForegroundGuard();
     Available((GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0, "Physical left mouse button is held.");
     RECT client{}; Require(GetClientRect(child, &client) && client.right > 0 && client.bottom > 0, "Flutter child client area is unavailable.");
     // The probe UI reserves its center as an inert input target.
@@ -1407,11 +1683,18 @@ struct ControlProbeBridge::Impl {
     Require(ClientToScreen(child, &point), "Cannot locate the exact Flutter input target.");
     const auto hit = WindowFromPoint(point);
     Available(hit && WindowPid(hit) == owner_pid && GetAncestor(hit, GA_ROOT) == top, "Another window covers the Flutter input target.");
+    Available(!invocation.legacy || (hit == child && GetWindowThreadProcessId(hit, nullptr) == owner_thread),
+              "Legacy recovery point must hit the exact retained Flutter child.");
     if (!cursor_saved) { Require(GetCursorPos(&original_cursor), "Cannot save cursor position."); cursor_saved = true; }
     Require(SetCursorPos(point.x, point.y), "Cannot position the fixed probe cursor."); last_cursor = point; cursor_injected = true;
     INPUT down{}; down.type = INPUT_MOUSE; down.mi.dwFlags = MOUSEEVENTF_LEFTDOWN; down.mi.dwExtraInfo = marker;
     INPUT up = down; up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
-    std::vector<INPUT> input{down, up}; ClientForegroundGuard(); Send(input); Event("probe-click-injected");
+    std::vector<INPUT> input{down, up};
+    if (recovery) GameForegroundGuard(); else ClientForegroundGuard();
+    Available(!invocation.legacy || WindowFromPoint(point) == child, "Legacy recovery target changed before the single click.");
+    Send(input);
+    if (invocation.legacy) { ++legacy_click_count; if (recovery) ++legacy_background_clicks; legacy_click_required = false; }
+    Event("probe-click-injected", "{\"backgroundRecovery\":" + std::string(recovery ? "true" : "false") + ",\"automatedOsInput\":true}");
   }
   void SendFocusKey() {
     ClientForegroundGuard(); Available((GetAsyncKeyState(VK_F24) & 0x8000) == 0, "Physical F24 is held.");
@@ -1491,6 +1774,16 @@ struct ControlProbeBridge::Impl {
     }
     Require(GameAlive(), "Game exited before its explicitly observed close stage.");
     BindOrCheckGameWindow();
+    if (invocation.legacy) {
+      if (!legacy_ready) Available(GetTickCount64() < startup_deadline, "The original Mod startup show did not complete within deadline.");
+      ObserveLegacyStartup(); ObserveReturn();
+      if (legacy_snapshot && legacy_snapshot->pending()) {
+        GameForegroundGuard();
+        legacy_snapshot->Poll();
+        if (legacy_snapshot->ready()) Event("legacy-post-focus-publication-observed", legacy_snapshot->Json());
+      }
+      PollController(); return;
+    }
     if (!registered) Available(GetTickCount64() < startup_deadline, "The real Mod did not register from its Unity Update within startup deadline.");
     if (pipe && pipe->eof()) throw ProbeFailure("Registered game identity pipe closed before the normal close stage.");
     ObserveActivation(); ObserveReturn(); PollController();
@@ -1498,7 +1791,7 @@ struct ControlProbeBridge::Impl {
   void PollSafe() noexcept {
     try { Poll(); }
     catch (const std::exception& failure) {
-      if (error.empty()) error = failure.what();
+      RememberControlFailure(failure, error, error_blocked);
       activation_pending = false; activation_confirmation_pending = false; return_pending = false; rs_armed = false;
       if (pipe && !pipe->stopped()) { try { pipe->Stop(); } catch (...) {} }
     }
@@ -1510,6 +1803,19 @@ struct ControlProbeBridge::Impl {
     };
     out << "{\"activation\":"; append(activation_null_foreground);
     out << ",\"gameReturn\":"; append(return_null_foreground); out << '}'; return out.str();
+  }
+  std::string LegacyJson() const {
+    if (!invocation.legacy) return "null";
+    std::ostringstream out;
+    out << "{\"scenario\":\"old-mod-legacy-client\",\"ready\":" << (legacy_ready ? "true" : "false")
+        << ",\"showCount\":" << legacy_show_count << ",\"toggleCount\":" << legacy_toggle_count << ",\"exitCount\":" << legacy_exit_count
+        << ",\"startupAttempted\":" << (legacy_startup_attempted ? "true" : "false")
+        << ",\"automaticForeground\":" << (legacy_startup_foreground ? "true" : "false")
+        << ",\"clickRequired\":" << (legacy_click_required ? "true" : "false")
+        << ",\"clickCount\":" << legacy_click_count << ",\"backgroundClickCount\":" << legacy_background_clicks
+        << ",\"asfwCalled\":false,\"automatedOsInput\":true,\"snapshotPublication\":"
+        << (legacy_snapshot ? legacy_snapshot->Json() : "null") << '}';
+    return out.str();
   }
   std::string SnapshotJson() {
     const bool alive = GameAlive(), observing_exit = ObservingGameExit();
@@ -1525,7 +1831,8 @@ struct ControlProbeBridge::Impl {
     auto boolean = [](bool value) { return value ? "true" : "false"; };
     out << "{\"schemaVersion\":1,\"kind\":\"real-mod-control-native\",\"runId\":" << Quote(invocation.run)
         << ",\"modLaunchedClient\":" << boolean(invocation.client) << ",\"clientGeneration\":" << invocation.generation
-        << ",\"error\":" << (error.empty() ? "null" : Quote(error)) << ",\"gameReady\":" << boolean(registered)
+        << ",\"error\":" << (error.empty() ? "null" : Quote(error)) << ",\"errorBlocked\":" << boolean(error_blocked)
+        << ",\"gameReady\":" << boolean(registered)
         << ",\"gameWindowBound\":" << boolean(game_window != nullptr) << ",\"gameAlive\":" << boolean(alive)
         << ",\"gamePid\":" << game_pid << ",\"gameCreationHex\":" << Quote(Hex(game_creation)) << ",\"gameHwnd\":";
     if (alive && game_window && !observing_exit) out << WindowValue(game_window); else out << "null";
@@ -1537,7 +1844,7 @@ struct ControlProbeBridge::Impl {
         << ",\"activationCount\":" << activation_count << ",\"activationAttempts\":" << activation_attempts
         << ",\"activationPending\":" << boolean(activation_pending) << ",\"returnPending\":" << boolean(return_pending)
         << ",\"activationConfirmationPending\":" << boolean(activation_confirmation_pending)
-        << ",\"nullForegroundObservations\":" << NullForegroundJson()
+        << ",\"nullForegroundObservations\":" << NullForegroundJson() << ",\"legacyControl\":" << LegacyJson()
         << ",\"focusGameCount\":" << focus_game_count << ",\"f8ReturnCount\":" << f8_return_count << ",\"rsReturnCount\":" << rs_return_count
         << ",\"rsEdgeCount\":" << rs_edge_count << ",\"f8ActivationCount\":" << f8_activation_count << ",\"rsActivationCount\":" << rs_activation_count
         << ",\"hiddenRecoveryCount\":" << hidden_recovery_count << ",\"passThroughRecoveryCount\":" << pass_recovery_count
@@ -1583,7 +1890,7 @@ struct ControlProbeBridge::Impl {
     if (command.operation() == ControlOperation::kInspect) {
       Require(command.request_id() == command_id, "Inspect must name the current command ID."); PollSafe(); return Snapshot();
     }
-    Require(error.empty(), "Control probe has a retained native failure.");
+    if (!error.empty()) throw ProbeFailure(error.c_str(), error_blocked);
     Require(command.request_id() == command_id + 1 && command.request_id() <= 1000,
             "Control command ID is repeated, skipped or exhausted.");
     Require(!close_requested, "Only inspection and finish are allowed after close.");
@@ -1591,7 +1898,7 @@ struct ControlProbeBridge::Impl {
             "Only release/actual F8 return is allowed while this probe owns injected F8 down.");
     command_id = command.request_id();
     if (command.operation() != ControlOperation::kInitialize)
-      Require(registered && !activation_pending && !return_pending, "The real Mod is not ready or a foreground operation is pending.");
+      Require(ControlReady() && !activation_pending && !return_pending, "The real Mod is not ready or a foreground operation is pending.");
     switch (command.operation()) {
       case ControlOperation::kInitialize: StartGame(); break;
       case ControlOperation::kFocusGame: BeginReturn(1); break;
@@ -1637,13 +1944,14 @@ struct ControlProbeBridge::Impl {
         << ",\"rsHeldVerified\":" << (rs_held_verified ? "true" : "false") << ",\"rsHeldDurationMs\":" << rs_held_duration
         << ",\"injectedDownCount\":" << injected_down_count << ",\"injectedUpCount\":" << injected_up_count
         << ",\"legacyUnsupportedCount\":" << raw_unsupported_count << ",\"error\":" << (error.empty() ? "null" : Quote(error))
-        << ",\"nullForegroundObservations\":" << NullForegroundJson()
+        << ",\"errorBlocked\":" << (error_blocked ? "true" : "false")
+        << ",\"nullForegroundObservations\":" << NullForegroundJson() << ",\"legacyControl\":" << LegacyJson()
         << ",\"closeMessage\":" << CloseMessageJson() << ",\"exitCode\":" << finish_code
         << ",\"cleanupError\":" << Quote(cleanup_error) << "}\n";
     const auto name = invocation.client ? L"\\control-client-" + Wide(std::to_string(invocation.generation)) + L"-native-cleanup.json" : L"\\native-cleanup.json";
     WriteNew(invocation.root + name, out.str(), 16384);
   }
-  bool RetiringClient() const { return invocation.client && invocation.generation == 1 && finish_code == 0 && error.empty(); }
+  bool RetiringClient() const { return invocation.client && !invocation.legacy && invocation.generation == 1 && finish_code == 0 && error.empty(); }
   void CompleteFinish() {
     try {
       if (pipe && !pipe->stopped()) {
@@ -1670,7 +1978,19 @@ struct ControlProbeBridge::Impl {
   void Finish(const std::string& report, int64_t code, std::function<void(std::optional<FlutterError>)> reply) {
     Require(invocation_valid && !finishing && (code == 0 || code == 1 || code == 2), "Invalid/repeated control finish request.");
     const auto parsed = ReportReader(report).Read(); Require(parsed.kind == 'o', "Control report must be a JSON object.");
-    if (code == 0 && invocation.client) {
+    if (code == 0 && invocation.legacy) {
+      CheckGameIdentity(); ValidateClientPassReport(parsed, invocation);
+      Require(invocation.client && invocation.generation == 1 && error.empty() && mod_hash == kOriginalModSha &&
+                  legacy_ready && legacy_startup_attempted && legacy_show_count == 1 && legacy_toggle_count == 1 &&
+                  legacy_click_count == 2 && legacy_background_clicks >= 1 && !legacy_click_required &&
+                  legacy_peer.value == INVALID_SOCKET && legacy_bytes.empty() &&
+                  !pipe && !registered && registration_count == 0 && activation_count == 0 && activation_attempts == 0 &&
+                  focus_game_count == 2 && native_mouse_down == 2 && native_mouse_up == 2 && native_f24_down == 2 &&
+                  !return_pending && !injected_f8_held && injected_down_count == 1 && injected_up_count == 1 &&
+                  close_requested && close_send_attempts == 1 && close_send_result && close_foreground_required && close_foreground_matched &&
+                  !GameAlive() && GameExitCode() == 0,
+              "Legacy PASS requires the unchanged original Mod, real EOF show/toggle, actual automated click/input recovery and retained normal exit.");
+    } else if (code == 0 && invocation.client) {
       CheckGameIdentity(); ValidateClientPassReport(parsed, invocation);
       Require(error.empty() && registered && registration_count == 1 && activation_count == 1 && activation_attempts == 1 &&
                   source == (invocation.generation == 1 ? 0ULL : 1ULL) && raw_unsupported_count == 0 &&
@@ -1730,7 +2050,7 @@ bool ValidateControlClientInvocation(const std::vector<std::string>& arguments) 
 }
 std::vector<std::string> ControlClientDartArguments(const std::vector<std::string>& arguments) {
   const auto invocation = ParseClientInvocation(arguments);
-  return {"--control-client", invocation.run, std::to_string(invocation.generation)};
+  return {invocation.legacy ? "--control-legacy-client" : "--control-client", invocation.run, std::to_string(invocation.generation)};
 }
 bool IsControlLifecycleController(const std::vector<std::string>& arguments) {
   try {
@@ -1740,12 +2060,14 @@ bool IsControlLifecycleController(const std::vector<std::string>& arguments) {
 }
 int RunControlLifecycleController(const std::vector<std::string>& arguments) {
   Handle game, active_client;
+  std::unique_ptr<ExitDiagnosticPage> exit_diagnostic;
   std::vector<Handle> pinned_files;
   Invocation invocation;
   DWORD game_pid = 0; uint64_t game_creation = 0;
   std::vector<DWORD> client_pids;
+  std::vector<uint64_t> client_creations;
   std::vector<std::string> generations;
-  bool resumed = false, key_down = false, game_normal_exit = false;
+  bool resumed = false, key_down = false, game_normal_exit = false, verified_client_blocked = false;
   UINT injected = 0;
   int result = 1;
   std::string failure;
@@ -1778,6 +2100,7 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
   try {
     invocation = ParseInvocation(arguments); DesktopGuard();
     const auto authorization = LifecycleAuthorization(invocation);
+    invocation.legacy = ReportText(authorization, "scenario") == "old-mod-legacy-client";
     Available(ListenerOwner() == 0, "Lifecycle control port is already occupied.");
     auto sidecar_file = OpenPinned(invocation.root + L"\\control-probe.json");
     const auto sidecar = SidecarParser(ReadSmall(sidecar_file.value, 32768)).Parse();
@@ -1785,6 +2108,7 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
                 sidecar.at("steamAppId") == "1584090" && sidecar.at("steamBuildId") == "23158340" &&
                 sidecar.at("preparedEvidenceSha256") == ReportText(authorization, "preparedEvidenceSha256"), "Lifecycle preparation differs.");
     const auto game_root = invocation.root + L"\\workspace\\game";
+    Require(!invocation.legacy || sidecar.at("expectedModSha256") == kOriginalModSha, "Legacy controller requires the unchanged original Mod 1.3.1.");
     const auto game_path = game_root + L"\\" + kGameExecutable;
     auto supplied = Wide(sidecar.at("gameExecutable")); std::replace(supplied.begin(), supplied.end(), L'/', L'\\');
     Require(SamePath(supplied, game_path), "Lifecycle sidecar points outside the fixed copied game.");
@@ -1802,6 +2126,30 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
     pin(game_root + L"\\BepInEx\\plugins\\mystia-steward-companion\\MystiaStewardCompanion.BepInEx.dll", sidecar.at("expectedModSha256"));
     pin(game_root + L"\\BepInEx\\core\\BepInEx.Unity.IL2CPP.dll", sidecar.at("expectedBepInExSha256"));
     pin(invocation.root + L"\\workspace\\mod-build-evidence.json", sidecar.at("modBuildEvidenceSha256"));
+    bool diagnostic_requested = false;
+    if (!invocation.legacy) {
+      auto manifest_file = OpenPinned(invocation.root + L"\\workspace\\mod-build-evidence.json");
+      const auto manifest = ReportReader(ReadSmall(manifest_file.value, 1024 * 1024)).Read();
+      diagnostic_requested = manifest.object.count("exitDiagnostic") != 0;
+      if (diagnostic_requested) ReportField(manifest, "exitDiagnostic", 'b', "true");
+    }
+    const auto diagnostic_path = invocation.root + L"\\control-exit-diagnostic.json";
+    const auto diagnostic_attributes = GetFileAttributesW(diagnostic_path.c_str());
+    Require(diagnostic_requested == (diagnostic_attributes != INVALID_FILE_ATTRIBUTES), "Diagnostic bundle and explicit authorization must match.");
+    if (diagnostic_requested) {
+      auto diagnostic_file = OpenPinned(diagnostic_path);
+      const auto diagnostic = ReportReader(ReadSmall(diagnostic_file.value, 32768)).Read();
+      Require(diagnostic.kind == 'o' && diagnostic.object.size() == 7, "Diagnostic authorization schema differs.");
+      ReportField(diagnostic, "schemaVersion", 'n', "1"); ReportField(diagnostic, "kind", 's', "control-exit-diagnostic-authorization");
+      ReportField(diagnostic, "runId", 's', invocation.run); ReportField(diagnostic, "gitSha", 's', MYSTIA_WINDOW_PROBE_GIT_SHA);
+      ReportField(diagnostic, "diagnosticOnly", 'b', "true");
+      ReportField(diagnostic, "modBuildEvidenceSha256", 's', sidecar.at("modBuildEvidenceSha256"));
+      ReportField(diagnostic, "preparedEvidenceSha256", 's', sidecar.at("preparedEvidenceSha256"));
+      pinned_files.push_back(std::move(diagnostic_file));
+      PlainPath(invocation.root + L"\\control-exit-diagnostic-result.json", false, true);
+      Require(GetFileAttributesW((invocation.root + L"\\control-exit-diagnostic-result.json").c_str()) == INVALID_FILE_ATTRIBUTES,
+              "Diagnostic capture already exists.");
+    }
     auto appid = OpenPinned(game_root + L"\\steam_appid.txt");
     const auto appid_text = ReadSmall(appid.value, 9);
     Require(appid_text == "1584090" || appid_text == "1584090\n" || appid_text == "1584090\r\n", "Lifecycle copied App ID differs.");
@@ -1811,7 +2159,8 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
     const auto prepared = ReportReader(ReadSmall(prepared_file.value, 1024 * 1024)).Read();
     const auto& config_evidence = prepared.object.at("config");
     ReportField(config_evidence, "autoLaunch", 'b', "true");
-    ReportField(config_evidence, "controlProtocol", 's', "IdentityPipeV1");
+    const std::string protocol = invocation.legacy ? "LegacyTcp" : "IdentityPipeV1";
+    ReportField(config_evidence, "controlProtocol", 's', protocol);
     ReportField(config_evidence, "port", 'n', "32755");
     ReportField(config_evidence, "localApiEnabled", 'b', "true");
     for (const auto name : {"allowLanConnections", "updatesEnabled", "autoCheck"}) ReportField(config_evidence, name, 'b', "false");
@@ -1823,8 +2172,8 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
     auto config_file = OpenPinned(game_root + L"\\BepInEx\\config\\com.tyukki.mystia-steward-companion.cfg");
     Require(Sha256(config_file.value) == ReportText(config_evidence, "sha256"), "Lifecycle configuration changed before launch.");
     const auto config = ReadSmall(config_file.value, 32768);
-    Require(config.find("AutoLaunch = true\nControlProtocol = IdentityPipeV1\n") != std::string::npos,
-            "Lifecycle copy must explicitly auto-launch IdentityPipeV1.");
+    Require(config.find("AutoLaunch = true\nControlProtocol = " + protocol + "\n") != std::string::npos,
+            "Lifecycle copy must explicitly auto-launch its authorized protocol.");
     config_file = Handle();  // BepInEx may append its generated setting descriptions.
     BOOL in_job = FALSE;
     Require(IsProcessInJob(GetCurrentProcess(), nullptr, &in_job) && in_job, "Lifecycle controller is outside the node job.");
@@ -1839,6 +2188,8 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
                 ProcessIdToSessionId(game_pid, &game_session) && ProcessIdToSessionId(GetCurrentProcessId(), &own_session) &&
                 game_session == own_session && EqualSid(const_cast<unsigned char*>(own_sid.data()), const_cast<unsigned char*>(game_sid.data())) &&
                 IsProcessInJob(game.value, nullptr, &in_job) && in_job, "Suspended lifecycle game identity differs.");
+    if (diagnostic_requested) exit_diagnostic = std::make_unique<ExitDiagnosticPage>(invocation, game_pid, game_creation,
+        client_hash, sidecar.at("expectedModSha256"), sidecar.at("modBuildEvidenceSha256"), sidecar.at("expectedExeSha256"));
     auto publish_launch = [&](unsigned generation) {
       const auto text = "{\"schemaVersion\":1,\"kind\":\"control-client-launch\",\"runId\":" + Quote(invocation.run) +
           ",\"gitSha\":\"" MYSTIA_WINDOW_PROBE_GIT_SHA "\",\"generation\":" + std::to_string(generation) +
@@ -1848,7 +2199,7 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
     };
     publish_launch(1);
     Require(ResumeThread(thread.value) == 1, "Cannot resume the exact lifecycle game."); resumed = true;
-    for (unsigned generation = 1; generation <= 2; ++generation) {
+    for (unsigned generation = 1; generation <= (invocation.legacy ? 1U : 2U); ++generation) {
       if (generation == 2) {
         Require(exit_zero(active_client.value) && WaitForSingleObject(game.value, 0) == WAIT_TIMEOUT && ListenerOwner() == 0,
                 "Previous client has not retired cleanly or the game changed.");
@@ -1882,29 +2233,49 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
               "The Mod reused an unexpected client PID.");
       active_client = Handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
       Require(active_client.value && SamePath(ProcessPath(active_client.value), ModulePath()), "Cold client path differs from the exact payload.");
-      const auto creation = Creation(active_client.value); client_pids.push_back(pid);
+      const auto creation = Creation(active_client.value); client_pids.push_back(pid); client_creations.push_back(creation);
       wait([&] { return WaitForSingleObject(active_client.value, 0) == WAIT_OBJECT_0; }, 150000, "Client generation did not finish its checks.");
-      Require(exit_zero(active_client.value) && GetProcessId(active_client.value) == pid && Creation(active_client.value) == creation,
-              "Client generation did not exit zero with its retained identity.");
+      DWORD client_exit = MAXDWORD;
+      Require(GetProcessId(active_client.value) == pid && Creation(active_client.value) == creation &&
+                  GetExitCodeProcess(active_client.value, &client_exit) && (client_exit == 0 || client_exit == 2),
+              "Client generation did not finish with an accepted exit code and its retained identity.");
       auto report_file = OpenPinned(invocation.root + L"\\control-client-" + Wide(std::to_string(generation)) + L"-result.json");
       const auto report_text = ReadSmall(report_file.value, 1024 * 1024);
       const auto report = ReportReader(report_text).Read();
       auto client_invocation = invocation; client_invocation.client = true; client_invocation.generation = generation;
-      ValidateClientPassReport(report, client_invocation);
+      if (client_exit == 0) ValidateClientPassReport(report, client_invocation);
+      else ValidateClientBlockedReport(report, client_invocation);
       ReportField(report.object.at("context"), "processId", 'n', std::to_string(pid));
       auto cleanup_file = OpenPinned(invocation.root + L"\\control-client-" + Wide(std::to_string(generation)) + L"-native-cleanup.json");
       const auto cleanup = ReportReader(ReadSmall(cleanup_file.value, 32768)).Read();
       ReportField(cleanup, "processId", 'n', std::to_string(pid)); ReportField(cleanup, "gamePid", 'n', std::to_string(game_pid));
       ReportField(cleanup, "gitSha", 's', MYSTIA_WINDOW_PROBE_GIT_SHA); ReportField(cleanup, "runId", 's', invocation.run);
-      ReportField(cleanup, "exitCode", 'n', "0"); ReportField(cleanup, "cleanupError", 's', "");
+      ReportField(cleanup, "exitCode", 'n', std::to_string(client_exit)); ReportField(cleanup, "cleanupError", 's', "");
       ReportField(cleanup, "nodeJobFallbackRequired", 'b', "false");
+      if (client_exit == 2) {
+        // Exit 2 alone is not evidence of an environmental block. Require this
+        // exact client's structured first native error and successful cleanup.
+        ReportField(cleanup, "schemaVersion", 'n', "1"); ReportField(cleanup, "kind", 's', "control-probe-native-cleanup");
+        ReportField(cleanup, "suite", 's', "hotkey"); ReportField(cleanup, "clientGeneration", 'n', std::to_string(generation));
+        ReportField(cleanup, "gameCreationTimeHex", 's', Hex(game_creation)); ReportField(cleanup, "gameIdentityMatched", 'b', "true");
+        ReportField(cleanup, "errorBlocked", 'b', "true");
+        Require(!ReportText(cleanup, "error").empty(), "Client BLOCKED lacks a retained native error.");
+        ReportField(cleanup, "gameAlive", 'b', "false"); ReportField(cleanup, "gameExitCode", 'n', "0");
+        ReportField(cleanup, "injectedF8Held", 'b', "false"); ReportField(cleanup, "startupSuspendedTerminated", 'b', "false");
+        ReportField(cleanup, "gameRetainedForNextGeneration", 'b', "false");
+        Require(exit_zero(game.value) && ListenerOwner() == 0, "Blocked client did not release the retained game and control port normally.");
+      }
       generations.push_back("{\"generation\":" + std::to_string(generation) + ",\"pid\":" + std::to_string(pid) +
           ",\"creationHex\":" + Quote(Hex(creation)) + ",\"reportSha256\":" + Quote(Sha256(report_file.value)) +
           ",\"cleanupSha256\":" + Quote(Sha256(cleanup_file.value)) + "}");
+      if (client_exit == 2) {
+        game_normal_exit = true; verified_client_blocked = true;
+        throw ProbeFailure(report.object.at("errors").array.front().text.c_str(), true);
+      }
     }
     Require(exit_zero(game.value) && ListenerOwner() == 0, "The game/client lifecycle did not release normally.");
     game_normal_exit = true; result = 0;
-  } catch (const std::exception& error) { failure = error.what(); }
+  } catch (const std::exception& error) { failure = error.what(); result = verified_client_blocked ? 2 : 1; }
   if (key_down) { INPUT up{}; up.type = INPUT_KEYBOARD; up.ki.wVk = VK_F8; up.ki.dwFlags = KEYEVENTF_KEYUP; up.ki.dwExtraInfo = 0x4d53434c; SendInput(1, &up, sizeof(up)); }
   if (game.value && !resumed) TerminateProcess(game.value, 1);
   if (game.value && resumed && WaitForSingleObject(game.value, 0) == WAIT_TIMEOUT) {
@@ -1919,10 +2290,15 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
   }
   try {
     Require(!invocation.root.empty(), "Lifecycle invocation was never validated.");
+    if (exit_diagnostic) WriteNew(invocation.root + L"\\control-exit-diagnostic-result.json",
+        exit_diagnostic->Capture(game.value, client_pids, client_creations), 32768);
     std::ostringstream report;
-    report << "{\"schemaVersion\":1,\"kind\":\"flutter-control-lifecycle\",\"suite\":\"hotkey\",\"runId\":" << Quote(invocation.run)
+    report << "{\"schemaVersion\":1,\"kind\":" << Quote(invocation.legacy ? "flutter-legacy-control" : "flutter-control-lifecycle")
+        << ",\"scenario\":" << Quote(invocation.legacy ? "old-mod-legacy-client" : "new-mod-cold-restart")
+        << ",\"suite\":\"hotkey\",\"runId\":" << Quote(invocation.run)
         << ",\"gitSha\":\"" MYSTIA_WINDOW_PROBE_GIT_SHA "\",\"processId\":" << GetCurrentProcessId()
-        << ",\"status\":" << Quote(result == 0 ? "PASS" : "FAIL") << ",\"p0Verified\":false,\"gamePid\":" << game_pid
+        << ",\"status\":" << Quote(result == 0 ? "PASS" : result == 2 ? "BLOCKED" : "FAIL") << ",\"p0Verified\":false,\"gamePid\":" << game_pid
+        << ",\"exitDiagnosticOnly\":" << (exit_diagnostic ? "true" : "false")
         << ",\"gameCreationHex\":" << Quote(Hex(game_creation)) << ",\"restartInputInserted\":" << injected
         << ",\"normalGameExitVerified\":" << (game_normal_exit ? "true" : "false")
         << ",\"nodeJobFallbackRequired\":" << ((game.value && WaitForSingleObject(game.value, 0) == WAIT_TIMEOUT) ||
@@ -1930,7 +2306,9 @@ int RunControlLifecycleController(const std::vector<std::string>& arguments) {
         << ",\"generations\":[";
     for (size_t index = 0; index < generations.size(); ++index) { if (index) report << ','; report << generations[index]; }
     report << "],\"errors\":["; if (!failure.empty()) report << Quote(failure);
-    report << "],\"limitations\":[\"New Mod first launch and replacement only; old Mod and ordinary-user privileges remain separate.\"]}\n";
+    report << "],\"limitations\":[" << Quote(invocation.legacy
+        ? "Original Mod 1.3.1 launch and raw TCP show/toggle only. Click recovery is marked OS automation, not a human action or ASFW grant. Ordinary-user privileges and the finished client remain separate."
+        : "New Mod first launch and replacement only; old Mod and ordinary-user privileges remain separate.") << "]}\n";
     WriteNew(invocation.result, report.str(), 32768);
   } catch (...) { return 1; }
   return result;
@@ -1967,11 +2345,10 @@ std::optional<LRESULT> ControlProbeBridge::HandleWindowMessage(UINT message, WPA
 void ControlProbeBridge::Execute(const ControlCommand& command, std::function<void(ErrorOr<ControlSnapshot>)> reply) {
   try { reply(impl_->Execute(command)); }
   catch (const std::exception& failure) {
-    if (impl_->error.empty()) impl_->error = failure.what();
+    RememberControlFailure(failure, impl_->error, impl_->error_blocked);
     flutter::EncodableValue details;
     try { details = flutter::EncodableValue(impl_->SnapshotJson()); } catch (...) {}
-    const auto* known = dynamic_cast<const ProbeFailure*>(&failure);
-    reply(FlutterError(known && known->blocked ? "blocked" : "native-error", failure.what(), details));
+    reply(FlutterError(impl_->error_blocked ? "blocked" : "native-error", impl_->error, details));
   }
 }
 void ControlProbeBridge::Finish(const std::string& report, int64_t code, std::function<void(std::optional<FlutterError>)> reply) {

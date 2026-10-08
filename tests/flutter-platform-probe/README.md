@@ -2,6 +2,8 @@
 
 本包用于验证单 EXE 展开 Flutter UI、进程通信和取消退出。它会创建独立临时目录，**不会安装更新、连接 Mod、关闭游戏或操作实际插件目录**。不要把它放进真实游戏目录，也不要替换正式 updater。
 
+以上是默认 v1 分发包的行为。同一 UI 工程另有只能由独立 fixture bootstrap 启用的 v2 安装页面；该包的入口为 `Start-Install-Fixture.ps1`，具体边界与证据见仓库中的[隔离安装验证](../flutter-updater-probe/INSTALL-FIXTURE.md)，不使用本页的 `Start-Probe.ps1`。
+
 ## 运行
 
 1. 从本次迁移分支的 `Flutter migration probes` Actions 页面下载 `mystia-steward-companion-windows-updater-probe` artifact，解压到普通用户可写目录。

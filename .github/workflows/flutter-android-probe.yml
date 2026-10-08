@@ -1,0 +1,48 @@
+name: Flutter Android P0 probe
+on:
+  workflow_dispatch:
+  push:
+    branches: [migration/flutter]
+    paths:
+      - '.github/workflows/flutter-android-probe.yml'
+      - 'tests/flutter-android-probe/**'
+      - 'tests/flutter-network-probe/**'
+      - 'scripts/*flutter-android*'
+      - 'scripts/flutter-toolchain.mjs'
+      - 'scripts/install-locked-flutter.mjs'
+      - 'toolchain.lock.json'
+permissions: {}
+jobs:
+  release-apks:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '21.0.12+101.0.LTS'
+      - name: Install locked Flutter
+        run: node scripts/install-locked-flutter.mjs --install-root "$RUNNER_TEMP/flutter-android-sdk"
+      - name: Install exact Android packages
+        run: |
+          # A fresh runner has not accepted the locked NDK preview package license.
+          # Feed bounded answers only to this exact installation; retain pipefail.
+          printf 'y\n%.0s' {1..16} | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-36' 'build-tools;35.0.0' 'ndk;30.0.14904198'
+          test -f "$ANDROID_HOME/ndk/30.0.14904198/source.properties"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+      - name: Verify and build isolated Release APKs
+        run: node scripts/run-flutter-android-probe.mjs --sdk-root "$RUNNER_TEMP/flutter-android-sdk" --build-output "$RUNNER_TEMP/mystia-flutter-android-probe"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-steward-companion-android-p0-probe
+          path: ${{ runner.temp }}/mystia-flutter-android-probe/
+          if-no-files-found: error
+          retention-days: 14

@@ -4,9 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkedPath, checkInstalledFlutter, resolveFlutterCommand } from './flutter-toolchain.mjs';
+import { mergeWindowsEnvironment, prepareWindowsToolchain, verifyProjectToolchain } from './flutter-windows-toolchain.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const project = path.join(root, 'tests/flutter-platform-probe');
+let windowsTools;
 
 function run(command, args, extra = {}) {
   const env = { ...process.env, CI: 'true', FLUTTER_SUPPRESS_ANALYTICS: 'true', PUB_CACHE: path.join(root, 'temp/flutter-pub-cache') };
@@ -15,7 +17,7 @@ function run(command, args, extra = {}) {
   }
   const result = spawnSync(command, args, {
     cwd: project, stdio: 'inherit', shell: false, windowsHide: true,
-    env,
+    env: windowsTools ? mergeWindowsEnvironment(env, windowsTools.environment) : env,
     ...extra,
   });
   if (result.error) throw result.error;
@@ -30,6 +32,7 @@ try {
   }
   const policy = JSON.parse(readFileSync(path.join(root, 'toolchain.lock.json'), 'utf8'));
   if (process.versions.node !== policy.node) throw new Error(`Node ${policy.node} is required.`);
+  if (args[2] === '--build-windows') windowsTools = prepareWindowsToolchain();
   const sdk = checkedPath(args[1]);
   checkInstalledFlutter(sdk);
   const flutter = (flutterArgs) => {
@@ -59,6 +62,7 @@ try {
   if (args[2] === '--build-windows') {
     if (process.platform !== 'win32') throw new Error('Windows probe builds require a Windows host.');
     flutter(['build', 'windows', '--release', '--no-pub']);
+    verifyProjectToolchain(project, windowsTools);
   }
   console.log('Flutter platform probe checks passed. Platform runtime evidence is collected separately.');
 } catch (error) {

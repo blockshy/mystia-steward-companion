@@ -662,9 +662,11 @@ internal sealed class StewardOverlayController
     /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
+        ControlExitDiagnostic.Global(ExitGlobalStage.DisposeEntered);
+        if (_disposed) { ControlExitDiagnostic.Global(ExitGlobalStage.DisposeAlreadyDisposed); return; }
 
         _disposed = true;
+        ControlExitDiagnostic.Global(ExitGlobalStage.DisposeFirst);
         CompanionProcessLauncher.TryNotifyExit(_log);
         var disposedException = new ObjectDisposedException(nameof(StewardOverlayController));
         CancelPendingMainThreadCommands(_pendingInventoryEdits, _inventoryEditLock, disposedException);
@@ -693,6 +695,7 @@ internal sealed class StewardOverlayController
             () => RuntimeThrowDeliverOrderHighlightService.Dispose("controller disposed"));
         RuntimePinnedListHighlightService.Abandon("controller disposed");
         AggregateModLogService.Shutdown();
+        ControlExitDiagnostic.Global(ExitGlobalStage.DisposeReturned);
     }
 
     private void RunOrderHighlightDisposalNoThrow(string surface, Action action)

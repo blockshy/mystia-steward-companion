@@ -9,6 +9,8 @@ param(
     [string]$ModBundleDirectory,
     [string]$ModEvidenceSha256,
     [switch]$Lifecycle,
+    [switch]$LegacyClient,
+    [switch]$ExitDiagnostic,
     [ValidateSet(32755)][int]$Port = 32755
 )
 $ErrorActionPreference = 'Stop'
@@ -81,7 +83,10 @@ function Read-ControlMod([string]$Directory, [string]$ExpectedEvidenceHash, [str
     $dll = Join-Path $bundle $value.entrypoint
     $hash = Get-ControlHash $dll
     if ($value.files[0].sha256 -cne $hash -or $value.files[0].size -ne (Get-Item $dll).Length) { throw 'Control Mod DLL hash/size differs.' }
-    return @{ dll = $dll; sha256 = $hash; evidence = $evidencePath; evidenceSha256 = $ExpectedEvidenceHash }
+    if ($value.ContainsKey('exitDiagnostic') -and ($value.exitDiagnostic -isnot [bool] -or $value.exitDiagnostic -cne $true)) {
+        throw 'Control Mod diagnostic flag must be explicit true or absent.'
+    }
+    return @{ dll = $dll; sha256 = $hash; evidence = $evidencePath; evidenceSha256 = $ExpectedEvidenceHash; exitDiagnostic = $value.ContainsKey('exitDiagnostic') }
 }
 
 function Assert-ControlPortFree([int]$Value) {
@@ -111,11 +116,16 @@ function Invoke-ControlPreparation {
         [string]$SourceGameDirectory, [string]$SteamAppManifestPath,
         [string]$ModBundleDirectory, [string]$ModEvidenceSha256,
         [switch]$Lifecycle,
+        [switch]$LegacyClient,
+        [switch]$ExitDiagnostic,
         [int]$Port = 32755
     )
     if ($RunId -cnotmatch '\A[A-Za-z0-9][A-Za-z0-9_-]{0,79}\z' -or $GitSha -cnotmatch '\A[a-f0-9]{40}\z') {
         throw 'Preparation requires an explicit run ID and full lowercase Git SHA.'
     }
+    if ($Lifecycle -and $LegacyClient) { throw 'Choose exactly one lifecycle scenario.' }
+    if ($ExitDiagnostic -and (!$Lifecycle -or $LegacyClient)) { throw 'Exit diagnostic requires only the new-Mod Lifecycle scenario.' }
+    if ($LegacyClient -and ($ModBundleDirectory -or $ModEvidenceSha256)) { throw 'Legacy client preserves the original Mod; a replacement bundle is forbidden.' }
     $run = Resolve-OldModPath $RunDirectory
     if ([IO.Path]::GetFileName($run) -cne $RunId) { throw 'Run directory leaf must equal the exact run ID.' }
     $source = Resolve-OldModPath $SourceGameDirectory
@@ -127,7 +137,7 @@ function Invoke-ControlPreparation {
     $windowPath = ConvertTo-ControlPath $windowExe
     if ($windowPath -cmatch '[^\x20-\x7e]') { throw 'Control probe paths must contain printable ASCII only.' }
     $windowHash = Get-ControlHash $windowExe
-    foreach ($name in @('control-probe.json', 'control-lifecycle.json', 'control-launch-1.json', 'control-launch-2.json', 'input-probe.json', 'probe-result.json', 'result.json', 'status.json', 'foreground-session.json', 'game-foreground-evidence.json', 'control-native-evidence.json', 'native-cleanup.json')) {
+    foreach ($name in @('control-probe.json', 'control-lifecycle.json', 'control-exit-diagnostic.json', 'control-exit-diagnostic-result.json', 'control-launch-1.json', 'control-launch-2.json', 'input-probe.json', 'probe-result.json', 'result.json', 'status.json', 'foreground-session.json', 'game-foreground-evidence.json', 'control-native-evidence.json', 'native-cleanup.json')) {
         if (Get-Item -LiteralPath (Join-Path $run $name) -Force -ErrorAction SilentlyContinue) {
             throw "Run already contains preparation or execution evidence: $name"
         }
@@ -144,7 +154,8 @@ function Invoke-ControlPreparation {
     Write-Host 'Freezing the source game. Keep it closed; preparation never starts a game.'
     $frozen = Get-OldModSnapshot $source
     Assert-ControlFrozenIdentity $frozen $pinned
-    $controlMod = Read-ControlMod $ModBundleDirectory $ModEvidenceSha256 $GitSha
+    $controlMod = if ($LegacyClient) { $null } else { Read-ControlMod $ModBundleDirectory $ModEvidenceSha256 $GitSha }
+    if (!$LegacyClient -and $controlMod.exitDiagnostic -cne [bool]$ExitDiagnostic) { throw 'Diagnostic bundle and explicit ExitDiagnostic preparation must match.' }
     if ((Test-Path -LiteralPath (Join-Path $source 'BepInEx/plugins/mystia-steward-companion-focus-probe')) -or
         @($frozen.files | Where-Object path -IMatch '^BepInEx/plugins/(?:.*/)?MystiaStewardCompanion\.FocusProbe\.dll$').Count -ne 0) {
         throw 'The original game already contains a focus probe; source must remain original.'
@@ -154,7 +165,8 @@ function Invoke-ControlPreparation {
     if ((Get-OldModPluginVersion (Join-Path $source $dllRelative)) -cne '1.3.1') { throw 'Expected the exact Mod PluginVersion constant 1.3.1.' }
     [void](Assert-OldModFile (Join-Path $source 'doorstop_config.ini'))
     $selected = Select-OldModGameSnapshot $frozen
-    [long]$copyBytes = $selected.totalBytes + 8 + (Get-Item $controlMod.dll).Length + (Get-Item $controlMod.evidence).Length
+    [long]$copyBytes = $selected.totalBytes + 8
+    if (!$LegacyClient) { $copyBytes += (Get-Item $controlMod.dll).Length + (Get-Item $controlMod.evidence).Length }
     [long]$reserve = [Math]::Max(1GB, [Math]::Ceiling($copyBytes * 0.1))
     $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($workspace))
     Write-Host "Game copy: $copyBytes bytes; reserved headroom: $reserve bytes; free: $($drive.AvailableFreeSpace) bytes."
@@ -171,13 +183,22 @@ function Invoke-ControlPreparation {
         Assert-ControlFrozenIdentity (Get-OldModSnapshot $game) $pinned
         Assert-OldModLaunchConfiguration $game $selected
         if ((Get-OldModPluginVersion (Join-Path $game $dllRelative)) -cne '1.3.1') { throw 'Copied Mod version does not match 1.3.1.' }
-        # Replace only the already verified DLL in this new isolated copy.
+        # The legacy scenario preserves the verified original DLL. Only the
+        # new-Mod scenarios replace it inside this newly created copy.
         # Never write the original game or install a separate focus cooperator.
         $controlModDestination = Join-Path $game $dllRelative
         [void](Assert-OldModFile $controlModDestination)
-        [IO.File]::Copy($controlMod.dll, $controlModDestination, $true)
         $controlModEvidence = Join-Path $workspace 'mod-build-evidence.json'
-        [IO.File]::Copy($controlMod.evidence, $controlModEvidence, $false)
+        if ($LegacyClient) {
+            Write-OldModNewJson $controlModEvidence ([ordered]@{
+                schemaVersion = 1; kind = 'original-mod-identity'; pluginVersion = '1.3.1'
+                dllSha256 = $pinned[$dllRelative]; replacementPerformed = $false; gameRuntime = 'not-run'
+            })
+            $controlMod = @{ sha256 = $pinned[$dllRelative]; evidenceSha256 = Get-ControlHash $controlModEvidence }
+        } else {
+            [IO.File]::Copy($controlMod.dll, $controlModDestination, $true)
+            [IO.File]::Copy($controlMod.evidence, $controlModEvidence, $false)
+        }
         if ((Get-ControlHash $controlModDestination) -cne $controlMod.sha256 -or
             (Get-ControlHash $controlModEvidence) -cne $controlMod.evidenceSha256) { throw 'Control Mod changed during copying.' }
         $appid = Join-Path $game 'steam_appid.txt'
@@ -196,8 +217,9 @@ function Invoke-ControlPreparation {
         $random = [byte[]]::new(32)
         [Security.Cryptography.RandomNumberGenerator]::Fill($random)
         $token = [Convert]::ToHexString($random).ToLowerInvariant()
-        $autoLaunch = if ($Lifecycle) { 'true' } else { 'false' }
-        $configuration = "[Companion]`nAutoLaunch = $autoLaunch`nControlProtocol = IdentityPipeV1`nExecutablePath = $windowPath`n`n[LocalApi]`nEnabled = true`nAllowLanConnections = false`nPort = $Port`nToken = $token`n`n[Updates]`nEnabled = false`nAutoCheck = false`n"
+        $autoLaunch = if ($Lifecycle -or $LegacyClient) { 'true' } else { 'false' }
+        $protocol = if ($LegacyClient) { 'LegacyTcp' } else { 'IdentityPipeV1' }
+        $configuration = "[Companion]`nAutoLaunch = $autoLaunch`nControlProtocol = $protocol`nExecutablePath = $windowPath`n`n[LocalApi]`nEnabled = true`nAllowLanConnections = false`nPort = $Port`nToken = $token`n`n[Updates]`nEnabled = false`nAutoCheck = false`n"
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($configuration)
         $stream = [IO.File]::Open($config, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
@@ -231,7 +253,7 @@ function Invoke-ControlPreparation {
             steamIdentity = $steam
             config = [ordered]@{
                 path = ConvertTo-ControlPath $config; sha256 = Get-ControlHash $config; port = $Port
-                autoLaunch = [bool]$Lifecycle; controlProtocol = 'IdentityPipeV1'; executablePath = $windowPath; localApiEnabled = $true; allowLanConnections = $false; updatesEnabled = $false; autoCheck = $false
+                autoLaunch = [bool]($Lifecycle -or $LegacyClient); controlProtocol = $protocol; executablePath = $windowPath; localApiEnabled = $true; allowLanConnections = $false; updatesEnabled = $false; autoCheck = $false
             }
             excludedPaths = @('BepInEx/config/com.tyukki.mystia-steward-companion.cfg', 'BepInEx/config/MystiaStewardCompanion/')
             gameStarted = $false; stagingPrepared = $false
@@ -239,7 +261,7 @@ function Invoke-ControlPreparation {
                 path = $dllRelative; dllPath = ConvertTo-ControlPath $controlModDestination
                 originalSha256 = $pinned[$dllRelative]; sha256 = $controlMod.sha256
                 buildEvidencePath = ConvertTo-ControlPath $controlModEvidence; buildEvidenceSha256 = $controlMod.evidenceSha256
-                scope = 'new-game-copy-only'; originalGameModPreserved = $true; focusCooperatorInstalled = $false
+                scope = $(if ($LegacyClient) { 'original-mod-preserved' } else { 'new-game-copy-only' }); originalGameModPreserved = $true; focusCooperatorInstalled = $false
             }
         }
         Write-OldModNewJson $evidencePath $evidence
@@ -253,11 +275,17 @@ function Invoke-ControlPreparation {
             expectedModSha256 = $controlMod.sha256; modBuildEvidenceSha256 = $controlMod.evidenceSha256
             expectedBepInExSha256 = $pinned['BepInEx/core/BepInEx.Unity.IL2CPP.dll']
         })
-        if ($Lifecycle) {
+        if ($Lifecycle -or $LegacyClient) {
             Write-OldModNewJson (Join-Path $run 'control-lifecycle.json') ([ordered]@{
                 schemaVersion = 1; kind = 'control-lifecycle-authorization'; runId = $RunId; gitSha = $GitSha
-                scenario = 'new-mod-cold-restart'; preparedEvidenceSha256 = Get-ControlHash $evidencePath
+                scenario = $(if ($LegacyClient) { 'old-mod-legacy-client' } else { 'new-mod-cold-restart' }); preparedEvidenceSha256 = Get-ControlHash $evidencePath
                 tokenSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::ASCII.GetBytes($token))).ToLowerInvariant()
+            })
+        }
+        if ($ExitDiagnostic) {
+            Write-OldModNewJson (Join-Path $run 'control-exit-diagnostic.json') ([ordered]@{
+                schemaVersion = 1; kind = 'control-exit-diagnostic-authorization'; runId = $RunId; gitSha = $GitSha
+                diagnosticOnly = $true; modBuildEvidenceSha256 = $controlMod.evidenceSha256; preparedEvidenceSha256 = Get-ControlHash $evidencePath
             })
         }
         Write-Host "PREPARED: $sidecar"
@@ -279,5 +307,5 @@ function Invoke-ControlPreparation {
 if ($MyInvocation.InvocationName -ne '.') {
     Invoke-ControlPreparation -RunDirectory $RunDirectory -RunId $RunId -GitSha $GitSha `
         -SourceGameDirectory $SourceGameDirectory -SteamAppManifestPath $SteamAppManifestPath -Port $Port `
-        -ModBundleDirectory $ModBundleDirectory -ModEvidenceSha256 $ModEvidenceSha256 -Lifecycle:$Lifecycle
+        -ModBundleDirectory $ModBundleDirectory -ModEvidenceSha256 $ModEvidenceSha256 -Lifecycle:$Lifecycle -LegacyClient:$LegacyClient -ExitDiagnostic:$ExitDiagnostic
 }

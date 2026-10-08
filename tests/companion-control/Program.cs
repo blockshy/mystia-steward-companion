@@ -11,6 +11,248 @@ void Reject(Action action)
 void Test(string name, Action action) { action(); passed++; Console.WriteLine($"PASS {name}"); }
 async Task TestAsync(string name, Func<Task> action) { await action(); passed++; Console.WriteLine($"PASS {name}"); }
 
+Test("diagnostic page binds exact build/run/process and bounded immutable header", () =>
+{
+    var page = new byte[4096];
+    void Word(int index, ulong value) => BinaryPrimitives.WriteUInt64LittleEndian(page.AsSpan(index * 8, 8), value);
+    void Text(int offset, string value) => System.Text.Encoding.ASCII.GetBytes(value).CopyTo(page, offset);
+    foreach (var pair in new Dictionary<int, ulong> { [0] = ControlExitDiagnosticContract.Magic, [1] = ControlExitDiagnosticContract.Version, [2] = 4096,
+        [3] = 512, [4] = 101, [5] = 1001, [6] = 202, [7] = 2002, [8] = 1, [9] = 123, [10] = 456, [11] = 2 }) Word(pair.Key, pair.Value);
+    Text(128, new string('a', 40)); Text(168, "synthetic-only");
+    foreach (var offset in new[] { 248, 312, 376, 440 }) Text(offset, new string('b', 64));
+    var header = ControlExitDiagnosticContract.ValidateHeader(page, 101, 1001, new string('a', 40), "synthetic-only");
+    Check(header.ControllerPid == 202 && header.ControllerCreation == 2002 && header.NonceLow == 123);
+    Check(ControlExitDiagnosticContract.MappingName(101, 1001) == @"Local\mystia-steward-companion.exitdiag.v3.101.3e9");
+    foreach (var offset in new[] { 0, 8, 16, 24, 32, 40, 88, 96, 128, 168, 248, 504 })
+    { var wrong = page.ToArray(); wrong[offset] = 0xff; Reject(() => ControlExitDiagnosticContract.ValidateHeader(wrong, 101, 1001, new string('a', 40), "synthetic-only")); }
+    foreach (var offset in new[] { 72, 80 })
+    { var wrong = page.ToArray(); Array.Clear(wrong, offset, 8); Reject(() => ControlExitDiagnosticContract.ValidateHeader(wrong, 101, 1001, new string('a', 40), "synthetic-only")); }
+    Reject(() => ControlExitDiagnosticContract.ValidateHeader(page[..4095], 101, 1001, new string('a', 40), "synthetic-only"));
+    Reject(() => ControlExitDiagnosticContract.ValidateHeader(page, 101, 1001, new string('c', 40), "synthetic-only"));
+    Reject(() => ControlExitDiagnosticContract.SessionBase(3));
+});
+Test("duplicate exit notifications reuse one task and cannot restart the monotonic deadline", () =>
+{
+    long now = 1000; var exit = new ControlExitCompletion(() => now, 1000);
+    var sameTask = exit.Completion;
+    Check(exit.Start() && exit.Remaining == TimeSpan.FromSeconds(13));
+    now += 12000;
+    Check(!exit.Start() && ReferenceEquals(sameTask, exit.Completion) && exit.Remaining == TimeSpan.FromSeconds(1));
+    now += 1000;
+    Check(exit.Wait() == ControlExitOutcome.TimedOut && !exit.Start());
+    Check(!exit.Complete(ControlExitOutcome.Acknowledged) && exit.Wait() == ControlExitOutcome.TimedOut);
+});
+Test("completion requires a request and rejects an ACK arriving at or beyond its deadline", () =>
+{
+    long now = 100; var exit = new ControlExitCompletion(() => now, 10);
+    Reject(() => exit.Complete(ControlExitOutcome.Acknowledged)); Reject(() => exit.Wait());
+    Check(exit.Start()); now += 130;
+    Check(exit.Complete(ControlExitOutcome.Acknowledged) && exit.Wait() == ControlExitOutcome.TimedOut);
+    var before = new ControlExitCompletion(() => now, 10); Check(before.Start()); now += 129;
+    Check(before.Complete(ControlExitOutcome.Acknowledged) && before.Wait() == ControlExitOutcome.Acknowledged);
+});
+Test("fault, cancellation and absence are terminal without waiting for a future worker", () =>
+{
+    foreach (var outcome in new[] { ControlExitOutcome.Failed, ControlExitOutcome.Cancelled,
+        ControlExitOutcome.NoRegistration, ControlExitOutcome.NoSession, ControlExitOutcome.NotApplicable })
+    {
+        var exit = new ControlExitCompletion();
+        Check(exit.Complete(outcome) && exit.Wait() == outcome && !exit.Start());
+        Check(!exit.Complete(ControlExitOutcome.Acknowledged) && exit.Wait() == outcome);
+    }
+});
+Test("a regressed monotonic observation cannot prolong native shutdown", () =>
+{
+    long now = 1000; var exit = new ControlExitCompletion(() => now, 10);
+    Check(exit.Start()); now = 999;
+    Check(exit.Remaining == TimeSpan.Zero && exit.Wait() == ControlExitOutcome.TimedOut);
+    Reject(() => new ControlExitCompletion(() => 0, 0));
+    Reject(() => new ControlExitCompletion(() => -1, 1).Start());
+});
+Test("entry budget constrains a late session start and duplicate notification cannot extend either deadline", () =>
+{
+    long now = 0; var entry = new ControlExitBudget(TimeSpan.FromSeconds(3), () => now, 1000);
+    now = 2000; var exit = new ControlExitCompletion(() => now, 1000);
+    Check(exit.Start(entry) && exit.Remaining == TimeSpan.FromSeconds(1));
+    now = 3000; Check(exit.Complete(ControlExitOutcome.Acknowledged));
+    Check(exit.Wait() == ControlExitOutcome.TimedOut);
+    var prior = new ControlExitCompletion(() => now, 1000); Check(prior.Start());
+    now += 12000; var later = new ControlExitBudget(TimeSpan.FromSeconds(13), () => now, 1000);
+    Check(!prior.Start(later) && prior.Remaining == TimeSpan.FromSeconds(1));
+    now += 1000; Check(prior.Wait(later) == ControlExitOutcome.TimedOut);
+});
+Test("an expired native dispatch never executes its queued action", () =>
+{
+    long now = 0; var entry = new ControlExitBudget(TimeSpan.FromSeconds(1), () => now, 1000); now = 1000;
+    var called = false;
+    Check(ControlExitDispatch.Run(entry, _ => { called = true; return ControlExitOutcome.Acknowledged; }) == ControlExitOutcome.TimedOut && !called);
+});
+Test("blocked dispatch logging cannot block the native caller beyond its budget or resume a late operation", () =>
+{
+    using var entered = new ManualResetEventSlim(); using var release = new ManualResetEventSlim(); using var ended = new ManualResetEventSlim();
+    var caller = 0; var logger = 0; var operations = 0;
+    var pending = Task.Factory.StartNew(() =>
+    {
+        caller = Environment.CurrentManagedThreadId;
+        return ControlExitDispatch.Run(new ControlExitBudget(TimeSpan.FromMilliseconds(500), System.Diagnostics.Stopwatch.GetTimestamp,
+            System.Diagnostics.Stopwatch.Frequency), remaining =>
+        {
+            try
+            {
+                logger = Environment.CurrentManagedThreadId; entered.Set(); release.Wait();
+                if (remaining.Remaining == TimeSpan.Zero) return ControlExitOutcome.TimedOut;
+                Interlocked.Increment(ref operations); return ControlExitOutcome.Acknowledged;
+            }
+            finally { ended.Set(); }
+        });
+    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    try
+    {
+        Check(entered.Wait(TimeSpan.FromSeconds(2)) && pending.Wait(TimeSpan.FromSeconds(2)));
+        Check(pending.Result == ControlExitOutcome.TimedOut && caller != logger && operations == 0);
+    }
+    finally { release.Set(); }
+    Check(ended.Wait(TimeSpan.FromSeconds(2)) && operations == 0);
+});
+Test("blocked product lock remains on a worker and cannot start work after native deadline", () =>
+{
+    var sync = new object(); using var entered = new ManualResetEventSlim(); using var ended = new ManualResetEventSlim();
+    var operations = 0;
+    Monitor.Enter(sync);
+    try
+    {
+        var pending = Task.Factory.StartNew(() => ControlExitDispatch.Run(
+            new ControlExitBudget(TimeSpan.FromMilliseconds(500), System.Diagnostics.Stopwatch.GetTimestamp, System.Diagnostics.Stopwatch.Frequency),
+            remaining =>
+            {
+                try
+                {
+                    entered.Set();
+                    lock (sync)
+                    {
+                        if (remaining.Remaining == TimeSpan.Zero) return ControlExitOutcome.TimedOut;
+                        Interlocked.Increment(ref operations); return ControlExitOutcome.Acknowledged;
+                    }
+                }
+                finally { ended.Set(); }
+            }), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+        Check(entered.Wait(TimeSpan.FromSeconds(2)) && pending.Wait(TimeSpan.FromSeconds(2)));
+        Check(pending.Result == ControlExitOutcome.TimedOut && operations == 0);
+    }
+    finally { Monitor.Exit(sync); }
+    Check(ended.Wait(TimeSpan.FromSeconds(2)) && operations == 0);
+});
+await TestAsync("an exit waiter releases its own gate while the worker completes acknowledgement", async () =>
+{
+    var exit = new ControlExitCompletion(); Check(exit.Start());
+    var waiter = Task.Run(() => exit.Wait());
+    Check(exit.Complete(ControlExitOutcome.Acknowledged));
+    Check(await waiter.WaitAsync(TimeSpan.FromSeconds(2)) == ControlExitOutcome.Acknowledged);
+});
+await TestAsync("completion never executes a consumer inline on the pipe worker", async () =>
+{
+    var exit = new ControlExitCompletion(); Check(exit.Start());
+    var producerThread = Environment.CurrentManagedThreadId; var insideCompletion = false; var inline = false;
+    var observed = exit.Completion.ContinueWith(_ =>
+        inline = insideCompletion && Environment.CurrentManagedThreadId == producerThread,
+        CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    insideCompletion = true;
+    Check(exit.Complete(ControlExitOutcome.Acknowledged));
+    insideCompletion = false;
+    await observed.WaitAsync(TimeSpan.FromSeconds(2)); Check(!inline);
+});
+Test("real session exit before Prepare is immediate and shares its result across repeated notification", () =>
+{
+    var session = new IdentityControlSession(new IdentityControlOptions("unused", "", "", _ => { }));
+    var first = session.NotifyExit();
+    Check(first.Wait() == ControlExitOutcome.NoRegistration && ReferenceEquals(first, session.NotifyExit()));
+    session.Cancel(); Check(first.Wait() == ControlExitOutcome.NoRegistration);
+});
+Test("real session retirement remains cancelled when a later callback notifies that retired session", () =>
+{
+    var session = new IdentityControlSession(new IdentityControlOptions("unused", "", "", _ => { }));
+    session.Cancel();
+    var first = session.NotifyExit();
+    Check(first.Wait() == ControlExitOutcome.Cancelled && ReferenceEquals(first, session.NotifyExit()));
+});
+Test("real session registration failure completes even if its diagnostic logger throws", () =>
+{
+    var session = new IdentityControlSession(new IdentityControlOptions("unused", "", "", _ => throw new InvalidOperationException("synthetic_log_failure")));
+    try { session.Prepare(55); }
+    catch (InvalidOperationException ex) when (ex.Message == "synthetic_log_failure") { }
+    var first = session.NotifyExit();
+    Check(first.Wait() == ControlExitOutcome.Failed && ReferenceEquals(first, session.NotifyExit()));
+    session.Cancel(); Check(first.Wait() == ControlExitOutcome.Failed);
+});
+Test("native exit registers once on its real Update thread and never retries a partial failure", () =>
+{
+    var gate = new NativeExitGate(); var calls = 0;
+    Reject(() => gate.Register(0, () => calls++));
+    Check(gate.Register(55, () => calls++) && !gate.Register(55, () => calls++));
+    Reject(() => gate.Register(56, () => calls++));
+    Check(calls == 1 && gate.RegistrationThread == 55);
+    var failed = new NativeExitGate();
+    Reject(() => failed.Register(55, () => { calls++; throw new ControlFailure("synthetic_install_failure"); }));
+    Reject(() => failed.Register(55, () => calls++)); Check(calls == 2);
+});
+Test("native export notifies once even if several native threads reach it", () =>
+{
+    var gate = new NativeExitGate(); var signals = 0;
+    Check(gate.Register(55, () => { }));
+    Parallel.For(0, 64, _ => { if (gate.TrySignal()) Interlocked.Increment(ref signals); });
+    Check(signals == 1 && !gate.TrySignal());
+});
+Test("native helper identity and exact export bytes reject changed files or an existing hook", () =>
+{
+    NativeExitContract.ValidateFileIdentity(NativeExitContract.HelperSize, NativeExitContract.HelperSha256);
+    Reject(() => NativeExitContract.ValidateFileIdentity(NativeExitContract.HelperSize + 1, NativeExitContract.HelperSha256));
+    Reject(() => NativeExitContract.ValidateFileIdentity(NativeExitContract.HelperSize, new string('0', 64)));
+    NativeExitContract.ValidateEntry(NativeExitContract.EntryBytes);
+    var entry = NativeExitContract.EntryBytes.ToArray(); entry[0] = 0xe9;
+    Reject(() => NativeExitContract.ValidateEntry(entry));
+    Reject(() => NativeExitContract.ValidateEntry(NativeExitContract.EntryBytes[..^1]));
+});
+Test("native helper PE bounds, architecture, DLL flag and image size fail closed", () =>
+{
+    var file = new byte[NativeExitContract.HelperSize]; file[0] = (byte)'M'; file[1] = (byte)'Z';
+    const int pe = 0x80;
+    BinaryPrimitives.WriteInt32LittleEndian(file.AsSpan(0x3c), pe);
+    BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(pe), 0x4550);
+    BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(pe + 4), 0x8664);
+    BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(pe + 22), 0x2000);
+    BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(pe + 24), 0x20b);
+    BinaryPrimitives.WriteUInt32LittleEndian(file.AsSpan(pe + 80), NativeExitContract.ImageSize);
+    NativeExitContract.ValidateArchitecture(file);
+    foreach (var offset in new[] { 0, pe, pe + 4, pe + 23, pe + 24, pe + 81 })
+    { var wrong = file.ToArray(); wrong[offset] ^= 0xff; Reject(() => NativeExitContract.ValidateArchitecture(wrong)); }
+    foreach (var invalid in new[] { -1, 0x3f, file.Length - 87, int.MaxValue })
+    {
+        var wrong = file.ToArray(); BinaryPrimitives.WriteInt32LittleEndian(wrong.AsSpan(0x3c), invalid);
+        Reject(() => NativeExitContract.ValidateArchitecture(wrong));
+    }
+    Reject(() => NativeExitContract.ValidateArchitecture(file[..^1]));
+});
+Test("diagnostic Interlocked first observations survive contention without mixing two sessions", () =>
+{
+    var page = System.Runtime.InteropServices.Marshal.AllocHGlobal(4096);
+    try
+    {
+        System.Runtime.InteropServices.Marshal.Copy(new byte[4096], 0, page, 4096);
+        Check(ControlExitDiagnostic.NewSession(page, 55) == 1 && ControlExitDiagnostic.NewSession(page, 55) == 2);
+        var cancelled = ControlExitDiagnosticContract.SessionBase(1) + 32 + (int)ExitSessionStage.Cancelled * 8;
+        var secondNotify = ControlExitDiagnosticContract.SessionBase(2) + 32 + (int)ExitSessionStage.NotifyEntered * 8;
+        Parallel.For(0, 64, _ => ControlExitDiagnostic.Mark(page, cancelled));
+        var first = System.Runtime.InteropServices.Marshal.ReadInt64(page, cancelled);
+        ControlExitDiagnostic.Mark(page, secondNotify);
+        Check(first > 0 && System.Runtime.InteropServices.Marshal.ReadInt64(page, cancelled) == first &&
+            System.Runtime.InteropServices.Marshal.ReadInt64(page, secondNotify) > first &&
+            System.Runtime.InteropServices.Marshal.ReadInt64(page, ControlExitDiagnosticContract.SessionBase(2) + 32 + (int)ExitSessionStage.Cancelled * 8) == 0);
+        ControlExitDiagnostic.Mark(IntPtr.Zero, 544); ControlExitDiagnostic.Mark(page, 512); ControlExitDiagnostic.Mark(page, 4096);
+        Check(System.Runtime.InteropServices.Marshal.ReadInt64(page, 0) == 0);
+    }
+    finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(page); }
+});
+
 var register = new ControlFrame(ControlKind.Register).With(ControlKind.Register,
     (ControlField.GamePid, 101), (ControlField.GameCreation, 0x1122334455667788),
     (ControlField.ClientPid, 202), (ControlField.ClientCreation, 0x0102030405060708),

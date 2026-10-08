@@ -1,6 +1,8 @@
 # Flutter updater P0 契约与 Windows 启动探针
 
-本目录是迁移探针，不是产品安装器。只验证旧 CLI、runner 自绑定、内嵌 bundle、两个进程的 hello/cancel 与状态回写；**没有安装/开始命令，不打开或关闭游戏，不连接 32146，不修改插件目录**。Windows bootstrap 只持有自己启动的 Flutter UI 子进程；异常清理也只终止该精确子进程。
+本目录是迁移探针，不是产品安装器。**默认 v1 构建**只验证旧 CLI、runner 自绑定、内嵌 bundle、两个进程的 hello/cancel 与状态回写；没有安装/开始命令，不打开或关闭游戏，不连接 32146，不修改插件目录。Windows bootstrap 只持有自己启动的 Flutter UI 子进程；异常清理也只终止该精确子进程。
+
+另有显式 `install-fixture` feature 与独立可执行目标，用于[完整双 Flutter bundle 的隔离安装验证](INSTALL-FIXTURE.md)。它有独立 v2 状态机、固定随机 fixture 布局和自有等待进程；不是默认 v1 的隐式升级，不接受真实游戏目录。下文描述原 v1 启动/取消契约。
 
 当前证据：Linux 临时目录、ZIP、JSON 与协议单元测试；可在 Linux 使用已安装的锁定 Windows target 做类型检查。Windows 实际启动、Defender/SmartScreen、真实旧 Mod 和游戏链必须另行实测，不能由这些测试代替。
 

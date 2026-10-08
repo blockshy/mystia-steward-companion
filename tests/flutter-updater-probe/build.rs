@@ -3,6 +3,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=MYSTIA_UPDATER_PROBE_GIT_SHA");
+    let sha =
+        env::var("MYSTIA_UPDATER_PROBE_GIT_SHA").unwrap_or_else(|_| "UNCONFIGURED".to_owned());
+    assert!(
+        sha == "UNCONFIGURED"
+            || (sha.len() == 40
+                && sha
+                    .bytes()
+                    .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))),
+        "invalid probe Git SHA"
+    );
+    println!("cargo:rustc-env=MYSTIA_UPDATER_PROBE_EMBEDDED_GIT_SHA={sha}");
     let names = [
         "MYSTIA_UPDATER_PROBE_BUNDLE_ZIP",
         "MYSTIA_UPDATER_PROBE_BUNDLE_MANIFEST",

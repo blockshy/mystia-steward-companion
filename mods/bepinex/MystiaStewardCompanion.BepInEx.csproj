@@ -22,6 +22,14 @@
     <AssemblyMetadata Include="CompanionControlBuildGitSha" Value="$(CompanionControlBuildGitSha)" />
   </ItemGroup>
 
+  <PropertyGroup Condition="'$(CompanionControlExitDiagnostic)' == 'true'">
+    <DefineConstants>$(DefineConstants);COMPANION_CONTROL_EXIT_DIAGNOSTIC</DefineConstants>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(CompanionControlExitDiagnostic)' == 'true'">
+    <AssemblyMetadata Include="CompanionControlExitDiagnostic" Value="true" />
+  </ItemGroup>
+
   <ItemGroup>
     <Reference Include="BepInEx.Core">
       <HintPath>$(ReferenceDir)\BepInEx.Core.dll</HintPath>
@@ -37,6 +45,10 @@
     </Reference>
     <Reference Include="Il2CppInterop.Runtime">
       <HintPath>$(ReferenceDir)\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="MonoMod.RuntimeDetour">
+      <HintPath>$(ReferenceDir)\MonoMod.RuntimeDetour.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Il2Cppmscorlib">

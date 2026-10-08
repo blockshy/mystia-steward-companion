@@ -1,0 +1,144 @@
+name: Flutter updater isolated install probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [migration/flutter]
+    paths:
+      - '.github/workflows/flutter-updater-install-probe.yml'
+      - 'toolchain.lock.json'
+      - 'rust-toolchain.toml'
+      - 'global.json'
+      - 'scripts/*flutter*'
+      - 'scripts/restore-build-references.mjs'
+      - 'scripts/download-bepinex-reference.mjs'
+      - 'scripts/restore-flutter-updater-references.ps1'
+      - 'tests/flutter-updater-probe/**'
+      - 'tests/flutter-toolchain/**'
+      - 'tests/flutter-platform-probe/**'
+      - 'tests/flutter-window-probe/**'
+      - 'mods/bepinex/src/**'
+      - 'mods/bepinex/MystiaStewardCompanion.BepInEx.csproj'
+      - 'mods/bepinex/References/references.lock.json'
+
+permissions: {}
+
+jobs:
+  windows-install:
+    name: Build and run isolated complete-bundle installation
+    runs-on: windows-2022
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Setup locked Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Determine whether scoped build-reference credentials are available
+        id: reference-access
+        shell: pwsh
+        env:
+          SCOPED_APP_ID: ${{ secrets.BUILD_ASSETS_APP_ID }}
+          SCOPED_APP_KEY: ${{ secrets.BUILD_ASSETS_APP_PRIVATE_KEY }}
+        run: |
+          $available = ![string]::IsNullOrEmpty($env:SCOPED_APP_ID) -and ![string]::IsNullOrEmpty($env:SCOPED_APP_KEY)
+          "available=$($available.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          if (!$available) {
+            # Release-environment secrets are not made available to this probe.
+            # Build portable components and explicitly preserve the runtime gap.
+            $gap = [ordered]@{schemaVersion = 1; kind = 'updater-install-runtime-gate'; gitSha = $env:GITHUB_SHA; status = 'BLOCKED'; cleanMachine = $false; reason = 'Scoped private build-reference credentials are absent. Same-commit real Mod must be built in the authorized local environment before the actual install fixture can run.'}
+            $gap | ConvertTo-Json | Set-Content -LiteralPath "$env:RUNNER_TEMP/updater-install-runtime-gate.json" -Encoding utf8
+            'Installation runtime: BLOCKED in hosted CI because private reference credentials are absent. Windows and updater bundles will still be built. No installation PASS is claimed.' >> $env:GITHUB_STEP_SUMMARY
+          }
+      - name: Setup locked .NET SDK
+        if: steps.reference-access.outputs.available == 'true'
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - name: Install locked Flutter, Rust and PowerShell
+        shell: pwsh
+        run: |
+          node scripts/install-locked-flutter.mjs --install-root "$env:RUNNER_TEMP/install-flutter"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Flutter installation failed.' }
+          node scripts/install-locked-release-tools.mjs --install-root "$env:RUNNER_TEMP/install-tools"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked release tools installation failed.' }
+          $lock = Get-Content toolchain.lock.json -Raw | ConvertFrom-Json
+          rustup toolchain install $lock.rust --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Rust installation failed.' }
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/install-artifacts" | Out-Null
+      - name: Request scoped read-only build-assets token
+        if: steps.reference-access.outputs.available == 'true'
+        id: build-assets-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.BUILD_ASSETS_APP_ID }}
+          private-key: ${{ secrets.BUILD_ASSETS_APP_PRIVATE_KEY }}
+          owner: blockshy
+          repositories: mystia-steward-build-assets
+          permission-contents: read
+      - name: Restore exact locked build references
+        if: steps.reference-access.outputs.available == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ steps.build-assets-token.outputs.token }}
+        run: |
+          & "$env:RUNNER_TEMP/install-tools/powershell/pwsh.exe" -NoLogo -NoProfile -NonInteractive -File scripts/restore-flutter-updater-references.ps1 -ArchiveDirectory "$env:RUNNER_TEMP/install-references"
+          if ($LASTEXITCODE -ne 0) { throw 'Locked reference restore failed.' }
+      - name: Build same-commit real Mod DLL
+        if: steps.reference-access.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          $dotnet = (Get-Command dotnet -CommandType Application | Select-Object -First 1).Source
+          node scripts/build-flutter-control-mod.mjs --dotnet $dotnet --output "$env:RUNNER_TEMP/install-artifacts/control-mod"
+          if ($LASTEXITCODE -ne 0) { throw 'Same-commit Mod build failed.' }
+      - name: Build complete main Flutter bundle
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/install-tools/powershell/pwsh.exe" -NoLogo -NoProfile -NonInteractive -File scripts/build-flutter-window-probe.ps1 -SdkRoot "$env:RUNNER_TEMP/install-flutter" -OutputDirectory "$env:RUNNER_TEMP/install-artifacts/window"
+          if ($LASTEXITCODE -ne 0) { throw 'Main bundle build failed.' }
+      - name: Build explicit installation bootstrap with complete updater UI
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/install-tools/powershell/pwsh.exe" -NoLogo -NoProfile -NonInteractive -File scripts/build-flutter-updater-probe.ps1 -SdkRoot "$env:RUNNER_TEMP/install-flutter" -OutputDirectory "$env:RUNNER_TEMP/install-artifacts/updater" -InstallFixture
+          if ($LASTEXITCODE -ne 0) { throw 'Updater installation fixture build failed.' }
+      - name: Verify fixture preparation failure boundaries
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/install-tools/powershell/pwsh.exe" -NoLogo -NoProfile -NonInteractive -File tests/flutter-updater-probe/Test-Install-Fixture.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture preparation tests failed.' }
+      - name: Actually run delivered Flutter UI and isolated installation
+        if: steps.reference-access.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          & "$env:RUNNER_TEMP/install-tools/powershell/pwsh.exe" -NoLogo -NoProfile -NonInteractive -File "$env:RUNNER_TEMP/install-artifacts/updater/Start-Install-Fixture.ps1" -CompanionBundleDirectory "$env:RUNNER_TEMP/install-artifacts/window" -ModBundleDirectory "$env:RUNNER_TEMP/install-artifacts/control-mod" -FixtureParent $env:RUNNER_TEMP -Automate
+          if ($LASTEXITCODE -ne 0) { throw 'Actual hosted-runner installation failed; this is not a clean-OS test.' }
+      - name: Upload candidate components
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-flutter-updater-install-components
+          path: ${{ runner.temp }}/install-artifacts/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload actual runtime and size evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: mystia-flutter-updater-install-runtime
+          path: |
+            ${{ runner.temp }}/updater-install-runtime-gate.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/probe-report.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/install-evidence.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/fixture.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/old-manifest.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/new-manifest.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/runtime-modules.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/disk-observation.json
+            ${{ runner.temp }}/mystia-steward-companion-install-p0-*/state/install-status.json
+          if-no-files-found: warn
+          retention-days: 14

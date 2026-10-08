@@ -1,0 +1,8 @@
+name: flutter_identity_p0
+description: Isolated Dart migration contracts and real Mod HTTP identity recovery probe.
+publish_to: none
+version: 0.0.0
+environment:
+  sdk: '>=3.13.5 <3.14.0'
+dependencies:
+  crypto: 3.0.7

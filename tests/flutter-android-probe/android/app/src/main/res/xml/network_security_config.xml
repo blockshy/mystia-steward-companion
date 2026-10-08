@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Dynamic LAN IPs require a base policy. Both transports reject
+         non-local endpoints before any socket operation. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

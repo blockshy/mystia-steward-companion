@@ -5,10 +5,17 @@
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>$(DefineConstants);COMPANION_CONTROL_EXIT_DIAGNOSTIC</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlProtocol.cs" Link="ControlProtocol.cs" />
     <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlListenerIdentity.cs" Link="ControlListenerIdentity.cs" />
     <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlWindows.cs" Link="ControlWindows.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlExitDiagnostic.cs" Link="ControlExitDiagnostic.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlExitDiagnosticContract.cs" Link="ControlExitDiagnosticContract.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/ControlExitCompletion.cs" Link="ControlExitCompletion.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/IdentityControlSession.cs" Link="IdentityControlSession.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/CompanionControl/NativeExitContract.cs" Link="NativeExitContract.cs" />
   </ItemGroup>
 </Project>

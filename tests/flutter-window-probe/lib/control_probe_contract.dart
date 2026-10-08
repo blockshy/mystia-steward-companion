@@ -17,15 +17,80 @@ void requireControl(bool condition, String message) {
   if (!condition) throw ControlFailure(message);
 }
 
+bool legacyPublicationReady(Object? value, int gamePid) {
+  requireControl(
+    value is Map<String, dynamic>,
+    'Missing legacy publication observation.',
+  );
+  final detail = value as Map<String, dynamic>;
+  requireControl(
+    detail['kind'] == 'original-mod-cached-snapshot-publication' &&
+        detail['started'] is bool &&
+        detail['ready'] is bool &&
+        detail['businessReadinessClaimed'] == false &&
+        detail['foregroundGrantClaimed'] == false,
+    'Invalid legacy publication scope.',
+  );
+  for (final key in [
+    'gamePid',
+    'requestCount',
+    'responseCount',
+    'completedMonotonicMs',
+  ]) {
+    requireControl(
+      detail[key] is int && (detail[key] as int) >= 0,
+      'Invalid legacy publication counter.',
+    );
+  }
+  for (final key in ['startedUtcFileTime', 'capturedUtcFileTime']) {
+    requireControl(
+      detail[key] is String &&
+          RegExp(r'^(0|[1-9][0-9]{0,17})$').hasMatch(detail[key] as String),
+      'Invalid legacy publication timestamp.',
+    );
+  }
+  requireControl(
+    (detail['responseCount'] as int) <= (detail['requestCount'] as int) &&
+        (detail['requestCount'] as int) <= 300,
+    'Legacy publication request accounting differs.',
+  );
+  if (detail['started'] == true) {
+    requireControl(
+      detail['gamePid'] == gamePid &&
+          gamePid > 0 &&
+          int.parse(detail['startedUtcFileTime'] as String) > 0,
+      'Legacy publication game/focus identity differs.',
+    );
+  }
+  if (detail['ready'] != true) return false;
+  final captured = detail['capturedAtUtc'];
+  requireControl(
+    detail['started'] == true &&
+        (detail['responseCount'] as int) > 0 &&
+        (detail['completedMonotonicMs'] as int) > 0 &&
+        captured is String &&
+        captured.endsWith('Z') &&
+        DateTime.tryParse(captured)?.isUtc == true &&
+        int.parse(detail['capturedUtcFileTime'] as String) >
+            int.parse(detail['startedUtcFileTime'] as String),
+    'Legacy publication is stale or lacks a real post-focus response.',
+  );
+  return true;
+}
+
 class ControlLaunch {
   const ControlLaunch(this.runId);
   final String runId;
-  factory ControlLaunch.client(List<String> args, String gitSha) {
+  factory ControlLaunch.client(
+    List<String> args,
+    String gitSha, {
+    bool legacy = false,
+  }) {
     if (!RegExp(r'^[a-f0-9]{40}$').hasMatch(gitSha) ||
         args.length != 3 ||
-        args[0] != '--control-client' ||
+        args[0] != (legacy ? '--control-legacy-client' : '--control-client') ||
         !RegExp(r'^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$').hasMatch(args[1]) ||
-        !['1', '2'].contains(args[2])) {
+        !(legacy ? ['1'] : ['1', '2']).contains(args[2])) {
       throw const FormatException('Invalid sanitized client generation.');
     }
     return ControlLaunch(args[1]);
@@ -61,11 +126,22 @@ const requiredControlChecks = {
   'control-retained-game-close-exit-zero',
 };
 
+const requiredLegacyControlChecks = {
+  'legacy-real-mod-launch',
+  'legacy-startup-show',
+  'legacy-native-and-dart-input',
+  'legacy-existing-instance-toggle',
+  'legacy-click-recovery',
+  'legacy-retained-game-close-exit-zero',
+};
+
 class ControlState {
   ControlState._(this.value);
   final Map<String, dynamic> value;
   int number(String name) => value[name] as int;
   bool flag(String name) => value[name] as bool;
+  Map<String, dynamic> get legacy =>
+      value['legacyControl'] as Map<String, dynamic>;
   List<Map<String, dynamic>> get slots =>
       (value['slots'] as List).cast<Map<String, dynamic>>();
   List<Map<String, dynamic>> get connected =>
@@ -88,8 +164,9 @@ class ControlState {
     String sha,
     String runId,
     int processId,
-    int previousSequence,
-  ) {
+    int previousSequence, {
+    bool legacy = false,
+  }) {
     requireControl(
       snapshot.gitSha == sha &&
           snapshot.processId == processId &&
@@ -115,6 +192,7 @@ class ControlState {
       'Native control snapshot schema/run identity differs.',
     );
     for (final key in [
+      'errorBlocked',
       'gameReady',
       'gameWindowBound',
       'gameAlive',
@@ -256,21 +334,83 @@ class ControlState {
               (value['gameThreadId'] as int) > 0),
       'Game readiness lacks the actual Mod Update registration.',
     );
+    if (legacy) {
+      final detail = value['legacyControl'];
+      requireControl(
+        detail is Map<String, dynamic> &&
+            detail['scenario'] == 'old-mod-legacy-client',
+        'Legacy snapshot lacks its explicit original-Mod scenario.',
+      );
+      for (final key in [
+        'ready',
+        'startupAttempted',
+        'automaticForeground',
+        'clickRequired',
+        'asfwCalled',
+        'automatedOsInput',
+      ]) {
+        requireControl(detail[key] is bool, 'Invalid legacy flag: $key.');
+      }
+      for (final key in [
+        'showCount',
+        'toggleCount',
+        'exitCount',
+        'clickCount',
+        'backgroundClickCount',
+      ]) {
+        requireControl(
+          detail[key] is int && (detail[key] as int) >= 0,
+          'Invalid legacy counter: $key.',
+        );
+      }
+      requireControl(
+        value['registered'] == false &&
+            value['gameReady'] == false &&
+            value['pipeConnected'] == false &&
+            value['registrationCount'] == 0 &&
+            value['activationCount'] == 0 &&
+            detail['asfwCalled'] == false &&
+            detail['automatedOsInput'] == true &&
+            (detail['ready'] != true ||
+                (detail['showCount'] == 1 &&
+                    detail['startupAttempted'] == true &&
+                    value['gameWindowBound'] == true)),
+        'Legacy raw readiness cannot claim an MSC1 registration or foreground grant.',
+      );
+      legacyPublicationReady(
+        detail['snapshotPublication'],
+        value['gamePid'] as int,
+      );
+    } else {
+      requireControl(
+        value['legacyControl'] == null,
+        'Legacy scenario reached the MSC1 runner.',
+      );
+    }
     return ControlState._(value);
   }
 }
 
 class ControlReport {
-  ControlReport(this.launch, this.gitSha, {this.clientGeneration = 0}) {
+  ControlReport(
+    this.launch,
+    this.gitSha, {
+    this.clientGeneration = 0,
+    this.legacy = false,
+  }) {
     requireControl(
-      [0, 1, 2].contains(clientGeneration),
+      [0, 1, 2].contains(clientGeneration) &&
+          (!legacy || clientGeneration == 1),
       'Unknown client generation.',
     );
   }
   final ControlLaunch launch;
   final String gitSha;
   final int clientGeneration;
-  Set<String> get requiredChecks => clientGeneration == 0
+  final bool legacy;
+  Set<String> get requiredChecks => legacy
+      ? requiredLegacyControlChecks
+      : clientGeneration == 0
       ? requiredControlChecks
       : {
           'client-real-mod-launch',
@@ -329,7 +469,9 @@ class ControlReport {
     );
     final json = jsonEncode({
       'schemaVersion': 1,
-      'kind': clientGeneration == 0
+      'kind': legacy
+          ? 'flutter-legacy-control-client'
+          : clientGeneration == 0
           ? 'flutter-control-probe'
           : 'flutter-control-client',
       if (clientGeneration != 0) 'generation': clientGeneration,
@@ -338,7 +480,9 @@ class ControlReport {
       'gitSha': gitSha,
       'status': status,
       'p0Verified': false,
-      'executionMode': clientGeneration == 0
+      'executionMode': legacy
+          ? 'original-mod-legacy-tcp-and-automated-os-click'
+          : clientGeneration == 0
           ? 'real-mod-update-f8-and-user-operated-rs'
           : 'real-mod-launched-client-generation',
       'startedUtc': startedUtc,
@@ -348,7 +492,11 @@ class ControlReport {
       'observations': observations,
       'errors': errors,
       'limitations': [
-        if (clientGeneration != 0) ...[
+        if (legacy) ...[
+          'The unchanged Mod 1.3.1 launched this host; raw EOF show/toggle are observed without MSC1 or ASFW.',
+          'Startup automatic foreground and subsequent automated marked OS mouse-click recovery are recorded separately; no manual user click is claimed.',
+          'Raw exit is an optional observation after our exact game close, not an authenticated shutdown acknowledgement.',
+        ] else if (clientGeneration != 0) ...[
           'This client was launched by the real copied Mod; it is a P0 host, not the finished product.',
           'This generation validates its own registration and lifetime; cross-generation claims require the controller report.',
           'Ordinary-user privilege, old-Mod compatibility and the release matrix are separate acceptance work.',
