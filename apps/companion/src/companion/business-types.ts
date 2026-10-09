@@ -17,6 +17,15 @@ export interface OrderRecommendationResult {
   normalOrderDetailPlans: NormalOrderDetailPlan[];
   normalExecutionTargets: NormalExecutionTargetSelection[];
   performanceMs?: Record<string, number>;
+  rareGuestParticipation?: RareGuestParticipationDiagnostic;
+}
+
+/** 由 C# 判定的旧参与队列兼容状态；客户端只显示说明，不自行重算参与资格。 */
+export interface RareGuestParticipationDiagnostic {
+  code: 'legacy-participation-queue-unavailable';
+  automationBlocked: boolean;
+  gameUiBlocked: boolean;
+  message: string;
 }
 export interface NormalExecutionTargetSelection {
   orderKey: string;

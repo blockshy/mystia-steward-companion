@@ -250,6 +250,7 @@ export function ModServicePanel({
   customRecipes,
   autoPrepBusy,
   autoPrepMessage,
+  rareParticipationMessage,
   autoPrepPaused,
   rareOrderDiagnostics,
   autoPrepPreferences,
@@ -310,6 +311,7 @@ export function ModServicePanel({
   customRecipes: CustomRecipeData;
   autoPrepBusy: boolean;
   autoPrepMessage: string;
+  rareParticipationMessage: string;
   autoPrepPaused: boolean;
   rareOrderDiagnostics: RareAutoOrderDiagnostic[];
   autoPrepPreferences: CompanionPreferences;
@@ -377,6 +379,11 @@ export function ModServicePanel({
   });
   return (
     <div className="space-y-4">
+      {rareParticipationMessage && (
+        <div role="status" data-rare-participation-notice="true" className="border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+          {rareParticipationMessage}
+        </div>
+      )}
       <Card>
         <CardContent
           className={`${DENSE_MINIMUM_THREE_COLUMN_GRID} p-4 text-sm`}

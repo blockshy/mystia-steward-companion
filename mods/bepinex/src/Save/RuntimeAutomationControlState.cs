@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using MystiaStewardCompanion.Business.Domain.Orders;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -260,6 +262,18 @@ internal static class RuntimeAutomationControlState
                 completionConfigured);
         }
 
+        // 已登记的稀客料理任务同样受参与许可约束。旧配置只有名单，没有本轮逐单队列许可，
+        // 因此必须在每个尚未提交的原生副作用边界暂停；不能仅阻止新开锅后继续送达/评价。
+        // 特殊业务只允许绕过阶段开关，不能绕过此许可；普客任务不受稀客名单影响。
+        if (targetKind == RuntimeAutomationControlTargetKind.Rare && profile.RareGuestParticipationBlocked)
+        {
+            return SuspendConfiguration(
+                RareGuestParticipationPolicy.Code,
+                RareGuestParticipationPolicy.Message,
+                deliveryConfigured,
+                completionConfigured);
+        }
+
         if (stage is RuntimeAutomationControlStage.FoodDelivery
             or RuntimeAutomationControlStage.YuumaSettlement
             && !deliveryConfigured)
@@ -345,7 +359,8 @@ internal static class RuntimeAutomationControlState
         bool AutoPrepCollectCooking,
         bool AutoPrepCompleteOrder,
         bool AutoNormalDeliverFood,
-        bool AutoNormalCompleteOrder)
+        bool AutoNormalCompleteOrder,
+        bool RareGuestParticipationBlocked)
     {
         public static RuntimeAutomationControlProfile Parse(JsonElement profile)
         {
@@ -361,7 +376,9 @@ internal static class RuntimeAutomationControlState
                 ReadBool(profile, "autoPrepCollectCooking"),
                 ReadBool(profile, "autoPrepCompleteOrder"),
                 ReadBool(profile, "autoNormalDeliverFood"),
-                ReadBool(profile, "autoNormalCompleteOrder"));
+                ReadBool(profile, "autoNormalCompleteOrder"),
+                // 配置已由权威存储严格校验；这里只缓存统一纯业务规则的结果，不修改原有名单。
+                RareGuestParticipationPolicy.IsBlocked(JsonNode.Parse(profile.GetRawText())!.AsObject()));
         }
 
         private static bool ReadBool(JsonElement profile, string name)

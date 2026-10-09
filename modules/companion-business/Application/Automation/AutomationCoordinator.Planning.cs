@@ -203,7 +203,8 @@ public sealed partial class AutomationCoordinator
         }
     }
 
-    private bool CanPlan(string key, JsonObject state, long nowMs) => !J.Bool(state["paused"]) && !J.Bool(state["manualResolutionRequired"])
+    private bool CanPlan(string key, JsonObject state, long nowMs) => !(RareParticipationBlocked && key.StartsWith("rare:", StringComparison.Ordinal))
+        && !J.Bool(state["paused"]) && !J.Bool(state["manualResolutionRequired"])
         && !J.Bool(state["completed"]) && J.Num(state["nextAttemptAtMs"]) <= nowMs && !_pending.Values.Any(x => x.StateKey == key);
 
     private JsonObject? Reserve(JsonObject pool, string cookerName, ISet<int>? reserved = null)

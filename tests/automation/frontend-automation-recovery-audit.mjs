@@ -1104,6 +1104,9 @@ async function assertMockProtocol() {
     };
     const enabledProfile = {
       automationEnabled: true,
+      // 当前协议显式关闭旧参与模块，此夹具只验证既有自动化控制与废弃路由边界。
+      rareGuestParticipationModuleEnabled: false,
+      managedRareGuestIds: [],
       autoRareOrderEnabled: true,
       autoNormalOrderEnabled: true,
       autoPrepCollectCooking: true,
@@ -1116,7 +1119,7 @@ async function assertMockProtocol() {
       headers: { ...headers, 'content-type': 'application/json; charset=utf-8' },
       body: JSON.stringify({
         protocolVersion: 1,
-        profileSchemaVersion: 1,
+        profileSchemaVersion: 5,
         platform: 'browser',
         appVersion: '1.2.0',
         profile: enabledProfile,

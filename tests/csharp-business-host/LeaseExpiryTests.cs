@@ -45,7 +45,7 @@ internal static class LeaseExpiryTests
             const string client = "11111111-1111-1111-1111-111111111111";
             var state = host.Authority.Register(client, "lease test", new CompanionDeviceRegisterRequest
             {
-                ProtocolVersion = 1, ProfileSchemaVersion = 1, Platform = "windows", AppVersion = "offline", Profile = profile,
+                ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, Platform = "windows", AppVersion = "offline", Profile = profile,
             }, DateTime.UtcNow);
             host.Publish(Snapshot(), Catalog());
             host.Start();
@@ -97,7 +97,7 @@ internal static class LeaseExpiryTests
     }
 
     /// <summary>最小完整目录用于真实候选与订单计算，不注入预先计算的执行目标。</summary>
-    private static JsonObject Catalog() => J.Object(("isComplete", true), ("source", "offline"),
+    internal static JsonObject Catalog() => J.Object(("isComplete", true), ("source", "offline"),
         ("ingredients", new JsonArray(J.Object(("id", 1), ("name", "豆腐"), ("tags", new JsonArray("素")), ("price", 2)))),
         ("recipes", new JsonArray(J.Object(("id", 101), ("recipeId", 201), ("name", "测试料理"),
             ("ingredients", new JsonArray("豆腐")), ("positiveTags", new JsonArray("素")),
@@ -109,7 +109,7 @@ internal static class LeaseExpiryTests
             ("beverageTags", new JsonArray("水果")), ("places", new JsonArray("妖怪兽道"))))));
 
     /// <summary>固定的一笔普客订单与精确厨具槽位；测试开始后始终不再发布快照。</summary>
-    private static JsonObject Snapshot() => J.Object(("automationSessionId", "lease-expiry"), ("nightBusinessGeneration", 1),
+    internal static JsonObject Snapshot() => J.Object(("automationSessionId", "lease-expiry"), ("nightBusinessGeneration", 1),
         ("nightBusinessAutomationAllowed", true), ("nightBusiness", J.Object(("orders", new JsonArray()), ("activeRareGuests", new JsonArray()))),
         ("specialBusiness", null), ("automationEvents", new JsonArray()), ("automationCookingJobs", new JsonArray()),
         ("normalBusiness", J.Object(("orders", new JsonArray(J.Object(("traceId", "N-lease"), ("orderKey", "ptr:lease"),

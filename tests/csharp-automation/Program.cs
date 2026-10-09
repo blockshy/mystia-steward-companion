@@ -191,4 +191,48 @@ batch = engine.Advance(input, 4000);
 Check(J.Arr(batch["commands"]).Count == 0 && J.Obj(batch["states"]).Count == 1, "消失订单的锅次仅保留诊断，不从旧订单快照继续发动作");
 Check(!engine.AcknowledgeResult(999, Parse("""{"ok":true,"sequence":999,"acknowledgedCount":2,"acknowledgedSequences":[999,999]}"""), 4100),
     "没有本地订单的孤立屏障回执仍拒绝重复序号集合");
+
+// 旧人工参与名单不是自动化白名单；本分支没有逐单队列时整条稀客通道必须停止，普客继续。
+foreach (var enabled in new[] { false, true })
+foreach (var ids in new[] { Array.Empty<double>(), new[] { 10d }, new[] { 999d }, Enumerable.Range(0, 512).Select(x => (double)x).ToArray() })
+{
+    input = RareInput();
+    J.Obj(input["preferences"])["rareGuestParticipationModuleEnabled"] = enabled;
+    J.Obj(input["preferences"])["managedRareGuestIds"] = J.Array(ids);
+    engine = new AutomationCoordinator(); batch = engine.Advance(input, 1500);
+    var blocked = enabled && ids.Length > 0;
+    Check(J.Arr(batch["commands"]).Count == (blocked ? 0 : 1), "模块关闭/空名单维持原行为，启用非空名单则稀客通道停止");
+    Check(J.Bool(J.Obj(batch["rareGuestParticipation"])["automationBlocked"]) == blocked, "自动化输出结构化参与诊断");
+    if (blocked)
+    {
+        Check(J.Str(J.Obj(batch["rareGuestParticipation"])["code"]) == "legacy-participation-queue-unavailable"
+            && J.Bool(J.Objects(batch["rareDiagnostics"]).Single()["paused"]), "暂停诊断明确解释旧队列尚不可用");
+        Check(!engine.Retry("rare", "trace:R1|lifecycle:5", 1600), "手动retry不能绕过参与配置边界");
+    }
+}
+input = RareInput(); engine = new AutomationCoordinator();
+command = J.Objects(engine.Advance(input, 1500)["commands"]).Single();
+engine.Complete((long)J.Num(command["requestId"]), Response("progressed", "beverage", "", "beverage-delivered"), 1600);
+J.Obj(input["preferences"])["rareGuestParticipationModuleEnabled"] = true;
+J.Obj(input["preferences"])["managedRareGuestIds"] = J.Array(new[] { 999d });
+Check(J.Arr(engine.Advance(input, 1601)["commands"]).Count == 0, "启用旧队列配置后取消已排队的稀客续接");
+J.Obj(input["preferences"])["autoNormalOrderEnabled"] = true;
+batch = engine.Advance(input, 2500);
+Check(J.Objects(batch["commands"]).Any(x => J.Str(x["action"]) == "complete-normal")
+    && J.Objects(batch["commands"]).All(x => J.Str(x["action"]) is not ("prepare-rare" or "complete-rare")), "普客继续执行且稀客不借普通通道绕过");
+input = RareInput(); engine = new AutomationCoordinator();
+command = J.Objects(engine.Advance(input, 1500)["commands"]).Single();
+J.Obj(input["preferences"])["rareGuestParticipationModuleEnabled"] = true;
+J.Obj(input["preferences"])["managedRareGuestIds"] = J.Array(new[] { 10d });
+engine.Advance(input, 1600);
+engine.Complete((long)J.Num(command["requestId"]), Response("progressed", "cooking-start", "", "cooking-started"), 1700);
+Check(!J.Bool(J.Obj(J.Obj(engine.Snapshot()["states"])["rare:trace:R1|lifecycle:5"])["prepared"]), "启用阻断后迟到响应不能恢复旧作用域");
+J.Obj(input["preferences"])["rareGuestParticipationModuleEnabled"] = false;
+Check(J.Arr(engine.Advance(input, 1800)["commands"]).Count == 1, "明确关闭模块后恢复main稀客调度");
+input = RareInput(); engine = new AutomationCoordinator();
+J.Obj(input["preferences"])["rareGuestParticipationModuleEnabled"] = true;
+J.Obj(input["preferences"])["managedRareGuestIds"] = J.Array(new[] { 999d });
+J.Obj(input["snapshot"])["specialBusiness"] = Parse("""{"active":true,"challengeTypeAvailable":true,"challengeType":"Story_WackyCookingCompetition","wackyKoishiShieldBroken":true}""");
+J.Obj(J.Arr(J.Obj(J.Obj(input["snapshot"])["nightBusiness"])["orders"])[0])["specialBusinessRole"] = "wacky-koishi-boss";
+Check(J.Arr(engine.Advance(input, 1500)["commands"]).Count == 0, "特殊经营稀客BOSS不绕过整条稀客通道阻断");
 Console.WriteLine($"PASS csharp-automation: {checks} assertions (pure managed; no game execution).");

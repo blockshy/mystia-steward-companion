@@ -28,6 +28,9 @@ internal sealed partial class LocalApiServer
     private BusinessFrame? _businessFrame;
     private JsonObject? _businessResult;
     private string? _businessError;
+    // 由唯一业务循环维护：同一经营代次的持续异常只进入一次不可用状态。
+    // 成功发布新结果/目标后清除，保证下一次真实故障仍会撤销新发布的内容。
+    private long? _businessUiUnavailableGeneration;
     private string _businessLastPayload = "";
     private JsonObject? _businessLastOrderResult;
     private string _businessCatalogJson = "";
@@ -120,6 +123,7 @@ internal sealed partial class LocalApiServer
                             ("gameUiTargets", gameUiTargets),
                             ("recommendations", result), ("calculationMs", elapsed.Elapsed.TotalMilliseconds));
                         _businessError = null;
+                        _businessUiUnavailableGeneration = null;
                     }
                 }
 
@@ -130,17 +134,7 @@ internal sealed partial class LocalApiServer
             catch (Exception exception)
             {
                 CancelUnsubmittedBusinessCommands(generatedAutomation);
-                InvalidateBusinessInput();
-                RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
-                    RuntimeNightBusinessLifecycle.Generation, "C# 业务输入不可用，等待新帧恢复。");
-                // 保留诊断但不发布为当前结果；后续周期允许从新输入恢复，不自动回退到客户端算法。
-                lock (_businessLock)
-                {
-                    var message = exception.GetBaseException().Message;
-                    if (_businessError != message) _log.LogWarning($"C# business input unavailable: {message}");
-                    _businessError = message;
-                    _businessFrame = null;
-                }
+                EnterBusinessInputUnavailable(exception);
             }
             finally
             {
@@ -148,6 +142,32 @@ internal sealed partial class LocalApiServer
                 try { await Task.Delay(250, _businessStop.Token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { }
             }
+        }
+    }
+
+    /// <summary>
+    /// 将连续失败视为一次状态迁移，而非每个轮询周期都创建新的 UI 权威屏障。
+    /// 首次失败立即撤销旧输入与目标；重复失败保留错误且继续重试，经营代次变化则撤销新代次一次。
+    /// 这既避免无主设备/损坏输入期间反复推进目标代次，也不会吞掉不同的错误原因或阻止恢复。
+    /// </summary>
+    private void EnterBusinessInputUnavailable(Exception exception)
+    {
+        var generation = RuntimeNightBusinessLifecycle.Generation;
+        if (_businessUiUnavailableGeneration != generation)
+        {
+            InvalidateBusinessInput();
+            RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
+                generation, "C# 业务输入不可用，等待新帧恢复。");
+            _businessUiUnavailableGeneration = generation;
+        }
+
+        // 保留诊断但不发布为当前结果；后续周期允许从新输入恢复，不自动回退到客户端算法。
+        lock (_businessLock)
+        {
+            var message = exception.GetBaseException().Message;
+            if (_businessError != message) _log.LogWarning($"C# business input unavailable: {message}");
+            _businessError = message;
+            _businessFrame = null;
         }
     }
 
@@ -280,7 +300,12 @@ internal sealed partial class LocalApiServer
         }
         lock (_authorityTransitionLock)
         {
-            if (IsBusinessFrameCurrent(frame)) RuntimeUiPinningService.UpdateTargets((long)J.Num(frame.Snapshot["nightBusinessGeneration"]), targets);
+            if (IsBusinessFrameCurrent(frame))
+            {
+                RuntimeUiPinningService.UpdateTargets((long)J.Num(frame.Snapshot["nightBusinessGeneration"]), targets);
+                // 即使后续构造状态或提交命令失败，本轮已发布的目标也必须再次撤销。
+                _businessUiUnavailableGeneration = null;
+            }
         }
         return slots;
     }

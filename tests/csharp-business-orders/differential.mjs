@@ -112,6 +112,33 @@ try {
       add('orders-cached', { ...fixture.args, orders: fixture.args.orders.map(order => ({ ...order, ...patch })) }, `cached-${fixture.label}-${JSON.stringify(patch)}`);
     }
   }
+  // 历史配置只保留人工队列意图，不能把名单误解释成白名单或已获逐单许可。
+  // 推荐本身仍与旧规则逐字段一致；仅附服务端结构化诊断，游戏辅助必须拒绝整条稀客通道。
+  const participationDiagnostic = { code: 'legacy-participation-queue-unavailable', automationBlocked: true,
+    gameUiBlocked: true, message: '已保留旧稀客手动参与设置；本分支未实现按订单参与队列，稀客自动化/辅助已暂停，可在设置关闭该模块恢复默认自动参与。' };
+  for (const enabled of [false, true]) for (const managedRareGuestIds of [[], [3], [999], Array.from({ length: 512 }, (_, index) => index)]) {
+    const configured = { ...base, preferences: { ...base.preferences, rareGuestParticipationModuleEnabled: enabled, managedRareGuestIds } };
+    const expected = add('orders', configured, `participation-${enabled}-${managedRareGuestIds.length}`);
+    if (enabled && managedRareGuestIds.length > 0) {
+      expected.rareGuestParticipation = clean(participationDiagnostic);
+      for (const row of expected.recommendations) row.rareGuestParticipation = clean(participationDiagnostic);
+    }
+    add('game-ui', { operation: 'rare', recommendations: expected.recommendations, data, orderSortMode: 'ordered', color: '#ffffff', features, options: {} }, 'participation-game-ui');
+    if (enabled && managedRareGuestIds.length > 0) fixtures.at(-1).expected = null;
+    // 不带逐行标记的直接调用也必须服从权威偏好，不能借另一种函数入口重新发布稀客目标。
+    add('game-ui', { operation: 'rare', recommendations: baseline.recommendations, data, orderSortMode: 'ordered',
+      color: '#ffffff', features, options: {}, preferences: configured.preferences }, 'participation-game-ui-preferences');
+    if (enabled && managedRareGuestIds.length > 0) fixtures.at(-1).expected = null;
+    // 普客目标不读取该稀客通道标记，仍与main基线一致。
+    add('game-ui', { operation: 'normal', orders: [normal], executionTargets: [], executionTargetsCurrent: true,
+      specialBusiness: null, businessGeneration: 3, color: '#fff', features, data, preferences: configured.preferences }, 'participation-normal-ui');
+  }
+  for (const fixture of fixtures.filter(f => f.operation === 'orders' && f.label.startsWith('special-order-'))) {
+    const expected = add('orders', { ...fixture.args, preferences: { ...fixture.args.preferences,
+      rareGuestParticipationModuleEnabled: true, managedRareGuestIds: [999] } }, 'participation-special');
+    expected.rareGuestParticipation = clean(participationDiagnostic);
+    for (const row of expected.recommendations) row.rareGuestParticipation = clean(participationDiagnostic);
+  }
   const run = spawnSync('dotnet', ['tests/csharp-business-orders/bin/Release/net6.0/CSharpBusinessOrders.dll'], { input: fixtures.map(({ operation, args }) => JSON.stringify({ operation, args })).join('\n') + '\n', encoding: 'utf8', maxBuffer: 128 * 1024 * 1024, windowsHide: true });
   assert.equal(run.status, 0, run.stderr || run.error?.message);
   const lines = run.stdout.trim().split(/\r?\n/); assert.equal(lines.length, fixtures.length);
@@ -155,6 +182,8 @@ try {
     { pinFavoriteRecipeEnabled: true, pinFavoriteBeverageEnabled: true }]) {
     pages.push({ label: 'preferences', args: { ...pageBase, preferences: preferences.normalizeCompanionPreferences(patch) } });
   }
+  pages.push({ label: 'participation-manual-query', args: { ...pageBase, preferences: {
+    ...pageBase.preferences, rareGuestParticipationModuleEnabled: true, managedRareGuestIds: [3] } } });
   pages.push({ label: 'favorites', args: { ...pageBase, preferences: preferences.normalizeCompanionPreferences({
     pinFavoriteRecipeEnabled: true, pinFavoriteBeverageEnabled: true }), favorites: { ...base.favorites,
     recipes: [{ customerId: 3, foodTag: '鲜', recipeId: 101, extraIngredientIds: [3] }],
@@ -180,5 +209,8 @@ try {
   }
   assert.deepStrictEqual(pageResponses[4].result, pageResponses[1].result, 'Observation/permission changes cannot change pure page projection.');
   assert.equal(pageResponses[4].cacheMisses, pageResponses[2].cacheMisses, 'Unrelated snapshot facts must not invalidate pure page projection.');
+  const participationPageIndex = pages.findIndex(fixture => fixture.label === 'participation-manual-query');
+  assert.deepStrictEqual(pageResponses[participationPageIndex * 3].result, pageResponses[0].result,
+    'Legacy participation guard must preserve complete manual recommendation page results.');
   console.log(`PASS page projection cache differential: ${pages.length} input variants, ${pages.length * 2} complete JSON comparisons; shared bound and current-fact exclusion verified.`);
 } finally { await vite.close(); }

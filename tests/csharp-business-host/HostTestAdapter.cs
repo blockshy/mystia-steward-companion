@@ -67,7 +67,7 @@ namespace MystiaStewardCompanion.LocalApi
                     var state = _deviceAuthorityStore.ReadBusinessState(DateTime.UtcNow);
                     _deviceAuthorityStore.UpdatePrimaryProfile(client, new CompanionDeviceProfileUpdateRequest
                     {
-                        ProtocolVersion = 1, ProfileSchemaVersion = 1,
+                        ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
                         ExpectedAuthorityRevision = state.AuthorityRevision, ExpectedProfileRevision = state.ActiveProfileRevision,
                         Profile = JsonSerializer.SerializeToElement(profile),
                     }, DateTime.UtcNow);
@@ -131,8 +131,28 @@ namespace MystiaStewardCompanion.Save
     internal static class RuntimeUiPinningService
     {
         internal static IReadOnlyList<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot> Targets = Array.Empty<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot>();
-        internal static void UpdateTargets(long generation, IReadOnlyList<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot> targets) => Targets = targets.ToArray();
-        internal static void ClearTargetsForAuthorityTransition(long generation, string reason) => Targets = Array.Empty<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot>();
+        private static int _publicationCount;
+        private static int _withdrawalCount;
+        internal static int PublicationCount => Volatile.Read(ref _publicationCount);
+        internal static int WithdrawalCount => Volatile.Read(ref _withdrawalCount);
+
+        /// <summary>统计真实宿主调用边界的次数，避免把仅压制日志误判为幂等撤销。</summary>
+        internal static void UpdateTargets(long generation, IReadOnlyList<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot> targets)
+        {
+            Targets = targets.ToArray();
+            Interlocked.Increment(ref _publicationCount);
+        }
+        internal static void ClearTargetsForAuthorityTransition(long generation, string reason)
+        {
+            Targets = Array.Empty<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot>();
+            Interlocked.Increment(ref _withdrawalCount);
+        }
     }
-    internal static class RuntimeNightBusinessLifecycle { internal static long Generation => 1; }
+    internal static class RuntimeNightBusinessLifecycle
+    {
+        private static long _generation = 1;
+        internal static long Generation => Interlocked.Read(ref _generation);
+        /// <summary>只供离线测试模拟经营代次切换，不读取或调用真实游戏。</summary>
+        internal static void SetGenerationForTest(long generation) => Interlocked.Exchange(ref _generation, generation);
+    }
 }

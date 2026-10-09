@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
-import type { OrderRecommendationResult } from '@/companion/business-types';
+import type { OrderRecommendationResult, RareGuestParticipationDiagnostic } from '@/companion/business-types';
 import type {
   AutomationResourceOverview, AutomationSafetyBarrierDiagnostic, NormalAutoOrderDiagnostic,
   RareAutoOrderDiagnostic, RuntimeSets, GameUiTargetSlots,
@@ -26,6 +26,7 @@ export interface BusinessAutomationStatus {
   rejectedRecipeKeys: string[];
   inFlightCount: number;
   resourceOverview: AutomationResourceOverview;
+  rareGuestParticipation?: RareGuestParticipationDiagnostic;
 }
 const EMPTY_AUTOMATION: BusinessAutomationStatus = {
   scopeVersion: 0, runtimeEnabled: false, leaseOwned: false, message: '等待 C# 业务状态。', states: {}, rareBusy: false, normalBusy: false,

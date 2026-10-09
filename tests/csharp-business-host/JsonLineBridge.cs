@@ -40,7 +40,7 @@ internal static class JsonLineBridge
                             client = J.Str(input["clientId"]);
                             if (client.Length == 0) throw new ArgumentException("缺少clientId。");
                             var authority = host.Authority.Register(client, "Offline mock", new CompanionDeviceRegisterRequest
-                            { ProtocolVersion = 1, ProfileSchemaVersion = 1, Platform = "windows", AppVersion = "offline", Profile = JsonSerializer.SerializeToElement(J.Obj(input["profile"])) }, DateTime.UtcNow);
+                            { ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, Platform = "windows", AppVersion = "offline", Profile = JsonSerializer.SerializeToElement(J.Obj(input["profile"])) }, DateTime.UtcNow);
                             host.Start(); started = true;
                             result = J.Object(("authorityRevision", authority.AuthorityRevision)); break;
                         case "publish":

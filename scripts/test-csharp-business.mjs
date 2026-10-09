@@ -28,6 +28,8 @@ const projects = [
   ['csharp-automation', 'CSharpAutomationSmoke', true],
   ['csharp-business-host', 'CSharpBusinessHost', true],
   ['csharp-business-package', 'CSharpBusinessPackageSmoke', true],
+  ['local-api-storage', 'LocalApiStorageSmoke', true],
+  ['runtime-automation-control', 'RuntimeAutomationControlSmoke', true],
 ];
 for (const [directory, name, smoke] of projects) {
   run('dotnet', ['build', `tests/${directory}/${name}.csproj`, '-c', 'Release', '-m:1', '-p:UseAppHost=false', '-p:NuGetAudit=false']);
@@ -35,6 +37,8 @@ for (const [directory, name, smoke] of projects) {
 }
 // 排队时租约自然到期不能靠“没有新快照”获得延迟执行权；这项模拟不触发真实副作用。
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--lease-expiry']);
+// 持续故障只撤销一次真实UI边界；恢复后再次故障仍须撤销，不能靠隐藏日志通过。
+run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--ui-failure-transition']);
 for (const directory of ['csharp-recommendations', 'csharp-business-orders', 'csharp-automation']) {
   run(process.execPath, [`tests/${directory}/differential.mjs`]);
 }

@@ -17,12 +17,15 @@ namespace MystiaStewardCompanion.LocalApi;
 internal sealed class CompanionDeviceAuthorityStore
 {
     public const int ProtocolVersion = 1;
-    public const int ProfileSchemaVersion = 1;
-    private const int StoreSchemaVersion = 1;
+    public const int ProfileSchemaVersion = 5;
+    private const int StoreSchemaVersion = 5;
     private const int MaxDevices = 32;
+    private const int MaxManagedRareGuestIds = 512;
     private static readonly TimeSpan OnlineTtl = TimeSpan.FromSeconds(20);
     private static readonly Regex ColorPattern = new("^#[0-9A-F]{6}$", RegexOptions.CultureInvariant);
-    private static readonly HashSet<string> ProfileBooleanFields = new(StringComparer.Ordinal)
+    // 历史格式按原始定义独立保存，避免当前版本新增字段时反向改变旧文件的校验规则。
+    // 第五版保留 main 的九项排序和旧分支的稀客手动参与设置；第四版补回的厨具项默认禁用。
+    private static readonly HashSet<string> ProfileBooleanFieldsV1 = new(StringComparer.Ordinal)
     {
         "automationEnabled",
         "autoRareOrderEnabled",
@@ -54,8 +57,8 @@ internal sealed class CompanionDeviceAuthorityStore
         "rareOrderHighlightEnabled",
         "normalOrderHighlightEnabled",
     };
-    private static readonly HashSet<string> ProfileFields = new(
-        ProfileBooleanFields.Concat(new[]
+    private static readonly HashSet<string> ProfileFieldsV1 = new(
+        ProfileBooleanFieldsV1.Concat(new[]
         {
             "autoRareConcurrency",
             "autoNormalConcurrency",
@@ -70,7 +73,55 @@ internal sealed class CompanionDeviceAuthorityStore
             "recommendationExclusions",
         }),
         StringComparer.Ordinal);
-    private static readonly HashSet<string> ObjectiveKeys = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> ProfileBooleanFieldsV2 = new(
+        ProfileBooleanFieldsV1,
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileFieldsV2 = new(
+        ProfileFieldsV1.Concat(new[] { "managedRareGuestIds" }),
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileBooleanFieldsV3 = new(
+        ProfileBooleanFieldsV2,
+        StringComparer.Ordinal)
+    {
+        "rareGuestParticipationModuleEnabled",
+    };
+    private static readonly HashSet<string> ProfileFieldsV3 = new(
+        ProfileFieldsV2.Concat(new[] { "rareGuestParticipationModuleEnabled" }),
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileBooleanFieldsV4 = new(
+        ProfileBooleanFieldsV3,
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ProfileFieldsV4 = new(
+        ProfileFieldsV3,
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> StoredDataFieldsV1ToV5 = new(
+        new[]
+        {
+            "version",
+            "registryId",
+            "authorityRevision",
+            "stateRevision",
+            "primaryDeviceId",
+            "devices",
+        },
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> StoredDeviceFieldsV1ToV5 = new(
+        new[]
+        {
+            "deviceId",
+            "label",
+            "platform",
+            "appVersion",
+            "profileRevision",
+            "appliedProfileRevision",
+            "profileHash",
+            "profile",
+            "pendingSyncId",
+            "createdAtUtc",
+            "updatedAtUtc",
+        },
+        StringComparer.Ordinal);
+    private static readonly HashSet<string> ObjectiveKeysV1ToV3 = new(StringComparer.Ordinal)
     {
         "foodPreference",
         "beveragePreference",
@@ -81,6 +132,17 @@ internal sealed class CompanionDeviceAuthorityStore
         "profit",
         "beverageStock",
         "cookerAvailable",
+    };
+    private static readonly HashSet<string> ObjectiveKeysV4 = new(StringComparer.Ordinal)
+    {
+        "foodPreference",
+        "beveragePreference",
+        "negativeRisk",
+        "extraCount",
+        "resourcePressure",
+        "totalCost",
+        "profit",
+        "beverageStock",
     };
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -451,8 +513,29 @@ internal sealed class CompanionDeviceAuthorityStore
 
             try
             {
-                var data = JsonFileStore.LoadOrCreate<DeviceAuthorityData>(_path, JsonOptions);
-                ValidateStoredData(data);
+                // 一次读取保留原始字节，迁移前先核验旧格式和旧摘要；不得先改版本再跳过历史校验。
+                var originalBytes = File.ReadAllBytes(_path);
+                var json = new UTF8Encoding(false, true).GetString(originalBytes).TrimStart('\uFEFF');
+                ValidateStoredJsonShape(json);
+                var data = JsonSerializer.Deserialize<DeviceAuthorityData>(json, JsonOptions)
+                    ?? throw new InvalidDataException(
+                        $"JSON file '{_path}' contains a null device authority document.");
+                if (data.Version != StoreSchemaVersion)
+                {
+                    ValidateStoredData(data, data.Version, profile => ValidateAndCloneHistoricalProfile(profile, data.Version));
+                    var sourceVersion = data.Version;
+                    data = MigrateToCurrentData(data);
+                    ValidateStoredData(data);
+                    PreserveMigrationSource(originalBytes, sourceVersion);
+                    if (!File.ReadAllBytes(_path).SequenceEqual(originalBytes))
+                        throw new IOException("设备配置在迁移期间发生变化，已停止写入。");
+                    JsonFileStore.Save(_path, data, JsonOptions);
+                    _log?.LogInfo($"Companion device authority migrated from schema {sourceVersion} to {StoreSchemaVersion}; identities and preferences preserved.");
+                }
+                else
+                {
+                    ValidateStoredData(data);
+                }
                 _data = data;
                 _loadError = "";
             }
@@ -470,6 +553,118 @@ internal sealed class CompanionDeviceAuthorityStore
         ValidateStoredData(next);
         JsonFileStore.Save(_path, next, JsonOptions);
         _data = next;
+    }
+
+    /// <summary>
+    /// 在原配置目录保留按原始摘要命名的迁移备份；同一来源可重试，但不覆盖已有不同内容。
+    /// 备份失败即停止迁移，防止新版本写入后无法恢复原始设备绑定与待确认同步状态。
+    /// </summary>
+    private void PreserveMigrationSource(byte[] originalBytes, int sourceVersion)
+    {
+        var hash = Convert.ToHexString(SHA256.HashData(originalBytes)).ToLowerInvariant();
+        var backupPath = $"{_path}.schema-v{sourceVersion}-{hash}.bak";
+        if (!File.Exists(backupPath))
+        {
+            using var stream = new FileStream(backupPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+            stream.Write(originalBytes);
+            stream.Flush(flushToDisk: true);
+        }
+        if (!File.ReadAllBytes(backupPath).SequenceEqual(originalBytes))
+            throw new IOException("设备配置迁移备份与原文件不一致，已停止迁移。");
+    }
+
+    /// <summary>在反序列化前严格验证版本、必需字段、重复字段和数据类型，禁止用默认值补齐损坏文档。</summary>
+    private static void ValidateStoredJsonShape(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("version", out var versionProperty)
+            || !versionProperty.TryGetInt32(out var version)
+            || version is not 1 and not 2 and not 3 and not 4 and not StoreSchemaVersion)
+        {
+            throw new InvalidDataException("设备配置存储缺少版本，或版本不受支持。");
+        }
+        RequireExactStoredProperties(root, StoredDataFieldsV1ToV5, "Device authority store");
+        RequireStoredString(root, "registryId", "Device authority store");
+        RequireStoredInt64(root, "authorityRevision", "Device authority store");
+        RequireStoredInt64(root, "stateRevision", "Device authority store");
+        RequireStoredString(root, "primaryDeviceId", "Device authority store");
+
+        var devices = root.GetProperty("devices");
+        if (devices.ValueKind != JsonValueKind.Array)
+        {
+            throw new InvalidDataException("设备配置存储字段 'devices' 必须是数组。");
+        }
+
+        foreach (var device in devices.EnumerateArray())
+        {
+            RequireExactStoredProperties(device, StoredDeviceFieldsV1ToV5, "Stored companion device");
+            foreach (var name in new[]
+                     {
+                         "deviceId",
+                         "label",
+                         "platform",
+                         "appVersion",
+                         "profileHash",
+                         "pendingSyncId",
+                     })
+            {
+                RequireStoredString(device, name, "Stored companion device");
+            }
+            RequireStoredInt64(device, "profileRevision", "Stored companion device");
+            RequireStoredInt64(device, "appliedProfileRevision", "Stored companion device");
+            if (device.GetProperty("profile").ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidDataException(
+                    "已保存伴随设备的 'profile' 字段必须是对象。");
+            }
+            RequireStoredDateTime(device, "createdAtUtc", "Stored companion device");
+            RequireStoredDateTime(device, "updatedAtUtc", "Stored companion device");
+        }
+    }
+
+    private static void RequireExactStoredProperties(
+        JsonElement value,
+        HashSet<string> expected,
+        string label)
+    {
+        if (value.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidDataException($"{label} 必须是 JSON 对象。");
+        }
+        var actual = value.EnumerateObject().Select(property => property.Name).ToArray();
+        if (actual.Length != expected.Count
+            || actual.Distinct(StringComparer.Ordinal).Count() != actual.Length
+            || actual.Any(name => !expected.Contains(name)))
+        {
+            throw new InvalidDataException($"{label} 的字段与规定格式不完全一致。");
+        }
+    }
+
+    private static void RequireStoredString(JsonElement value, string name, string label)
+    {
+        if (value.GetProperty(name).ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidDataException($"{label} 的字段 '{name}' 必须是字符串。");
+        }
+    }
+
+    private static void RequireStoredInt64(JsonElement value, string name, string label)
+    {
+        if (!value.GetProperty(name).TryGetInt64(out _))
+        {
+            throw new InvalidDataException($"{label} 的字段 '{name}' 必须是 Int64。");
+        }
+    }
+
+    private static void RequireStoredDateTime(JsonElement value, string name, string label)
+    {
+        var property = value.GetProperty(name);
+        if (property.ValueKind != JsonValueKind.String || !property.TryGetDateTime(out _))
+        {
+            throw new InvalidDataException($"{label} 的字段 '{name}' 必须是 JSON 日期时间字符串。");
+        }
     }
 
     private CompanionDeviceAuthorityStateDto BuildState(
@@ -576,14 +771,42 @@ internal sealed class CompanionDeviceAuthorityStore
         }
     }
 
+    /// <summary>第五版配置仍采用九项排序；历史第四版的八项排序只用于校验迁移来源。</summary>
     private static JsonElement ValidateAndCloneProfile(JsonElement profile)
+    {
+        return ValidateAndCloneProfile(
+            profile,
+            ProfileFieldsV4,
+            ProfileBooleanFieldsV4,
+            ObjectiveKeysV1ToV3,
+            requireManagedRareGuestIds: true);
+    }
+
+    private static JsonElement ValidateAndCloneHistoricalProfile(JsonElement profile, int version)
+    {
+        return version switch
+        {
+            1 => ValidateAndCloneProfile(profile, ProfileFieldsV1, ProfileBooleanFieldsV1, ObjectiveKeysV1ToV3, requireManagedRareGuestIds: false),
+            2 => ValidateAndCloneProfile(profile, ProfileFieldsV2, ProfileBooleanFieldsV2, ObjectiveKeysV1ToV3, requireManagedRareGuestIds: true),
+            3 => ValidateAndCloneProfile(profile, ProfileFieldsV3, ProfileBooleanFieldsV3, ObjectiveKeysV1ToV3, requireManagedRareGuestIds: true),
+            4 => ValidateAndCloneProfile(profile, ProfileFieldsV4, ProfileBooleanFieldsV4, ObjectiveKeysV4, requireManagedRareGuestIds: true),
+            _ => throw new InvalidDataException($"设备配置格式版本不受支持：{version}。"),
+        };
+    }
+
+    private static JsonElement ValidateAndCloneProfile(
+        JsonElement profile,
+        HashSet<string> expectedFields,
+        HashSet<string> booleanFields,
+        HashSet<string> objectiveKeys,
+        bool requireManagedRareGuestIds)
     {
         if (profile.ValueKind != JsonValueKind.Object)
         {
             throw new CompanionDeviceAuthorityException(400, "共享配置必须是 JSON 对象。");
         }
-        RequireExactProperties(profile, ProfileFields, "共享配置");
-        foreach (var field in ProfileBooleanFields)
+        RequireExactProperties(profile, expectedFields, "共享配置");
+        foreach (var field in booleanFields)
         {
             RequireBoolean(profile, field);
         }
@@ -597,13 +820,20 @@ internal sealed class CompanionDeviceAuthorityStore
         RequireStringChoice(profile, "recommendationBudgetPolicy", "block", "warn", "ignore");
         RequireColor(profile, "rareTargetHighlightColor");
         RequireColor(profile, "normalTargetHighlightColor");
-        ValidateSortProfile(profile.GetProperty("recommendationSortProfile"));
+        ValidateSortProfile(profile.GetProperty("recommendationSortProfile"), objectiveKeys);
         ValidateExclusions(profile.GetProperty("recommendationExclusions"));
+        if (requireManagedRareGuestIds)
+        {
+            ValidateIdArray(
+                profile.GetProperty("managedRareGuestIds"),
+                "调度名单内稀客",
+                MaxManagedRareGuestIds);
+        }
         ValidatePreferenceDependencies(profile);
         return profile.Clone();
     }
 
-    private static void ValidateSortProfile(JsonElement value)
+    private static void ValidateSortProfile(JsonElement value, HashSet<string> objectiveKeys)
     {
         if (value.ValueKind != JsonValueKind.Object)
         {
@@ -612,9 +842,9 @@ internal sealed class CompanionDeviceAuthorityStore
         RequireExactProperties(value, new HashSet<string>(new[] { "preset", "objectives" }, StringComparer.Ordinal), "推荐排序配置");
         RequireStringChoice(value, "preset", "balanced", "resources", "profit", "simple");
         var objectives = value.GetProperty("objectives");
-        if (objectives.ValueKind != JsonValueKind.Array || objectives.GetArrayLength() != ObjectiveKeys.Count)
+        if (objectives.ValueKind != JsonValueKind.Array || objectives.GetArrayLength() != objectiveKeys.Count)
         {
-            throw new CompanionDeviceAuthorityException(400, "推荐排序目标必须包含当前版本定义的全部 9 项。");
+            throw new CompanionDeviceAuthorityException(400, $"推荐排序目标必须包含该版本定义的全部 {objectiveKeys.Count} 项。");
         }
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var objective in objectives.EnumerateArray())
@@ -628,7 +858,7 @@ internal sealed class CompanionDeviceAuthorityStore
                 new HashSet<string>(new[] { "key", "enabled", "weight", "direction" }, StringComparer.Ordinal),
                 "推荐排序目标");
             var key = RequireString(objective, "key");
-            if (!ObjectiveKeys.Contains(key) || !seen.Add(key))
+            if (!objectiveKeys.Contains(key) || !seen.Add(key))
             {
                 throw new CompanionDeviceAuthorityException(400, "推荐排序目标包含未知项或重复项。");
             }
@@ -648,13 +878,13 @@ internal sealed class CompanionDeviceAuthorityStore
             value,
             new HashSet<string>(new[] { "excludedIngredientIds", "excludedBeverageIds" }, StringComparer.Ordinal),
             "推荐排除项");
-        ValidateIdArray(value.GetProperty("excludedIngredientIds"), "排除食材");
-        ValidateIdArray(value.GetProperty("excludedBeverageIds"), "排除酒水");
+        ValidateIdArray(value.GetProperty("excludedIngredientIds"), "排除食材", 4096);
+        ValidateIdArray(value.GetProperty("excludedBeverageIds"), "排除酒水", 4096);
     }
 
-    private static void ValidateIdArray(JsonElement value, string label)
+    private static void ValidateIdArray(JsonElement value, string label, int maxCount)
     {
-        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > 4096)
+        if (value.ValueKind != JsonValueKind.Array || value.GetArrayLength() > maxCount)
         {
             throw new CompanionDeviceAuthorityException(400, $"{label}列表格式或数量无效。");
         }
@@ -819,36 +1049,100 @@ internal sealed class CompanionDeviceAuthorityStore
             ?? throw new InvalidDataException("Failed to clone companion device authority state.");
     }
 
+    /// <summary>只转换已通过历史完整性校验的副本，设备身份、主设备、修订号和同步确认标识保持不变。</summary>
+    private static DeviceAuthorityData MigrateToCurrentData(DeviceAuthorityData source)
+    {
+        var migrated = CloneData(source);
+        migrated.Version = StoreSchemaVersion;
+        foreach (var device in migrated.Devices)
+        {
+            device.Profile = UpgradeProfileToCurrent(device.Profile, source.Version);
+            device.ProfileHash = ComputeProfileHash(device.Profile);
+        }
+        return migrated;
+    }
+
+    /// <summary>
+    /// 第1版增加关闭的手动参与模块和空名单；第2版补关闭开关；第3版原样保留九项排序。
+    /// 第4版缺少厨具排序项，补一个禁用项以满足本分支协议，同时避免改变原有八项优先级。
+    /// </summary>
+    private static JsonElement UpgradeProfileToCurrent(JsonElement profile, int sourceVersion)
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            foreach (var property in profile.EnumerateObject())
+            {
+                if (sourceVersion != 4 || property.Name != "recommendationSortProfile")
+                {
+                    property.WriteTo(writer);
+                    continue;
+                }
+                writer.WriteStartObject(property.Name);
+                writer.WriteString("preset", property.Value.GetProperty("preset").GetString());
+                writer.WriteStartArray("objectives");
+                foreach (var objective in property.Value.GetProperty("objectives").EnumerateArray())
+                    objective.WriteTo(writer);
+                writer.WriteStartObject();
+                writer.WriteString("key", "cookerAvailable");
+                writer.WriteBoolean("enabled", false);
+                writer.WriteNumber("weight", 0);
+                writer.WriteString("direction", "desc");
+                writer.WriteEndObject();
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+            if (sourceVersion == 1)
+            {
+                writer.WriteStartArray("managedRareGuestIds");
+                writer.WriteEndArray();
+            }
+            if (sourceVersion <= 2) writer.WriteBoolean("rareGuestParticipationModuleEnabled", false);
+            writer.WriteEndObject();
+        }
+        using var document = JsonDocument.Parse(stream.ToArray());
+        return document.RootElement.Clone();
+    }
+
     private static void ValidateStoredData(DeviceAuthorityData data)
     {
-        if (data.Version != StoreSchemaVersion) throw new InvalidDataException($"Unsupported device authority schema version: {data.Version}.");
+        ValidateStoredData(data, StoreSchemaVersion, ValidateAndCloneProfile);
+    }
+
+    private static void ValidateStoredData(
+        DeviceAuthorityData data,
+        int expectedStoreSchemaVersion,
+        Func<JsonElement, JsonElement> validateProfile)
+    {
+        if (data.Version != expectedStoreSchemaVersion) throw new InvalidDataException($"设备配置格式版本不受支持：{data.Version}。");
         if (data.RegistryId.Length != 32 || data.RegistryId.Any(character => !Uri.IsHexDigit(character)))
         {
-            throw new InvalidDataException("Device registry ID is invalid.");
+            throw new InvalidDataException("设备登记 ID 无效。");
         }
         data.Devices ??= new List<CompanionDeviceRecord>();
-        if (data.Devices.Count > MaxDevices) throw new InvalidDataException("Too many companion devices are stored.");
-        if (data.StateRevision < 0 || data.AuthorityRevision < 0) throw new InvalidDataException("Device authority revisions are invalid.");
+        if (data.Devices.Count > MaxDevices) throw new InvalidDataException("保存的伴随设备数量超过上限。");
+        if (data.StateRevision < 0 || data.AuthorityRevision < 0) throw new InvalidDataException("设备配置状态版本无效。");
         if (data.Devices.Count == 0)
         {
             if (!string.IsNullOrEmpty(data.PrimaryDeviceId) || data.AuthorityRevision != 0)
             {
-                throw new InvalidDataException("Empty device registry has a primary device.");
+                throw new InvalidDataException("设备登记表为空，但仍指定了主设备。");
             }
             return;
         }
         if (data.Devices.Select(device => device.DeviceId).Distinct(StringComparer.Ordinal).Count() != data.Devices.Count)
         {
-            throw new InvalidDataException("Duplicate device IDs are stored.");
+            throw new InvalidDataException("保存的设备 ID 存在重复项。");
         }
         if (data.Devices.Count(device => string.Equals(device.DeviceId, data.PrimaryDeviceId, StringComparison.Ordinal)) != 1
             || data.AuthorityRevision <= 0)
         {
-            throw new InvalidDataException("Device authority primary identity is invalid.");
+            throw new InvalidDataException("设备配置中的主设备标识无效。");
         }
         foreach (var device in data.Devices)
         {
-            if (!IsValidDeviceId(device.DeviceId)) throw new InvalidDataException("Stored device ID is invalid.");
+            if (!IsValidDeviceId(device.DeviceId)) throw new InvalidDataException("保存的设备 ID 无效。");
             _ = NormalizeLabel(device.Label);
             _ = NormalizePlatform(device.Platform);
             _ = NormalizeMetadata(device.AppVersion, 32, "appVersion");
@@ -856,22 +1150,22 @@ internal sealed class CompanionDeviceAuthorityStore
                 || device.AppliedProfileRevision <= 0
                 || device.AppliedProfileRevision > device.ProfileRevision)
             {
-                throw new InvalidDataException("Stored device profile revision is invalid.");
+                throw new InvalidDataException("保存的设备配置版本无效。");
             }
-            var profile = ValidateAndCloneProfile(device.Profile);
+            var profile = validateProfile(device.Profile);
             if (!string.Equals(device.ProfileHash, ComputeProfileHash(profile), StringComparison.Ordinal))
             {
-                throw new InvalidDataException("Stored device profile hash is invalid.");
+                throw new InvalidDataException("保存的设备配置摘要无效。");
             }
             if (!string.IsNullOrWhiteSpace(device.PendingSyncId)
                 && (device.PendingSyncId.Length != 32 || device.PendingSyncId.Any(character => !Uri.IsHexDigit(character))))
             {
-                throw new InvalidDataException("Stored pending sync ID is invalid.");
+                throw new InvalidDataException("保存的待同步 ID 无效。");
             }
             if (string.IsNullOrWhiteSpace(device.PendingSyncId)
                 && device.AppliedProfileRevision != device.ProfileRevision)
             {
-                throw new InvalidDataException("Stored device has an unacknowledged profile without a sync ID.");
+                throw new InvalidDataException("保存的设备存在尚未确认的配置，但缺少同步 ID。");
             }
         }
     }
@@ -904,7 +1198,7 @@ internal sealed class CompanionDeviceAuthorityMutationResult
 
 internal sealed class DeviceAuthorityData
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; }
     public string RegistryId { get; set; } = "";
     public long AuthorityRevision { get; set; }
     public long StateRevision { get; set; }

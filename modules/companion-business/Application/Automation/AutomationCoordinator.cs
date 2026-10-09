@@ -41,6 +41,8 @@ public sealed partial class AutomationCoordinator
     private bool _stopped;
     private string _message = "等待可信业务输入。";
     private string _rejectionScope = "";
+    // 只限制稀客通道，不改写用户保存的自动化开关，不以名单猜测旧版本的逐单队列许可。
+    private bool RareParticipationBlocked => Domain.Orders.RareGuestParticipationPolicy.IsBlocked(J.Obj(_input["preferences"]));
 
     /// <summary>保存下发时的不可变请求上下文，用于拒绝迟到响应及跨事件响应。</summary>
     private sealed record PendingCommand(long Id, long Scope, string StateKey, string Action, string Stage,
@@ -75,7 +77,7 @@ public sealed partial class AutomationCoordinator
                 _businessGeneration = generation;
             }
             var key = string.Join("|", _session, _businessGeneration, J.Key(J.Num(authority["authorityRevision"])),
-                J.Key(J.Num(authority["automationEpoch"])), J.Bool(authority["leaseOwned"]), J.Bool(authority["allowed"]));
+                J.Key(J.Num(authority["automationEpoch"])), J.Bool(authority["leaseOwned"]), J.Bool(authority["allowed"]), RareParticipationBlocked);
             if (key != _authorityKey)
             {
                 _authorityKey = key;
@@ -119,12 +121,13 @@ public sealed partial class AutomationCoordinator
                 PlanNormal(commands, nowMs);
                 _lastNormalTick = nowMs;
             }
-            if (rareDue && J.Bool(preferences["autoRareOrderEnabled"]))
+            if (rareDue && J.Bool(preferences["autoRareOrderEnabled"]) && !RareParticipationBlocked)
             {
                 PlanRare(commands, nowMs);
                 _lastRareTick = nowMs;
             }
             _message = commands.Count > 0 ? $"本轮提交 {commands.Count} 项受检自动化命令。" : "等待订单、厨具或阶段状态更新。";
+            if (RareParticipationBlocked) _message += Domain.Orders.RareGuestParticipationPolicy.Message;
             return Status(commands);
         }
     }
@@ -206,6 +209,7 @@ public sealed partial class AutomationCoordinator
     {
         lock (_gate)
         {
+            if (kind == "rare" && RareParticipationBlocked) return false;
             if (!_authorized || !_states.TryGetValue(StateKey(kind, orderKey), out var state)) return false;
             if (!AutomationMachine.Retry(state, nowMs)) return false;
             _lastRareTick = _lastNormalTick = long.MinValue;

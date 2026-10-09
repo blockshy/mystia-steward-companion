@@ -5,9 +5,12 @@
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 离线 smoke 通过 dotnet 运行 DLL，不生成需要额外平台包的原生 apphost。 -->
+    <UseAppHost>false</UseAppHost>
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeAutomationControlState.cs" Link="RuntimeAutomationControlState.cs" />
   </ItemGroup>
 </Project>
