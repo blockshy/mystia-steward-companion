@@ -21,6 +21,8 @@ apps/companion/src-tauri/gen/android/**/*.keystore
 *.local
 # Local agent instructions, handover, development plans, and evidence
 AGENTS.md
+# 当前本地文档独立仓库；保留旧 dev/ 规则，防止历史文件被误加入代码仓。
+/local-docs/
 dev/
 temp/
 .playwright-cli/

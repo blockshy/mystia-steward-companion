@@ -1,6 +1,6 @@
 # Flutter 开发与探针
 
-当前 Flutter 代码处于迁移探针范围。正式主客户端和更新链路的入口仍以[架构](architecture.md)、[更新系统](update-system.md)为准。开发方案保存在本地 `dev/deploy/`，阶段进度与实机证据缺口保存在 `dev/SESSION_HANDOVER.md`。
+当前 Flutter 代码处于迁移探针范围。正式主客户端和更新链路的入口仍以[架构](architecture.md)、[更新系统](update-system.md)为准。开发方案保存在本地 `local-docs/deploy/`，阶段进度与实机证据缺口保存在 `local-docs/SESSION_HANDOVER.md`。
 
 P0 的平台结果只证明所测实现路线可用，不等于主客户端已完成迁移。后续先建立 P1 工程、协议与公共设计包，再按方案推进领域迁移和页面。P2 差分与性能比较前仍须补齐旧版同机、冻结数据的性能基线；P5 完整设备/窗口体验和身份向导、P6 故障恢复、P7 正式下载/签名/覆盖安装分别验收。Defender 专项按用户明确决定暂缓，不记为通过。
 
