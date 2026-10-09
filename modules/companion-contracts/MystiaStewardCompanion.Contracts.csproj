@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 协议程序集沿用游戏宿主的目标框架，避免构建 SDK 版本意外改变运行时要求。 -->
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MystiaStewardCompanion.Contracts</AssemblyName>
+    <RootNamespace>MystiaStewardCompanion.Contracts</RootNamespace>
+  </PropertyGroup>
+</Project>

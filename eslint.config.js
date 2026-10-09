@@ -6,7 +6,9 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist', 'apps/companion/dist', 'apps/companion/src-tauri/target/**', 'src-tauri/target/**']),
+  // 本机证据、构建缓存和冻结对照源码均不是当前生产代码，避免全仓扫描历史归档。
+  globalIgnores(['dist', 'apps/companion/dist', 'apps/companion/src-tauri/target/**', 'src-tauri/target/**',
+    'temp/**', 'external/**', 'local-docs/**', 'tests/reference/**']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

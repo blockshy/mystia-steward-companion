@@ -46,10 +46,10 @@ const overlay = read('mods/bepinex/src/Ui/StewardOverlayController.cs');
 const localApiServer = read('mods/bepinex/src/LocalApi/LocalApiServer.cs');
 const localApiModels = read('mods/bepinex/src/LocalApi/LocalApiModels.cs');
 const orderPreparationModels = read('mods/bepinex/src/LocalApi/OrderPreparationModels.cs');
-const frontendApi = read('apps/companion/src/companion/api.ts');
-const frontendTypes = read('apps/companion/src/companion/types.ts');
+const frontendApi = read('tests/reference/apps/companion/src/companion/api.ts');
+const frontendTypes = read('tests/reference/apps/companion/src/companion/types.ts');
 const frontendTargetPolicy = read(
-  'apps/companion/src/companion/domain/special-business/target-policy.ts',
+  'tests/reference/apps/companion/src/companion/domain/special-business/target-policy.ts',
 );
 const specialBusinessContext = read(
   'mods/bepinex/src/Save/RuntimeSpecialBusinessContextService.cs',
@@ -3030,3 +3030,4 @@ function namedMethodSource(source, methodName) {
   assert.ok(declaration, `Named method not found: ${methodName}`);
   return methodSource(source, declaration[0]);
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

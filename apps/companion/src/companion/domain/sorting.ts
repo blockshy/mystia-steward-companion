@@ -1,15 +1,13 @@
 import type { ServiceOrderSortMode } from '@/companion/preferences';
-import { getSpecialBusinessOrderPriority } from '@/companion/domain/special-business/registry';
 import type {
   NightBusinessOrder,
   NormalBusinessOrder,
-  SpecialBusinessContext,
 } from '@/companion/types';
 
+/** 页面只按时间或客人组织列表；特殊经营优先级与执行顺序由 C# 协调器决定。 */
 export function sortNightOrders(
   orders: NightBusinessOrder[],
   mode: ServiceOrderSortMode = 'ordered',
-  specialBusiness: SpecialBusinessContext | null | undefined = null,
 ): NightBusinessOrder[] {
   const groupFirstSeen = buildOrderGroupFirstSeen(orders);
   return [...orders].sort((left, right) => compareNightOrders(
@@ -17,14 +15,12 @@ export function sortNightOrders(
     right,
     mode,
     groupFirstSeen,
-    specialBusiness,
   ));
 }
 
 export function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
   rows: T[],
   mode: ServiceOrderSortMode,
-  specialBusiness: SpecialBusinessContext | null | undefined = null,
 ): T[] {
   const groupFirstSeen = buildOrderGroupFirstSeen(rows.map((row) => row.order));
   return [...rows].sort((left, right) => compareNightOrders(
@@ -32,7 +28,6 @@ export function sortNightOrderRows<T extends { order: NightBusinessOrder }>(
     right.order,
     mode,
     groupFirstSeen,
-    specialBusiness,
   ));
 }
 
@@ -61,17 +56,7 @@ function compareNightOrders(
   right: NightBusinessOrder,
   mode: ServiceOrderSortMode = 'ordered',
   groupFirstSeen: Map<string, number> | null = null,
-  specialBusiness: SpecialBusinessContext | null | undefined = null,
 ): number {
-  const priorityDifference = getSpecialBusinessOrderPriority(
-    specialBusiness,
-    left.specialBusinessRole,
-  ) - getSpecialBusinessOrderPriority(
-    specialBusiness,
-    right.specialBusinessRole,
-  );
-  if (priorityDifference !== 0) return priorityDifference;
-
   if (mode === 'guest') {
     const leftGroupKey = getOrderGuestGroupKey(left);
     const rightGroupKey = getOrderGuestGroupKey(right);

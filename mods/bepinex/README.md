@@ -51,6 +51,9 @@ mystia-steward-companion-bepinex.zip
     plugins/
       mystia-steward-companion/
         MystiaStewardCompanion.BepInEx.dll
+        MystiaStewardCompanion.Business.dll
+        MystiaStewardCompanion.Contracts.dll
+        business-bundle.sha256
         companion/
           mystia-steward-companion.exe
 ```
@@ -63,6 +66,9 @@ mystia-steward-companion-bepinex.zip
 - Android 设备优先安装 `mystia-steward-companion-android-arm64-v8a.apk`；较旧的 32 位设备使用 `armeabi-v7a` 版本。
 
 另一台设备仍需通过运行游戏电脑上的 Mod 读取数据，不能单独使用。
+
+推荐计算、自动化调度和游戏界面辅助目标现在统一由游戏电脑上的 C# 业务模块处理；伴随窗口负责显示结果、
+编辑设置和提交重试、确认等人工操作。安装时保留发布包中的完整依赖文件，不要只替换主 Mod DLL。
 
 ## 更新 Mod
 
@@ -87,6 +93,7 @@ BepInEx/config/MystiaStewardCompanion/
 - 不要解压成两层 `mystia-steward-companion/mystia-steward-companion/`。
 - 只替换插件目录不会删除收藏、自定义料理、设备配置或主配置。
 - 更新提示只针对运行游戏电脑上的 Mod；另一台 Windows 设备和 Android 设备上的伴随客户端需要单独更新。
+- 本次业务协议调整需要 Mod 与所有伴随客户端成套更新；旧客户端的自动执行和目标发布请求会被拒绝。
 - 默认只检查正式版本；预览版仅供主动开启 `Updates.IncludePrerelease` 的测试者使用。
 
 从 `v1.3.0` 起不再提供 `favorites.json` 到 `custom-recipes.json` 的旧自定义料理迁移。仍在 `v1.1.x` 或更早版本且使用过旧手动自定义料理的用户，应先安装并启动一次 `v1.2.0`，确认 `custom-recipes.json` 已生成并备份两个 JSON 文件，再升级到 `v1.3.0`。已经正常运行过 `v1.2.x` 的用户无需额外操作。
@@ -283,7 +290,7 @@ B 设备：
 - 窗口主题、字体、连接地址、调试显示等本地界面偏好仍按设备单独保存。
 - 收藏和自定义料理保存在游戏电脑上，所有已连接设备共用。
 
-A 设备本机窗口会随游戏关闭而退出；远程 Windows 或 Android 客户端会保留界面并进入重连状态。断线期间不会继续执行自动化或发布新的游戏界面辅助目标。
+A 设备本机窗口会随游戏关闭而退出；远程 Windows 或 Android 客户端会保留界面并进入重连状态。C# 调度仍受主设备在线状态和自动化租约约束：主设备断线后，待执行步骤会在安全边界暂停，重新连接并取得有效控制权后继续；其他设备不会自动接管。
 
 ## 配置与数据位置
 

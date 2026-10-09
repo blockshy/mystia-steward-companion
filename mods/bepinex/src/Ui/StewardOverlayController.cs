@@ -2731,7 +2731,7 @@ internal sealed class StewardOverlayController
             {
                 ThrowIfDisposed();
                 if (ShouldGateNightBusinessRuntime()) return false;
-                if (request.AutomationEpoch != currentEpoch)
+                if (request.AutomationEpoch != currentEpoch || request.IsBusinessInputCurrent?.Invoke() == false)
                 {
                     return false;
                 }
@@ -2759,7 +2759,7 @@ internal sealed class StewardOverlayController
 
         return _automationCommandFence.RunExclusive(currentEpoch =>
         {
-            if (request.AutomationEpoch != currentEpoch)
+            if (request.AutomationEpoch != currentEpoch || request.IsBusinessInputCurrent?.Invoke() == false)
             {
                 return BuildSupersededOrderResult(request);
             }
@@ -2955,7 +2955,7 @@ internal sealed class StewardOverlayController
             {
                 var pending = _pendingOrderPreparations.Count == 0 ? null : _pendingOrderPreparations.Dequeue();
                 if (pending == null) return 0;
-                if (pending.AutomationEpoch != currentEpoch)
+                if (pending.AutomationEpoch != currentEpoch || pending.Request.IsBusinessInputCurrent?.Invoke() == false)
                 {
                     pending.Cancel(new OperationCanceledException("Automation command was superseded before main-thread execution."));
                     return 1;

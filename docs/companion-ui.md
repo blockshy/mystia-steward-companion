@@ -1,6 +1,6 @@
 # 伴随窗口界面
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文说明伴随窗口的页面职责、交互边界与维护入口。整体进程、数据流和平台关系见
 [架构说明](architecture.md)；本地 API 的认证、设备配置权威与接口约束见
@@ -11,6 +11,11 @@
 伴随窗口负责把 Mod 发布的只读运行时状态、推荐结果和受控操作组织成可操作界面。它不直接读取
 Unity 对象，也不在浏览器线程中执行游戏动作。所有游戏运行时写操作都必须经过本地 API 和 Mod 的
 Unity 主线程队列。
+
+推荐、特殊经营策略、主方案、厨具预约和自动化状态机统一在游戏电脑的纯 C# 业务类库中计算。
+客户端通过 `/business/status` 读取已发布结果，通过 `/business/query` 提交地区或客人等只读查询意图；
+不再启动推荐 Worker、选择执行目标或按定时器发送开锅/送达请求。重试和人工确认仅提交用户意图，
+由 Mod 根据当前订单、配置权威和租约重新判断。连接心跳、租约续期、界面状态和配置信息仍由客户端维护。
 
 以下专题由独立文档维护，本文不重复其业务规则：
 
@@ -35,7 +40,7 @@ Unity 主线程队列。
 | 日志 | 仅在“显示调试详情”开启时出现 |
 
 较重的页面只在对应页签真正激活时挂载。新增页面时应继续遵守这一点，避免隐藏页面保留轮询、
-Worker、计时器或全局输入作用域。
+无用的计时器或全局输入作用域。
 
 ## 组合与状态所有权
 
@@ -43,9 +48,10 @@ Worker、计时器或全局输入作用域。
 
 - `apps/companion/src/companion/pages/`：页面和展示组件。
 - `apps/companion/src/companion/hooks/`：带生命周期的读取、发布和轮询。
-- `apps/companion/src/companion/domain/`：纯业务组合与协议映射。
+- `apps/companion/src/companion/domain/`：显示排序、状态文案与展示投影，不生成游戏执行方案。
 - `apps/companion/src/companion/features/`：更新等边界清晰的功能模块。
-- `apps/companion/src/companion/workers/`：高成本计算的 Worker 协议与调度。
+- `modules/companion-business/`：推荐领域规则与自动化应用编排；`modules/companion-contracts/` 定义业务协议。
+- `apps/companion/src/companion/BusinessContext.tsx` 与 `hooks/useBusinessStatus.ts`：页面连接上下文和服务端状态读取。
 - `apps/companion/src/components/ui/`：项目统一的基础控件封装。
 - `apps/companion/src/companion/preferences.ts`：当前设备的界面和功能偏好归一化。
 - `apps/companion/src/companion/storage.ts`：不属于共享 profile 的本地页面状态。
@@ -53,6 +59,9 @@ Worker、计时器或全局输入作用域。
 跨设备生效的推荐、自动化和游戏界面辅助配置由“主设备”权威模型管理；纯显示偏好仍属于当前窗口。
 页面不得把浏览器内的临时状态当成游戏运行时已经接受的状态。远端结果需要结合连接修订、请求代际或
 内容签名拒绝迟到响应。
+
+迁移后的业务协议要求 Mod 与伴随客户端成套更新。旧客户端的自动执行和 UI 目标发布入口被拒绝；
+不能以兼容旧调用的方式恢复第二套调度器。当前 Windows/Android 客户端仍为 React/Tauri，Flutter 不属于本阶段。
 
 ## 视觉与响应式约束
 

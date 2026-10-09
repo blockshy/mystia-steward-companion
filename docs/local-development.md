@@ -1,6 +1,6 @@
 # 本地开发与构建
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文档只说明日常本地开发环境、构建入口和开发服务。测试选择见
 [验证指南](validation-guide.md)，Android 专用环境见
@@ -57,6 +57,10 @@ corepack pnpm toolchain:check
 Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。只有三项真实 Harmony/MonoMod
 动态补丁测试使用锁定的 .NET 6 容器；入口和限制见[验证指南](validation-guide.md#真实-harmonymonomod-测试)。
 
+纯业务工程位于 `modules/companion-contracts` 和 `modules/companion-business`，由 Mod 的项目引用自动构建。它们不加载游戏或 BepInEx；离线迁移门禁为 `corepack pnpm audit:business`。运行 net6 smoke 需要实际 .NET 6 runtime，不使用 roll-forward 将较新运行时的结果冒充 .NET 6 验证。
+
+新包必须成套包含主 Mod、Contracts、Business 三个 DLL、Windows 客户端、updater 和组件摘要，不能只替换主 DLL。详细完整性与回退规则见[更新系统](update-system.md)。
+
 ## BepInEx 构建引用
 
 `mods/bepinex/References/` 中的真实 DLL 不提交到公开仓库。引用的来源、文件集合、大小和 SHA-256 由
@@ -91,6 +95,8 @@ corepack pnpm preview
 - 功能完成前按变更范围选择专项 audit，不能用生产构建成功代替行为验证。
 
 ### Tauri 桌面壳
+
+`tauri.conf.json` 的构建/开发钩子直接调用根 package 的 `corepack pnpm build/dev`。本仓前端 package 位于仓库根；钩子不再用 `--dir ../..` 二次向上切目录。Windows 与 Android 共用同一薄客户端业务协议，Flutter 在后续独立阶段引入。
 
 ```bash
 corepack pnpm tauri:dev

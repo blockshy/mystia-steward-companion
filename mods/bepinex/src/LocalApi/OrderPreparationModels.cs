@@ -2,6 +2,11 @@ namespace MystiaStewardCompanion.LocalApi;
 
 internal sealed class OrderPreparationRequest
 {
+    /// <summary>
+    /// 宿主附加的轻量输入许可。仅检查托管版本，在 Unity 队列真正开始执行之前复核；
+    /// 不访问文件、不读取游戏对象，也不延长设备租约。旧计算输入必须在副作用发生前拒绝。
+    /// </summary>
+    public Func<bool>? IsBusinessInputCurrent { get; init; }
     public long AutomationEpoch { get; init; }
     public string TraceId { get; init; } = "";
     public string OrderKey { get; init; } = "";

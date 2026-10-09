@@ -4,7 +4,7 @@ import { createServer } from 'vite';
 
 const root = new URL('../../', import.meta.url);
 const vite = await createServer({
-  configFile: 'apps/companion/vite.config.ts',
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
   logLevel: 'silent',
@@ -422,13 +422,13 @@ async function assertSourceContracts() {
     runtimeService,
     cooking,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/cookers.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/hooks/useCompanionConnection.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/cookers.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/hooks/useCompanionConnection.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/api.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/LocalApi/OrderPreparationModels.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/LocalApi/LocalApiServer.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/RuntimeCookerReflection.cs', root), 'utf8'),
@@ -893,3 +893,4 @@ function sourceSlice(source, startToken, endToken) {
   assert.ok(end > start, `Source boundary not found: ${startToken} -> ${endToken}`);
   return source.slice(start, end);
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

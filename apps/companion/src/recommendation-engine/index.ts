@@ -1,33 +1,5 @@
-export {
-  buildNormalBeverageRecommendations,
-  buildNormalFoodRecommendations,
-  compareNormalBeverageRecommendations,
-  compareNormalFoodRecommendations,
-  getNormalCustomersByPlace,
-} from '@/recommendation-engine/normal-coverage';
-export {
-  buildRareBeverageCandidates,
-  buildRareFoodCandidates,
-  buildRareOrderPlans,
-  buildRareOrderPlansFromCandidates,
-  compareBeverageCandidates,
-  compareFoodCandidates,
-  diagnoseRareBeverageCandidateSearch,
-  diagnoseRareFoodCandidateSearch,
-  sortRareOrderPlans,
-} from '@/recommendation-engine/rare-orders';
-export {
-  getVerifiedMissionRecipeSortContext,
-  isMissionRecipeFoodCandidate,
-  isMissionRecipeExecutionPlan,
-} from '@/recommendation-engine/mission-recipe-priority';
-export {
-  PROJECT_VERIFIED_TAG_PRIORITY_RULES,
-  findTagsThatCanSuppress,
-  hasForbiddenIngredientTag,
-  resolveFoodTags,
-  resolveTagPriority,
-} from '@/recommendation-engine/tag-resolution';
+/** 客户端推荐协议与设置编辑入口；推荐计算只由 C# 业务服务提供。 */
+export { getNormalCustomersByPlace } from '@/recommendation-engine/normal-coverage';
 export {
   DEFAULT_RECOMMENDATION_SORT_PROFILE,
   RECOMMENDATION_OBJECTIVE_DEFINITIONS,

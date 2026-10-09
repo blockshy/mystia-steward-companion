@@ -20,7 +20,7 @@ import {
   TabsList,
   TabsTrigger,
 } from '@/components/ui-kit';
-import { buildAutomationResourceOverview, buildNightBusinessOrderKey } from '@/companion/domain/automation';
+import { buildNightBusinessOrderKey } from '@/companion/domain/automation';
 import {
   getNightBusinessAutomationPauseLabel,
   getNightBusinessAutomationSummary,
@@ -47,7 +47,6 @@ import type {
   ToggleBeverageFavorite,
   ToggleRecipeFavorite,
 } from '@/companion/types';
-import type { NormalExecutionTargetSelection } from '@/companion/workers/order-recommendations.types';
 import {
   DENSE_MINIMUM_THREE_COLUMN_GRID,
   DENSE_TWO_COLUMN_GRID,
@@ -260,15 +259,12 @@ export function ModServicePanel({
   normalOrderMessage,
   normalOrderPausedCount,
   normalOrderDiagnostics,
+  automationResources,
   automationRuntimeAllowed,
   automationRuntimeBlockReason,
   automationRuntimeStatus,
   automationSafetyBarriers,
   automationBarrierAckBusyKey,
-  normalExecutionTargets,
-  normalExecutionTargetsEnabled,
-  normalExecutionTargetsPending,
-  normalExecutionTargetsError,
   normalOrderDetailPlans,
   normalOrderDetailsPending,
   normalOrderDetailsError,
@@ -328,10 +324,7 @@ export function ModServicePanel({
   automationRuntimeStatus: string;
   automationSafetyBarriers: AutomationSafetyBarrierDiagnostic[];
   automationBarrierAckBusyKey: string;
-  normalExecutionTargets: NormalExecutionTargetSelection[];
-  normalExecutionTargetsEnabled: boolean;
-  normalExecutionTargetsPending: boolean;
-  normalExecutionTargetsError: string | null;
+  automationResources: import('@/companion/types').AutomationResourceOverview;
   normalOrderDetailPlans: NormalOrderDetailPlan[];
   normalOrderDetailsPending: boolean;
   normalOrderDetailsError: string | null;
@@ -361,53 +354,12 @@ export function ModServicePanel({
     () => sortNightOrders(
       night?.orders ?? [],
       autoPrepPreferences.serviceOrderSortMode,
-      specialBusiness,
     ),
-    [autoPrepPreferences.serviceOrderSortMode, night?.orders, specialBusiness],
+    [autoPrepPreferences.serviceOrderSortMode, night?.orders],
   );
   const activeServiceView = showDebugDetails || serviceView !== 'diagnostics'
     ? serviceView
     : 'recommendations';
-  const automationResources = useMemo(
-    () => {
-      if (activeServiceView !== 'diagnostics' || !showDebugDetails) {
-        return { cookers: [], normalBlocked: [] };
-      }
-
-      return buildAutomationResourceOverview({
-        runtime,
-        recommendations,
-        favorites,
-        preferences: autoPrepPreferences,
-        normalOrders: normalBusiness?.orders ?? [],
-        specialBusiness,
-        normalExecutionTargets,
-        normalExecutionTargetsEnabled,
-        normalExecutionTargetsPending,
-        normalExecutionTargetsError,
-        rareDiagnostics: rareOrderDiagnostics,
-        normalDiagnostics: normalOrderDiagnostics,
-        data,
-      });
-    },
-    [
-      activeServiceView,
-      autoPrepPreferences,
-      favorites,
-      normalExecutionTargets,
-      normalExecutionTargetsEnabled,
-      normalExecutionTargetsError,
-      normalExecutionTargetsPending,
-      normalBusiness?.orders,
-      normalOrderDiagnostics,
-      rareOrderDiagnostics,
-      recommendations,
-      runtime,
-      showDebugDetails,
-      specialBusiness,
-      data,
-    ],
-  );
   const serviceViewOptions = showDebugDetails ? SERVICE_PANEL_VIEW_OPTIONS : SERVICE_PANEL_DEFAULT_VIEW_OPTIONS;
   const automationTrackedCount = rareOrderDiagnostics.length + normalOrderDiagnostics.length;
   const automationStatus = getNightBusinessAutomationSummary({
@@ -841,7 +793,6 @@ function RareOrderRecommendationList({
   runtimeSets,
   dataIndexes,
   orderSortMode,
-  specialBusiness,
   showDebugDetails = false,
   favorites,
   customRecipes,
@@ -882,8 +833,8 @@ function RareOrderRecommendationList({
       ...recommendationIssues.map((issue) => ({ kind: 'issue' as const, order: issue.order, issue })),
       ...recommendations.map((item) => ({ kind: 'recommendation' as const, order: item.order, item })),
       ...pendingOrders.map((order) => ({ kind: 'pending' as const, order })),
-    ], orderSortMode, specialBusiness),
-    [orderSortMode, pendingOrders, recommendationIssues, recommendations, specialBusiness],
+    ], orderSortMode),
+    [orderSortMode, pendingOrders, recommendationIssues, recommendations],
   );
   const collectionState: ServiceOrderCollectionState = updateError
     ? {

@@ -900,17 +900,18 @@ async function auditMissionRecipePriorityToggle(page, viewport, tab, recommendat
   await page.waitForFunction((key) => localStorage.getItem(key) === '0', storageKey);
   await activateTab(page, { value: 'service', label: '经营中' });
   await page.getByText('推荐料理', { exact: true }).first().waitFor({ state: 'visible' });
-  await page.waitForTimeout(600);
-  if (await page.getByText('任务目标', { exact: true }).count()) {
-    issues.push({
-      viewport: viewport.name,
-      tab: tab.label,
-      component: 'MissionRecipePriority',
-      message: '关闭任务料理置顶后，主计划仍显示“任务目标”标识。',
-    });
-  }
   try {
+    // C# 宿主异步发布投影，客户端再按轮询周期读取。等待实际方案转换，
+    // 不把旧 Worker 时代的固定 600ms 当成协议的完成保证。
     await waitForPrimaryRecipe(page, '蜂蜜蛋糕');
+    if (await page.getByText('任务目标', { exact: true }).count()) {
+      issues.push({
+        viewport: viewport.name,
+        tab: tab.label,
+        component: 'MissionRecipePriority',
+        message: '关闭任务料理置顶后，主计划仍显示“任务目标”标识。',
+      });
+    }
   } catch {
     issues.push({
       viewport: viewport.name,
@@ -937,7 +938,7 @@ async function auditMissionRecipePriorityToggle(page, viewport, tab, recommendat
       viewport: viewport.name,
       tab: tab.label,
       component: 'MissionRecipePriority',
-      message: '重新开启任务料理置顶后，Worker 未恢复带标识的任务主计划。',
+      message: '重新开启任务料理置顶后，C# 宿主未恢复带标识的任务主计划。',
     });
   }
 }

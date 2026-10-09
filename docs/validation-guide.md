@@ -1,6 +1,6 @@
 # 验证指南
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文档负责回答“改动后应运行哪些验证”。它只记录测试入口、选择规则和平台边界；每项测试的完整断言、
 fixtures 和禁止路径以 `tests/` 下的源码为权威，业务契约不在这里重复维护。
@@ -31,6 +31,7 @@ fixtures 和禁止路径以 `tests/` 下的源码为权威，业务契约不在�
 | Tauri 窗口切换或聚焦 | 上项加 `cargo test --manifest-path apps/companion/src-tauri/Cargo.toml --lib` |
 | 独立 updater | updater 单测、Linux Windows-UI 类型检查及 Windows 实机 |
 | C# Mod 或本地 API | `dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release`，再选专项 smoke |
+| 纯 C# 推荐、特殊经营、编排或业务协议 | `corepack pnpm audit:business`，再运行代表规模性能夹具与受影响 UI 审计 |
 | Android Rust/Gradle/签名 | Android 工具链检查、对应 APK 构建及 Android 专项 audit |
 | 构建、打包或引用恢复脚本 | 对应 build-artifacts/build-references audit |
 | workflow、版本或发布脚本 | release policy、GitHub Actions、toolchain audit，并按发布流程做全量验证 |
@@ -45,18 +46,18 @@ package scripts 是聚合入口；其当前子测试列表以 [`package.json`](.
 | 功能范围 | 命令 |
 | --- | --- |
 | 通用响应式布局 | `corepack pnpm audit:ui` |
-| 推荐主计划、特殊经营候选与阻塞诊断 | `corepack pnpm audit:recommendations` |
+| 推荐主计划、特殊经营候选与阻塞诊断 | 当前生产 `corepack pnpm audit:business`；历史 TS 基线 `corepack pnpm audit:recommendations` |
 | 自定义推荐料理 | `corepack pnpm audit:custom-recipes` |
 | 料理与酒水收藏 | `corepack pnpm audit:favorites` |
-| 自动化前端恢复与运行时动作审计 | `corepack pnpm audit:automation` |
+| 自动化编排与运行时动作审计 | `corepack pnpm audit:business`、`corepack pnpm audit:automation`（含旧 TS 状态机 oracle、旧客户端命令拒绝与 Mod 副作用审计） |
 | 连接恢复 | `corepack pnpm audit:connection-recovery` |
 | 主设备与配置权威 | `corepack pnpm audit:device-authority`、`corepack pnpm audit:device-authority:ui` |
 | 字号与缩放 | `corepack pnpm audit:font-scale` |
 | 设置与帮助 | `corepack pnpm audit:settings-help` |
 | 订单状态与展示 | `corepack pnpm audit:service-orders` |
 | 更新协议的前端投影 | `corepack pnpm audit:updates`、`corepack pnpm audit:updates:ui` |
-| 游戏界面目标发布 | `corepack pnpm audit:ui-pinning` |
-| 特殊经营前端与运行时集合 | `corepack pnpm audit:special-business` |
+| 游戏界面服务端目标与客户端展示意图 | `corepack pnpm audit:business`、`corepack pnpm audit:ui-pinning` |
+| 特殊经营 C# 规则与运行时集合 | `corepack pnpm audit:business`、`corepack pnpm audit:special-business` |
 | 稀客邀请 | `corepack pnpm audit:rare-guest-invitations`、`corepack pnpm audit:rare-guest-invitations:ui` |
 | 手柄输入与焦点 | `corepack pnpm audit:gamepad` |
 | BepInEx 控制台 UI | `corepack pnpm audit:logs:console` |
@@ -120,6 +121,24 @@ cargo check \
 窗口、字体或进度展示后，还要在 Windows 100%/125%/150%/200% 缩放和跨显示器移动中实测。
 
 ## C# smoke 选择
+
+### 纯业务与实际宿主
+
+`corepack pnpm audit:business` 聚合实际业务程序集引用的推荐/支持模块、完整订单/特殊经营和自动化差分，以及宿主、成套 DLL/manifest 和瘦客户端边界测试。`tests/reference/manifest.json` 固定旧 TS 提交及文件内容；生产代码不能导入该目录，服务不可用也不能回退。
+
+性能夹具是完全人工目录，不读取存档或启动游戏：
+
+```bash
+node tests/csharp-business-orders/benchmark.mjs --full
+node tests/csharp-business-orders/benchmark.mjs --page
+node tests/csharp-business-orders/benchmark.mjs --write-fixture
+dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --load-stream
+dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --load-stream --client-poll
+```
+
+测试应区分首轮计算、纯候选/订单/页面投影命中、库存或偏好改变后的重算。连续快照变化下，经营和手动页面都必须最终发布当前结果，不能仅以单次计算完成或缓存命中率证明可用。持续流分别覆盖10毫秒高压读取与750毫秒客户端轮询，不能混为同一性能数字。已送达状态、订单生命周期、权限和特殊目标代次需要在复用结果后重新绑定。离线吞吐量不等同于真实游戏帧率或实机验证。
+
+### 游戏适配层
 
 先确保锁定 References 已恢复，再运行 Mod 构建。下列按生产模块分组，选择所有受影响组中的项目。
 `AutomationCookingJobSmoke`、`UiPinningRuntimeSmoke` 和 `RuntimeTargetRecipeVariantSmoke` 会安装真实动态补丁；

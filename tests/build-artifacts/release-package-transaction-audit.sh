@@ -34,6 +34,8 @@ create_fixture() {
   chmod +x "$root/mods/bepinex/tools/package-release.sh"
 
   printf 'mod-dll\n' >"$root/mods/bepinex/bin/Release/MystiaStewardCompanion.BepInEx.dll"
+  printf 'business-dll\n' >"$root/mods/bepinex/bin/Release/MystiaStewardCompanion.Business.dll"
+  printf 'contracts-dll\n' >"$root/mods/bepinex/bin/Release/MystiaStewardCompanion.Contracts.dll"
   printf 'companion-exe\n' >"$root/apps/companion/src-tauri/target/release/mystia-steward-companion.exe"
   printf 'updater-exe\n' >"$root/apps/companion/src-tauri/target/release/mystia-steward-companion-updater.exe"
 

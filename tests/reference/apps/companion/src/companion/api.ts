@@ -1,0 +1,1058 @@
+import type {
+  OrderPreparationResponse,
+  RareAutomationBeverageTarget,
+  RareAutomationRecipeTarget,
+} from '@/companion/automation-state';
+import { assertAutomationDirectDeliveryCompletionInvariant } from '@/companion/automation-machine';
+import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
+import type { CompanionPreferences, SharedCompanionPreferences } from '@/companion/preferences';
+import { SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION, normalizeEditableQuantity } from '@/companion/preferences';
+import { serializeRareGuestInvitationLevels } from '@/companion/storage';
+import type {
+  DiagnosticPackageResponse,
+  AutomationSafetyBarrierAckResponse,
+  AvailableMissionsApiResponse,
+  BepInExConsoleVisibilityResponse,
+  CustomRecipeData,
+  CustomRecipeFlagUpdateInput,
+  CustomRecipeMutationResponse,
+  CustomRecipeUpsertInput,
+  CompanionDeviceAuthorityState,
+  CompanionDevicePlatform,
+  CookerControllerReservation,
+  FavoriteData,
+  FavoriteMutationResponse,
+  GameUiTargetSlots,
+  InventoryBulkEditResponse,
+  InventoryEditResponse,
+  LocalApiAutomationLease,
+  LocalApiConnectionConfig,
+  LocalApiFolderResponse,
+  LocalApiLogSettings,
+  LocalApiSnapshotResponse,
+  LocalApiStatusResponse,
+  NightBusinessOrder,
+  NormalOrderExecutionTarget,
+  NormalBusinessOrder,
+  OrderRecommendation,
+  RareGuestInvitationResponse,
+  RareGuestInvitationScope,
+  RareGuestInvitationWriteContext,
+  RareOrderDismissResponse,
+  SpecialFoodTargetWirePolicy,
+  TrackedMissionsApiResponse,
+  UpdateStatusResponse,
+} from '@/companion/types';
+import {
+  DEFAULT_RECOMMENDATION_DATA,
+  buildRecommendationDataIndexes,
+  type RuntimeDataCatalogSnapshot,
+  type RecommendationDataSet,
+} from '@/lib/recommendation-data';
+import type {
+  RareCustomerCatalogItem,
+} from '@/lib/catalog-types';
+import type { RareBeverageRecommendation, RareOrderRecommendationPlan, RareRecipeRecommendation } from '@/recommendation-engine';
+
+export interface AutomationDecisionDiagnosticRequest {
+  signature: string;
+  eventName: string;
+  message: string;
+  scene: string;
+  challengeType: string;
+  phase: string;
+  specialBusinessRole: string;
+  orderCount: number;
+  selectionCount: number;
+  skipCount: number;
+  automationEnabled: boolean;
+  leaseOwned: boolean;
+  autoCompleteOrder: boolean;
+  autoTakeBeverage: boolean;
+  autoStartCooking: boolean;
+  autoCollectCooking: boolean;
+  recipeFavoritesOnly: boolean;
+  beverageFavoritesOnly: boolean;
+  rareConcurrency: number;
+  leaseMessage: string;
+  orderLines: string[];
+  selectionLines: string[];
+  skipLines: string[];
+}
+
+const COMPANION_DEVICE_PROTOCOL_VERSION = 1;
+
+export async function registerCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  platform: CompanionDevicePlatform,
+  appVersion: string,
+  profile: SharedCompanionPreferences,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(
+    endpoint,
+    apiToken,
+    '/devices/register',
+    3200,
+    {
+      body: {
+        protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+        profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
+        platform,
+        appVersion,
+        profile,
+      },
+    },
+  );
+}
+
+export async function readCompanionDevices(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<CompanionDeviceAuthorityState> {
+  return readLocalApiJson<CompanionDeviceAuthorityState>(endpoint, apiToken, '/devices', signal);
+}
+
+export async function updatePrimaryCompanionProfile(
+  endpoint: string,
+  apiToken: string,
+  state: CompanionDeviceAuthorityState,
+  profile: SharedCompanionPreferences,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(
+    endpoint,
+    apiToken,
+    '/devices/profile',
+    3200,
+    {
+      body: {
+        protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+        profileSchemaVersion: SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
+        expectedAuthorityRevision: state.authorityRevision,
+        expectedProfileRevision: state.currentDeviceProfileRevision,
+        profile,
+      },
+    },
+  );
+}
+
+export async function setPrimaryCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+  deviceId: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/primary', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    expectedAuthorityRevision: authorityRevision,
+    deviceId,
+  });
+}
+
+export async function syncCompanionDeviceProfile(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+  deviceId: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/sync', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    expectedAuthorityRevision: authorityRevision,
+    deviceId,
+  });
+}
+
+export async function acknowledgeCompanionDeviceSync(
+  endpoint: string,
+  apiToken: string,
+  syncId: string,
+  profileRevision: number,
+  profileHash: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/sync-ack', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    syncId,
+    profileRevision,
+    profileHash,
+  });
+}
+
+export async function renameCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  label: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/rename', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    label,
+  });
+}
+
+export async function forgetCompanionDevice(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+  deviceId: string,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeDeviceAuthorityMutation(endpoint, apiToken, '/devices/forget', {
+    protocolVersion: COMPANION_DEVICE_PROTOCOL_VERSION,
+    expectedAuthorityRevision: authorityRevision,
+    deviceId,
+  });
+}
+
+async function writeDeviceAuthorityMutation(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<CompanionDeviceAuthorityState> {
+  return writeLocalApiJsonWithTimeout<CompanionDeviceAuthorityState>(endpoint, apiToken, path, 3200, { body });
+}
+
+/**
+ * 伴随窗口访问 Mod 本地 API 的类型化门面。
+ *
+ * 该文件只负责把 UI/推荐引擎中的领域对象转换为本地 API 协议参数，不直接保存状态。
+ * 纯读取端点使用 GET；任何会修改 Mod、游戏运行时、文件或宿主窗口状态的命令都通过
+ * `writeLocalApiJsonWithTimeout` 使用 POST，避免被普通刷新或预取误触发。
+ */
+export async function readSnapshot(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number; knownSignature?: string },
+): Promise<LocalApiSnapshotResponse> {
+  const params = new URLSearchParams();
+  if (options.knownSignature) params.set('knownSignature', options.knownSignature);
+  const path = params.size > 0 ? `/snapshot?${params.toString()}` : '/snapshot';
+  return readLocalApiJson<LocalApiSnapshotResponse>(endpoint, apiToken, path, {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function readRuntimeData(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number },
+): Promise<RuntimeDataCatalogSnapshot> {
+  return readLocalApiJson<RuntimeDataCatalogSnapshot>(endpoint, apiToken, '/runtime-data', {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function readLogSettings(endpoint: string, apiToken: string, signal: AbortSignal): Promise<LocalApiLogSettings> {
+  return readLocalApiJson<LocalApiLogSettings>(endpoint, apiToken, '/logs/settings', signal);
+}
+
+export async function writeLogSettings(
+  endpoint: string,
+  apiToken: string,
+  next: { aggregateLog?: boolean; aggregateLogMaxFileCount?: number },
+  signal: AbortSignal,
+): Promise<LocalApiLogSettings> {
+  const params = new URLSearchParams();
+  if (typeof next.aggregateLog === 'boolean') params.set('aggregateLog', String(next.aggregateLog));
+  if (typeof next.aggregateLogMaxFileCount === 'number') params.set('aggregateLogMaxFiles', String(next.aggregateLogMaxFileCount));
+  return writeLocalApiJsonWithTimeout<LocalApiLogSettings>(
+    endpoint,
+    apiToken,
+    `/logs/config?${params.toString()}`,
+    2800,
+    signal,
+  );
+}
+
+export async function setBepInExConsoleVisibility(
+  endpoint: string,
+  apiToken: string,
+  visible: boolean,
+  signal: AbortSignal,
+): Promise<BepInExConsoleVisibilityResponse> {
+  return writeLocalApiJsonWithTimeout<BepInExConsoleVisibilityResponse>(
+    endpoint,
+    apiToken,
+    `/logs/console?visible=${String(visible)}`,
+    2800,
+    signal,
+  );
+}
+
+export async function readLocalApiConnectionConfig(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<LocalApiConnectionConfig> {
+  return readLocalApiJson<LocalApiConnectionConfig>(endpoint, apiToken, '/local-api/config', signal);
+}
+
+export async function writeLocalApiConnectionConfig(
+  endpoint: string,
+  apiToken: string,
+  next: { lanEnabled: boolean; lanBindHost: string },
+): Promise<LocalApiConnectionConfig> {
+  const params = new URLSearchParams({
+    lanEnabled: String(next.lanEnabled),
+    lanHost: next.lanBindHost.trim() || 'auto',
+  });
+  return writeLocalApiJsonWithTimeout<LocalApiConnectionConfig>(
+    endpoint,
+    apiToken,
+    `/local-api/config?${params.toString()}`,
+    3500,
+  );
+}
+
+export async function regenerateLocalApiToken(
+  endpoint: string,
+  apiToken: string,
+): Promise<LocalApiConnectionConfig> {
+  return writeLocalApiJsonWithTimeout<LocalApiConnectionConfig>(
+    endpoint,
+    apiToken,
+    '/local-api/token/regenerate',
+    3500,
+  );
+}
+
+export async function readAutomationLease(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+  authorityRevision: number,
+): Promise<LocalApiAutomationLease> {
+  return readLocalApiJson<LocalApiAutomationLease>(endpoint, apiToken, '/automation/lease', {
+    signal,
+    authorityRevision,
+  });
+}
+
+export async function acquireAutomationLease(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+    endpoint,
+    apiToken,
+    '/automation/lease/acquire',
+    2200,
+    { authorityRevision },
+  );
+}
+
+export async function releaseAutomationLease(
+  endpoint: string,
+  apiToken: string,
+  authorityRevision: number,
+): Promise<LocalApiAutomationLease> {
+  return writeLocalApiJsonWithTimeout<LocalApiAutomationLease>(
+    endpoint,
+    apiToken,
+    '/automation/lease/release',
+    2800,
+    { authorityRevision },
+  );
+}
+
+export async function acknowledgeAutomationSafetyBarrier(
+  endpoint: string,
+  apiToken: string,
+  sequence: number,
+  authorityRevision: number,
+): Promise<AutomationSafetyBarrierAckResponse> {
+  const params = new URLSearchParams({ sequence: String(sequence) });
+  return writeLocalApiJsonWithTimeout<AutomationSafetyBarrierAckResponse>(
+    endpoint,
+    apiToken,
+    `/automation/barriers/ack?${params.toString()}`,
+    2800,
+    { authorityRevision },
+  );
+}
+
+export async function appendAutomationDecisionDiagnostic(
+  endpoint: string,
+  apiToken: string,
+  diagnostic: AutomationDecisionDiagnosticRequest,
+): Promise<LocalApiStatusResponse> {
+  const params = new URLSearchParams({
+    signature: diagnostic.signature,
+    eventName: diagnostic.eventName,
+    message: diagnostic.message,
+    scene: diagnostic.scene,
+    challengeType: diagnostic.challengeType,
+    phase: diagnostic.phase,
+    specialBusinessRole: diagnostic.specialBusinessRole,
+    orderCount: String(diagnostic.orderCount),
+    selectionCount: String(diagnostic.selectionCount),
+    skipCount: String(diagnostic.skipCount),
+    automationEnabled: String(diagnostic.automationEnabled),
+    leaseOwned: String(diagnostic.leaseOwned),
+    autoCompleteOrder: String(diagnostic.autoCompleteOrder),
+    autoTakeBeverage: String(diagnostic.autoTakeBeverage),
+    autoStartCooking: String(diagnostic.autoStartCooking),
+    autoCollectCooking: String(diagnostic.autoCollectCooking),
+    recipeFavoritesOnly: String(diagnostic.recipeFavoritesOnly),
+    beverageFavoritesOnly: String(diagnostic.beverageFavoritesOnly),
+    rareConcurrency: String(diagnostic.rareConcurrency),
+    leaseMessage: diagnostic.leaseMessage,
+    orderLines: diagnostic.orderLines.join('\n'),
+    selectionLines: diagnostic.selectionLines.join('\n'),
+    skipLines: diagnostic.skipLines.join('\n'),
+  });
+  return writeLocalApiJsonWithTimeout<LocalApiStatusResponse>(
+    endpoint,
+    apiToken,
+    `/diagnostics/automation-decision?${params.toString()}`,
+    2500,
+  );
+}
+
+export async function openLogFolder(
+  endpoint: string,
+  apiToken: string,
+  target: 'aggregate',
+  signal: AbortSignal,
+): Promise<LocalApiFolderResponse> {
+  return writeLocalApiJsonWithTimeout<LocalApiFolderResponse>(
+    endpoint,
+    apiToken,
+    `/logs/open-folder?target=${target}`,
+    2800,
+    signal,
+  );
+}
+
+export async function exportDiagnosticPackage(
+  endpoint: string,
+  apiToken: string,
+  signal: AbortSignal,
+): Promise<DiagnosticPackageResponse> {
+  return writeLocalApiJsonWithTimeout<DiagnosticPackageResponse>(
+    endpoint,
+    apiToken,
+    '/logs/export-diagnostics?open=true',
+    8000,
+    signal,
+  );
+}
+
+export async function refreshUpdateStatus(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/status', 2800, signal);
+}
+
+export async function checkForUpdates(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/check', 15000, signal);
+}
+
+export async function downloadUpdate(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/download', 60000, signal);
+}
+
+export async function installUpdateOnExit(
+  endpoint: string,
+  apiToken: string,
+  signal?: AbortSignal,
+): Promise<UpdateStatusResponse> {
+  return writeLocalApiJsonWithTimeout<UpdateStatusResponse>(endpoint, apiToken, '/updates/install-on-exit', 5000, signal);
+}
+
+export async function inviteAllAvailableRareGuests(
+  endpoint: string,
+  apiToken: string,
+  scope: RareGuestInvitationScope,
+  levels: number[],
+  context: RareGuestInvitationWriteContext,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({
+    scope,
+    expectedDaySceneGeneration: String(context.expectedDaySceneGeneration),
+    expectedMapLabel: context.expectedMapLabel,
+  });
+  appendRareGuestInvitationLevels(params, levels);
+  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite-all?${params.toString()}`);
+}
+
+export async function fetchAvailableRareGuestInvitations(
+  endpoint: string,
+  apiToken: string,
+  scope: RareGuestInvitationScope,
+  signal: AbortSignal,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({ scope });
+  return readLocalApiJson<RareGuestInvitationResponse>(
+    endpoint,
+    apiToken,
+    `/rare-guests/invitations?${params.toString()}`,
+    {
+      signal,
+      tauriTimeoutMs: 5000,
+    },
+  );
+}
+
+export async function readTrackedMissions(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number; knownSignature?: string },
+): Promise<TrackedMissionsApiResponse> {
+  const params = new URLSearchParams();
+  if (options.knownSignature) params.set('knownSignature', options.knownSignature);
+  const path = params.size > 0
+    ? `/missions/tracked?${params.toString()}`
+    : '/missions/tracked';
+  return readLocalApiJson<TrackedMissionsApiResponse>(endpoint, apiToken, path, {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function readAvailableMissions(
+  endpoint: string,
+  apiToken: string,
+  options: { signal: AbortSignal; timeoutMs: number; knownSignature?: string },
+): Promise<AvailableMissionsApiResponse> {
+  const params = new URLSearchParams();
+  if (options.knownSignature) params.set('knownSignature', options.knownSignature);
+  const path = params.size > 0
+    ? `/missions/available?${params.toString()}`
+    : '/missions/available';
+  return readLocalApiJson<AvailableMissionsApiResponse>(endpoint, apiToken, path, {
+    signal: options.signal,
+    tauriTimeoutMs: options.timeoutMs,
+  });
+}
+
+export async function inviteAvailableRareGuest(
+  endpoint: string,
+  apiToken: string,
+  guestId: number,
+  scope: RareGuestInvitationScope,
+  context: RareGuestInvitationWriteContext,
+): Promise<RareGuestInvitationResponse> {
+  const params = new URLSearchParams({
+    guestId: String(guestId),
+    scope,
+    expectedDaySceneGeneration: String(context.expectedDaySceneGeneration),
+    expectedMapLabel: context.expectedMapLabel,
+  });
+  return mutateRareGuestInvitation(endpoint, apiToken, `/rare-guests/invite?${params.toString()}`);
+}
+
+export async function dismissRuntimeRareOrder(
+  endpoint: string,
+  apiToken: string,
+  order: NightBusinessOrder,
+): Promise<RareOrderDismissResponse> {
+  const params = new URLSearchParams({
+    deskCode: String(order.deskCode),
+  });
+  if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId));
+  if (order.foodTagId != null) params.set('foodTagId', String(order.foodTagId));
+  if (order.beverageTagId != null) params.set('beverageTagId', String(order.beverageTagId));
+
+  return writeLocalApiJsonWithTimeout<RareOrderDismissResponse>(
+    endpoint,
+    apiToken,
+    `/orders/rare/dismiss?${params.toString()}`,
+    2500,
+  );
+}
+
+export async function writeInventoryQuantity(
+  endpoint: string,
+  apiToken: string,
+  itemType: 'ingredient' | 'beverage',
+  itemId: number,
+  quantity: number,
+): Promise<InventoryEditResponse> {
+  const params = new URLSearchParams({
+    type: itemType,
+    id: String(itemId),
+    qty: String(normalizeEditableQuantity(quantity)),
+  });
+  return writeLocalApiJsonWithTimeout<InventoryEditResponse>(
+    endpoint,
+    apiToken,
+    `/inventory/set?${params.toString()}`,
+    3200,
+  );
+}
+
+export async function writeInventoryBulkQuantity(
+  endpoint: string,
+  apiToken: string,
+  itemType: 'ingredient' | 'beverage',
+  itemIds: number[],
+  quantity: number,
+): Promise<InventoryBulkEditResponse> {
+  const params = new URLSearchParams({
+    type: itemType,
+    ids: itemIds.join(','),
+    qty: String(normalizeEditableQuantity(quantity)),
+  });
+  return writeLocalApiJsonWithTimeout<InventoryBulkEditResponse>(
+    endpoint,
+    apiToken,
+    `/inventory/bulk-set?${params.toString()}`,
+    8000,
+  );
+}
+
+export async function publishGameUiTargets(
+  endpoint: string,
+  apiToken: string,
+  businessGeneration: number,
+  targetSlots: GameUiTargetSlots,
+  authorityRevision: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  const targets = [targetSlots.rare, targetSlots.normal].filter((target) => target !== null);
+  const params = new URLSearchParams({
+    businessGeneration: String(businessGeneration),
+    targetCount: String(targets.length),
+  });
+  targets.forEach((target, index) => {
+    const prefix = `target${index}`;
+    params.set(`${prefix}Kind`, target.kind);
+    params.set(`${prefix}ListPinningEnabled`, String(target.features.listPinningEnabled));
+    params.set(`${prefix}RecipeVariantEnabled`, String(target.features.recipeVariantEnabled));
+    params.set(`${prefix}CookerHighlightEnabled`, String(target.features.cookerHighlightEnabled));
+    params.set(`${prefix}SeatHighlightEnabled`, String(target.features.seatHighlightEnabled));
+    params.set(`${prefix}OrderHighlightEnabled`, String(target.features.orderHighlightEnabled));
+    params.set(`${prefix}Revision`, target.targetRevision);
+    params.set(`${prefix}Color`, target.color.slice(1));
+    params.set(`${prefix}TraceId`, target.traceId);
+    params.set(`${prefix}OrderKey`, target.orderKey);
+    params.set(`${prefix}OrderLifecycleSequence`, String(target.orderLifecycleSequence));
+    params.set(`${prefix}DeskCode`, String(target.deskCode));
+    params.set(`${prefix}RecipeId`, String(target.recipeId));
+    params.set(`${prefix}IngredientIds`, target.ingredientIds.join(','));
+    params.set(`${prefix}ExtraIngredientIds`, target.extraIngredientIds.join(','));
+    params.set(`${prefix}BeverageId`, String(target.beverageId));
+    params.set(`${prefix}CookerTypeId`, String(target.cookerTypeId));
+  });
+  const response = await writeLocalApiJsonWithTimeout<{ ok: boolean; status?: string; error?: string | null }>(
+    endpoint,
+    apiToken,
+    `/ui-pinning/targets?${params.toString()}`,
+    2200,
+    { signal, authorityRevision },
+  );
+  if (!response.ok) {
+    throw new Error(response.error || response.status || '游戏界面置顶目标更新失败。');
+  }
+}
+
+export async function prepareNextRareOrder(
+  endpoint: string,
+  apiToken: string,
+  item: OrderRecommendation,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+  preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
+): Promise<OrderPreparationResponse> {
+  return rareOrderAction(
+    endpoint,
+    apiToken,
+    '/orders/prepare-next',
+    item,
+    specialTargetPolicy,
+    recipeTarget,
+    beverageTarget,
+    preferences,
+    cookerReservation,
+    authorityRevision,
+  );
+}
+
+export async function completeFirstRareOrder(
+  endpoint: string,
+  apiToken: string,
+  item: OrderRecommendation,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+  preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
+): Promise<OrderPreparationResponse> {
+  return rareOrderAction(
+    endpoint,
+    apiToken,
+    '/orders/complete-first',
+    item,
+    specialTargetPolicy,
+    recipeTarget,
+    beverageTarget,
+    preferences,
+    cookerReservation,
+    authorityRevision,
+  );
+}
+
+export async function completeFirstNormalOrder(
+  endpoint: string,
+  apiToken: string,
+  order: NormalBusinessOrder,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
+  preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
+  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
+  executionTarget: NormalOrderExecutionTarget | null = null,
+): Promise<OrderPreparationResponse> {
+  assertAutomationDirectDeliveryCompletionInvariant({
+    beverageDeliveryEnabled: preferences.autoNormalTakeBeverage,
+    completionEnabled: preferences.autoNormalCompleteOrder,
+    foodDeliveryEnabled: preferences.autoNormalDeliverFood,
+    targetLabel: '普客',
+  });
+  const indexes = buildRecommendationDataIndexes(data);
+  const recipe = indexes.recipeByFoodId.get(order.foodId) ?? null;
+  const targetRecipeId = executionTarget?.recipeId ?? recipe?.recipeId ?? -1;
+  const targetFoodId = executionTarget?.foodId ?? order.foodId;
+  const targetBeverageId = executionTarget?.beverageId ?? order.beverageId;
+  const params = new URLSearchParams({
+    traceId: order.traceId ?? '',
+    orderKey: order.orderKey ?? '',
+    orderLifecycleSequence: String(order.orderLifecycleSequence),
+    deskCode: String(order.deskCode),
+    guestName: order.guestName || '普客',
+    specialBusinessRole: order.specialBusinessRole ?? '',
+    matchFoodId: String(executionTarget?.matchFoodId ?? order.foodId),
+    matchBeverageId: String(executionTarget?.matchBeverageId ?? order.beverageId),
+    foodId: String(targetFoodId),
+    recipeId: String(targetRecipeId),
+    recipeName: executionTarget?.recipeName || order.foodName || recipe?.name || '',
+    extraIngredientIds: executionTarget ? executionTarget.extraIngredientIds.join(',') : '',
+    predictedFoodTags: executionTarget ? executionTarget.foodTags.join(',') : '',
+    expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join(',') : '',
+    specialTargetChallenge: specialTargetPolicy.specialTargetChallenge,
+    specialTargetOwner: specialTargetPolicy.specialTargetOwner,
+    specialTargetGeneration: String(specialTargetPolicy.specialTargetGeneration),
+    specialTargetRevision: String(specialTargetPolicy.specialTargetRevision),
+    specialTargetFoodTags: specialTargetPolicy.specialTargetFoodTags.join(','),
+    specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
+    specialTargetSignature: specialTargetPolicy.specialTargetSignature,
+    executionMode: executionTarget?.executionMode ?? '',
+    allowYuumaControlledProgression: String(executionTarget?.allowYuumaControlledProgression === true),
+    executionReason: executionTarget?.reason ?? '',
+    beverageId: String(targetBeverageId),
+    beverageName: executionTarget?.beverageName || order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
+    autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
+    autoStartCooking: String(preferences.autoNormalStartCooking),
+    autoCollectCooking: String(preferences.autoNormalDeliverFood),
+    autoDeliverFood: String(preferences.autoNormalDeliverFood),
+    autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
+    stopOnError: String(preferences.autoNormalStopOnError),
+  });
+  if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId));
+  appendCookerReservation(params, cookerReservation);
+  return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
+    endpoint,
+    apiToken,
+    `/orders/normal/complete-first?${params.toString()}`,
+    5000,
+    { authorityRevision },
+  );
+}
+
+export async function readFavorites(endpoint: string, apiToken: string, signal: AbortSignal): Promise<FavoriteData> {
+  return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
+}
+
+export async function readCustomRecipes(endpoint: string, apiToken: string, signal: AbortSignal): Promise<CustomRecipeData> {
+  return readLocalApiJson<CustomRecipeData>(endpoint, apiToken, '/custom-recipes', signal);
+}
+
+export async function upsertCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  input: CustomRecipeUpsertInput,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({
+    id: input.id ?? '',
+    customerId: String(input.customerId),
+    customerName: input.customerName,
+    foodTag: input.foodTag ?? '',
+    foodId: String(input.foodId),
+    recipeId: String(input.recipeId),
+    recipeName: input.recipeName,
+    extraIngredientIds: input.extraIngredientIds.join(','),
+  });
+  if (input.enabled != null) params.set('enabled', String(input.enabled));
+  if (input.pinToTop != null) params.set('pinToTop', String(input.pinToTop));
+  if (input.sortOrder != null) params.set('sortOrder', String(input.sortOrder));
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/upsert?${params.toString()}`);
+}
+
+export async function removeCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/remove?${params.toString()}`);
+}
+
+export async function setCustomRecipesEnabled(
+  endpoint: string,
+  apiToken: string,
+  enabled: boolean,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ enabled: String(enabled) });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/settings?${params.toString()}`);
+}
+
+export async function updateCustomRecipeFlags(
+  endpoint: string,
+  apiToken: string,
+  input: CustomRecipeFlagUpdateInput,
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ scope: input.selection.scope });
+  if (input.selection.scope === 'entry') params.set('id', input.selection.id);
+  if (input.selection.scope === 'customer') params.set('customerId', String(input.selection.customerId));
+  if (input.selection.scope === 'recipe') params.set('foodId', String(input.selection.foodId));
+  if (input.enabled != null) params.set('enabled', String(input.enabled));
+  if (input.pinToTop != null) params.set('pinToTop', String(input.pinToTop));
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/update-flags?${params.toString()}`);
+}
+
+export async function moveCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+  direction: 'up' | 'down',
+): Promise<CustomRecipeMutationResponse> {
+  const params = new URLSearchParams({ id, direction });
+  return mutateCustomRecipe(endpoint, apiToken, `/custom-recipes/move?${params.toString()}`);
+}
+
+export async function addRecipeFavorite(
+  endpoint: string,
+  apiToken: string,
+  customer: RareCustomerCatalogItem,
+  foodTag: string,
+  recipe: RareRecipeRecommendation,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({
+    customerId: String(customer.id),
+    customerName: customer.name,
+    foodTag,
+    recipeId: String(recipe.recipe.id),
+    extraIngredientIds: recipe.extraIngredients.map((ingredient) => ingredient.id).join(','),
+  });
+  return mutateFavorite(endpoint, apiToken, `/favorites/add-recipe?${params.toString()}`);
+}
+
+export async function removeRecipeFavorite(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateFavorite(endpoint, apiToken, `/favorites/remove-recipe?${params.toString()}`);
+}
+
+export async function addBeverageFavorite(
+  endpoint: string,
+  apiToken: string,
+  customer: RareCustomerCatalogItem,
+  beverageTag: string,
+  beverage: RareBeverageRecommendation,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({
+    customerId: String(customer.id),
+    customerName: customer.name,
+    beverageTag,
+    beverageId: String(beverage.beverage.id),
+  });
+  return mutateFavorite(endpoint, apiToken, `/favorites/add-beverage?${params.toString()}`);
+}
+
+export async function removeBeverageFavorite(
+  endpoint: string,
+  apiToken: string,
+  id: string,
+): Promise<FavoriteMutationResponse> {
+  const params = new URLSearchParams({ id });
+  return mutateFavorite(endpoint, apiToken, `/favorites/remove-beverage?${params.toString()}`);
+}
+
+function appendRareGuestInvitationLevels(params: URLSearchParams, levels: number[]) {
+  const serialized = serializeRareGuestInvitationLevels(levels);
+  if (serialized) params.set('levels', serialized);
+}
+
+async function mutateRareGuestInvitation(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<RareGuestInvitationResponse> {
+  return writeLocalApiJsonWithTimeout<RareGuestInvitationResponse>(endpoint, apiToken, path, 5000);
+}
+
+async function rareOrderAction(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+  item: OrderRecommendation,
+  specialTargetPolicy: SpecialFoodTargetWirePolicy,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+  preferences: CompanionPreferences,
+  cookerReservation: CookerControllerReservation | null,
+  authorityRevision: number,
+): Promise<OrderPreparationResponse> {
+  assertAutomationDirectDeliveryCompletionInvariant({
+    beverageDeliveryEnabled: preferences.autoPrepTakeBeverage,
+    completionEnabled: preferences.autoPrepCompleteOrder,
+    foodDeliveryEnabled: preferences.autoPrepCollectCooking,
+    targetLabel: '稀客',
+  });
+  // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
+  const params = new URLSearchParams({
+    traceId: item.order.traceId ?? '',
+    orderLifecycleSequence: String(item.order.orderLifecycleSequence),
+    deskCode: String(item.order.deskCode),
+    guestId: item.order.guestId == null ? '' : String(item.order.guestId),
+    guestName: item.order.guestName,
+    specialBusinessRole: item.order.specialBusinessRole ?? '',
+    foodTag: item.order.foodTag,
+    beverageTag: item.order.beverageTag,
+    foodId: recipeTarget ? String(recipeTarget.foodId) : '-1',
+    recipeId: recipeTarget ? String(recipeTarget.recipeId) : '-1',
+    recipeName: recipeTarget?.recipeName ?? '',
+    extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
+    predictedFoodTags: recipeTarget ? recipeTarget.foodTags.join(',') : '',
+    specialTargetChallenge: specialTargetPolicy.specialTargetChallenge,
+    specialTargetOwner: specialTargetPolicy.specialTargetOwner,
+    specialTargetGeneration: String(specialTargetPolicy.specialTargetGeneration),
+    specialTargetRevision: String(specialTargetPolicy.specialTargetRevision),
+    specialTargetFoodTags: specialTargetPolicy.specialTargetFoodTags.join(','),
+    specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
+    specialTargetSignature: specialTargetPolicy.specialTargetSignature,
+    executionReason: buildRareOrderExecutionReason(item, recipeTarget, beverageTarget),
+    beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
+    beverageName: beverageTarget?.beverageName ?? '',
+    autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
+    autoStartCooking: String(preferences.autoPrepStartCooking),
+    autoCollectCooking: String(preferences.autoPrepCollectCooking),
+    autoDeliverFood: String(preferences.autoPrepCollectCooking),
+    autoCompleteOrder: String(preferences.autoPrepCompleteOrder),
+    recipeFavoritesOnly: String(preferences.autoPrepRecipeFavoritesOnly),
+    beverageFavoritesOnly: String(preferences.autoPrepBeverageFavoritesOnly),
+    stopOnError: String(preferences.autoPrepStopOnError),
+    recipeFavorite: String(Boolean(recipeTarget?.favorite)),
+    beverageFavorite: String(Boolean(beverageTarget?.favorite)),
+  });
+  appendCookerReservation(params, cookerReservation);
+  if (item.order.runtimeGuestId != null) params.set('runtimeGuestId', String(item.order.runtimeGuestId));
+  if (item.order.foodTagId != null) params.set('foodTagId', String(item.order.foodTagId));
+  if (item.order.beverageTagId != null) params.set('beverageTagId', String(item.order.beverageTagId));
+  return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
+    endpoint,
+    apiToken,
+    `${path}?${params.toString()}`,
+    5000,
+    { authorityRevision },
+  );
+}
+
+function appendCookerReservation(
+  params: URLSearchParams,
+  reservation: CookerControllerReservation | null,
+) {
+  params.set('cookerControllerIndex', reservation ? String(reservation.controllerIndex) : '-1');
+  params.set('cookerControllerIdentity', reservation?.controllerIdentity ?? '');
+  params.set('cookerGridX', reservation ? String(reservation.gridPosition.x) : '');
+  params.set('cookerGridY', reservation ? String(reservation.gridPosition.y) : '');
+  params.set('cookerGridZ', reservation ? String(reservation.gridPosition.z) : '');
+}
+
+function buildRareOrderExecutionReason(
+  item: OrderRecommendation,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+): string {
+  const planReason = findRareOrderExecutionPlanReason(item, recipeTarget, beverageTarget);
+  const details = [
+    item.order.specialBusinessRole ? `特殊经营角色 ${item.order.specialBusinessRole}` : '',
+    planReason,
+    recipeTarget?.foodTags.length ? `预测料理 Tag ${recipeTarget.foodTags.join('、')}` : '',
+    beverageTarget ? `目标酒水 ${beverageTarget.beverageName || `#${beverageTarget.beverageId}`}` : '',
+  ].filter(Boolean);
+  return details.join('；');
+}
+
+function findRareOrderExecutionPlanReason(
+  item: OrderRecommendation,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+): string {
+  const matchedPlan = item.executionPlans.find((plan) =>
+    rareOrderPlanMatchesTargets(plan, recipeTarget, beverageTarget)
+  ) ?? null;
+  return matchedPlan?.reasons[0] ?? '';
+}
+
+function rareOrderPlanMatchesTargets(
+  plan: RareOrderRecommendationPlan | null,
+  recipeTarget: RareAutomationRecipeTarget | null,
+  beverageTarget: RareAutomationBeverageTarget | null,
+): boolean {
+  if (!plan) return false;
+  if (recipeTarget && (
+    !plan.food
+    || plan.food.recipe.id !== recipeTarget.foodId
+    || plan.food.recipe.recipeId !== recipeTarget.recipeId
+    || !sameNumberList(
+      plan.food.extraIngredients.map((ingredient) => ingredient.id),
+      recipeTarget.extraIngredientIds,
+    )
+  )) return false;
+  if (beverageTarget && (!plan.beverage || plan.beverage.beverage.id !== beverageTarget.beverageId)) return false;
+  return true;
+}
+
+function sameNumberList(left: readonly number[], right: readonly number[]): boolean {
+  if (left.length !== right.length) return false;
+  const normalizedLeft = [...left].sort((a, b) => a - b);
+  const normalizedRight = [...right].sort((a, b) => a - b);
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+async function mutateFavorite(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<FavoriteMutationResponse> {
+  return writeLocalApiJsonWithTimeout<FavoriteMutationResponse>(endpoint, apiToken, path, 3200);
+}
+
+async function mutateCustomRecipe(
+  endpoint: string,
+  apiToken: string,
+  path: string,
+): Promise<CustomRecipeMutationResponse> {
+  return writeLocalApiJsonWithTimeout<CustomRecipeMutationResponse>(endpoint, apiToken, path, 3200);
+}

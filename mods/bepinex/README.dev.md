@@ -4,8 +4,10 @@
 
 ## 目录
 
+- `../../modules/companion-contracts/`：版本化业务协议；不依赖 Unity/BepInEx。
+- `../../modules/companion-business/`：推荐、特殊经营、订单与自动化纯 C# 类库；由 Mod 引用并成套打包。
 - `src/Core/`：领域模型、运行时目录仓库、稀客身份和原子文件基础设施。
-- `src/LocalApi/`：listener、请求解析、DTO、设备配置权威和本地 JSON 存储。
+- `src/LocalApi/`：listener、请求解析、DTO、设备配置权威、本地 JSON 存储与单实例后台业务宿主。
 - `src/Plugin/`：BepInEx 插件入口、配置、控制台和伴随进程生命周期。
 - `src/Save/`：游戏运行时读取、订单捕获、自动化、任务和特殊经营服务。
 - `src/Ui/`：Unity 主线程命令、自动化控制器和游戏内 UI 接入。
@@ -41,6 +43,8 @@ pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
 ```
 
 这些命令只构建本地产物，不创建 tag 或 GitHub Release。Android 开发环境和签名见 [Android 开发](../../docs/android-development.md)，正式/预览发布只按[发布流程](../../docs/local-release.md)执行。
+
+Mod 项目自动构建两个业务依赖 DLL。打包时必须与主 DLL、客户端、updater 和 `business-bundle.sha256` 一起交付；不能只复制主 DLL。修改纯业务规则后执行 `corepack pnpm audit:business`，该入口使用冻结 main 规则、人工 fixture 和模拟游戏委托，不启动真实游戏。
 
 ## 专题入口
 

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
-  configFile: 'apps/companion/vite.config.ts',
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
 });
@@ -524,11 +524,11 @@ function buildCooker(controllerIndex, typeId, overrides = {}) {
 
 async function assertSourceContracts() {
   const [service, automation, workbench, worker, rareOrders] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
   ]);
 
   assert.ok(service.includes('executionPlans.length === 0'),
@@ -567,3 +567,4 @@ async function assertSourceContracts() {
     '前置阻塞诊断不得为未解锁、缺材料或缺厨具配方运行 beam search。',
   );
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

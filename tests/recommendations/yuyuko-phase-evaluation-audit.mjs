@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
-  configFile: 'apps/companion/vite.config.ts',
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
 });
@@ -1266,21 +1266,21 @@ async function assertSourceContracts() {
     runtimeOrderPreparationService,
     runtimeOrderDirectDelivery,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/recommendation-engine/sort-profile.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/rules/types.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/rules/yuyuko.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/yuyuko-challenge.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/yuyuko.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/recommendation-engine/sort-profile.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/rules/types.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/rules/yuyuko.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/yuyuko-challenge.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/normal-targets/yuyuko.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.YuyukoChallengePolicy.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/YuyukoFoodModifierContract.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/RuntimeOrderPreparationService.FoodModifierValidation.cs', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/automation-state.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/automation-state.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/api.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/LocalApi/OrderPreparationModels.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/LocalApi/LocalApiServer.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs', root), 'utf8'),
@@ -1637,3 +1637,4 @@ function sourceSlice(source, startToken, endToken) {
   assert.ok(end > start, `Source boundary not found: ${startToken} -> ${endToken}`);
   return source.slice(start, end);
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

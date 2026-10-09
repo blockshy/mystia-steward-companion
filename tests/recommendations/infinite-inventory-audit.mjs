@@ -7,7 +7,7 @@ import {
   inventoryQuantityRankValue,
   inventoryShortage,
   isInfiniteInventoryQuantity,
-} from '../../apps/companion/src/lib/inventory-quantity.ts';
+} from '../reference/apps/companion/src/lib/inventory-quantity.ts';
 
 assert.equal(isInfiniteInventoryQuantity(-1), true);
 assert.equal(isInfiniteInventoryQuantity(-2), false);
@@ -24,14 +24,14 @@ assert.equal(inventoryShortage(2, 5), 3);
 const root = new URL('../../', import.meta.url);
 const [scoreSources, inventorySorting] = await Promise.all([
   Promise.all([
-    'apps/companion/src/recommendation-engine/rare-orders.ts',
-    'apps/companion/src/companion/domain/service-recommendations.ts',
-    'apps/companion/src/companion/domain/special-business/yuyuko-challenge.ts',
-    'apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts',
-    'apps/companion/src/companion/domain/special-business/normal-targets/yuyuko.ts',
-    'apps/companion/src/companion/domain/special-business/normal-targets/wacky.ts',
+    'tests/reference/apps/companion/src/recommendation-engine/rare-orders.ts',
+    'tests/reference/apps/companion/src/companion/domain/service-recommendations.ts',
+    'tests/reference/apps/companion/src/companion/domain/special-business/yuyuko-challenge.ts',
+    'tests/reference/apps/companion/src/companion/domain/special-business/yuyuko-positive-spell.ts',
+    'tests/reference/apps/companion/src/companion/domain/special-business/normal-targets/yuyuko.ts',
+    'tests/reference/apps/companion/src/companion/domain/special-business/normal-targets/wacky.ts',
   ].map((path) => readFile(new URL(path, root), 'utf8'))),
-  readFile(new URL('apps/companion/src/companion/domain/inventory-sorting.ts', root), 'utf8'),
+  readFile(new URL('tests/reference/apps/companion/src/companion/domain/inventory-sorting.ts', root), 'utf8'),
 ]);
 const scoreSource = scoreSources.join('\n');
 assert.doesNotMatch(
@@ -51,3 +51,4 @@ assert.match(
 );
 
 console.log('PASS: the exact -1 inventory sentinel is displayed and ranked as infinite across recommendations.');
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

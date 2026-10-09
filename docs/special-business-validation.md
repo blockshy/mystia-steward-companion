@@ -1,12 +1,20 @@
 # 特殊经营验证
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文只记录特殊经营的自动化验证入口、当前实机闭环状态和复测清单。规则事实见[特殊经营游戏规则](special-business-scenes-notes.md)，实现策略见[特殊经营实现](special-business-implementation.md)。
 
 ## 自动化验证
 
-前端规则、上下文、运行时分类、血池结算和厨具拓扑的聚合入口：
+当前 C# 候选/特殊经营规则、订单、自动化、实际宿主和打包边界的聚合入口：
+
+```bash
+corepack pnpm audit:business
+```
+
+该入口的 C# 差分使用 `tests/reference` 中冻结的 TS 基线，比较完整值树；不能把仅运行旧算法的审计当成新实现通过。代表目录规模还要检查冷计算、库存/偏好更新与连续快照变化下的发布恢复。
+
+运行时分类、血池结算、厨具拓扑及历史 TS 基线审计入口：
 
 ```bash
 corepack pnpm audit:special-business
@@ -27,7 +35,9 @@ dotnet run --project tests/rare-order-identity-matching/RareOrderIdentityMatchin
 
 逐条断言由测试源码负责；完整分层和平台要求见[验证指南](validation-guide.md)。游戏成员或闭包变化时还必须按 [IL2CPP / IDA 分析工作流](il2cpp-analysis-workflow.md)重新取得证据。
 
-## 当前实机状态
+## 实机证据范围
+
+本轮 C# 业务迁移按授权不运行真实游戏；离线差分、mock 和构建结果不能改写为迁移后的实机闭环。下列场景记录来自迁移前版本，保留用于后续明确授权时的复测规划：
 
 - 月都试炼 1/2/3 已逐场确认推荐与自动化正常；试炼 1 还闭环了合法 guest ID `0`、possessed/ordinary、辣椒水 modifier、捕获推进和 `(-1,None)` 保护期。
 - 寻找瑞灵踪迹已确认 challenge、剧情入口和订单链。当前实现已接入材料 `5002` 与控制身份，但仍需在最新构建完成下面列出的完整基础场景复测。

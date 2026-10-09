@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
 {
     "/automation/lease",
+    "/business/status",
     "/custom-recipes",
     "/devices",
     "/favorites",
@@ -20,6 +21,8 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/automation/lease/acquire",
     "/automation/lease/release",
     "/automation/barriers/ack",
+    "/business/query",
+    "/business/automation/retry",
     "/custom-recipes/move",
     "/custom-recipes/remove",
     "/custom-recipes/settings",
@@ -163,7 +166,7 @@ try
         "Automation safety barriers do not expose an explicit lease-owned acknowledgement endpoint.");
     AssertContains(
         source,
-        "return _ackAutomationSafetyBarrier(sequence);",
+        "var result = _ackAutomationSafetyBarrier(sequence);",
         "Safety barrier acknowledgement does not reach the authoritative Mod registry.");
     AssertContains(source, "AutomationEpoch = automationEpoch", "Order commands are not stamped with the validated automation epoch.");
     AssertContains(
@@ -208,6 +211,17 @@ try
     AssertRouteSet("POST", expectedPostRoutes, postRoutes);
     AssertNoDuplicates("GET", getRoutes);
     AssertNoDuplicates("POST", postRoutes);
+
+    // 迁移后仅 C# 宿主生成动作；旧客户端路由仍被明确识别，但只能返回升级拒绝，不能调用游戏委托。
+    foreach (var legacyRoute in new[] { "/orders/prepare-next", "/orders/complete-first", "/orders/normal/complete-first", "/ui-pinning/targets" })
+    {
+        var start = RequireIndex(source, $"case \"{legacyRoute}\":", postSwitchStart);
+        var end = RequireIndex(source, "break;", start);
+        var routeBody = source[start..end];
+        AssertContains(routeBody, "WriteResponse(stream, 409, \"Conflict\", BusinessProtocolUpgradeRequired());", "旧客户端业务入口未明确拒绝。");
+        AssertAbsent(routeBody, "BuildOrderActionJson", "旧客户端仍可提交游戏动作。");
+        AssertAbsent(routeBody, "UpdateUiPinningTargetsJson", "旧客户端仍可发布游戏辅助目标。");
+    }
 
     var automationReleaseRouteStart = RequireIndex(source, "case \"/automation/lease/release\":", postSwitchStart);
     var automationBarrierRouteStart = RequireIndex(source, "case \"/automation/barriers/ack\":", automationReleaseRouteStart);

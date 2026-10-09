@@ -1,19 +1,23 @@
 # 自动化运行时
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文档只定义订单自动化从命令准入、开锅、跨帧跟踪到送达与评价的运行时安全边界。订单身份由 [运行时订单生命周期](runtime-order-lifecycle.md) 定义，运行时数据和厨具快照来源见 [运行时 Provider](runtime-provider.md)，HTTP 路由与设备协议见 [本地 API](local-api.md)，特殊场景策略见[特殊经营实现](special-business-implementation.md)。
 
 ## 安全模型
 
-自动化不会把一次前端决定解释为整笔订单的永久授权。每个尚未提交的副作用都必须重新通过当前运行时状态、订单身份、主设备配置和自动化控制权门禁。不能确认结果时停止并保留现场，不猜测成功、不补偿、不重放非幂等操作。
+自动化不会把一次业务计算解释为整笔订单的永久授权。每个尚未提交的副作用都必须重新通过当前运行时状态、订单身份、主设备配置和自动化控制权门禁。不能确认结果时停止并保留现场，不猜测成功、不补偿、不重放非幂等操作。
+
+推荐、动作阶段推进、重试和预约由 `modules/companion-business/Application/Automation` 的唯一 C# 编排器管理。它不引用 Unity/BepInEx，不持有游戏对象。`LocalApiServer.Business.cs` 在后台生成命令，通过现有主线程队列交给游戏适配层；React/Tauri 仅展示状态、维持主设备心跳及发送配置、重试和确认意图。
+
+业务帧包含输入版本、快照签名与权威 revision。计算后、派发前及游戏队列开始执行前均检查当前性。排队命令同时绑定本次准入租约的截止时间：自然到期即拒绝，后续续约不能追认旧命令；该主线程检查不取得 authority/lease 锁。已生成但确定未提交的命令通过 `Abandon` 释放 pending 和预约，不记为副作用失败；已开始的命令仍等待明确结果，禁止超时重放。关闭宿主只取消并撤销版本，不让 Unity 主线程等待可能依赖它的后台任务。
 
 自动化仅在以下条件同时成立时开始新动作：
 
 - 夜间经营五个生命周期 Hook 全部就绪，且当前为同一 `Active` generation。
 - 教学经营门禁允许执行。
-- 请求来自当前主设备，并携带精确 authority revision。
-- 请求方持有该 revision 的有效 automation control lease。
+- 宿主观察到当前主设备在线，并携带精确 authority revision。
+- 当前主设备持有该 revision 的有效 automation control lease；后台不能为它续约。
 - 请求携带当前 automation command epoch。
 - 普客或稀客订单捕获完整就绪，且请求 lifecycle 与 fresh 活动订单一致。
 - 总控、对应订单组和所请求阶段的配置满足不变量。
@@ -29,7 +33,7 @@
 - 同一 generation 首次确认 `true` 后锁存到本场结束。
 - 已确认进入教学经营时释放现有自动料理 job 的 Mod 所有权，保留游戏中的厨具和成品原状；它们不在离开教学后自动重接。
 - 门禁状态通过 `/snapshot` 的 `nightBusinessAutomationAllowed`、
-  `nightBusinessAutomationBlockReason` 和 `runtimeNightBusinessAutomationStatus` 发布给前端用于停止调度和显示原因，
+  `nightBusinessAutomationBlockReason` 和 `runtimeNightBusinessAutomationStatus` 发布给业务核心用于停止调度，并由前端显示原因，
   但所有后端命令入口和跨帧检查点仍须独立复核。
 
 ## 主设备配置与控制权
@@ -65,7 +69,7 @@
 
 ## 厨具预约与开锅
 
-物理厨具目录只接受当前完整 `AllCookers + LockedCookers` 快照。每个实体槽位由 controller index、非零原生 identity 和三维 grid position 共同标识。前端预约与后端开锅都使用同一身份：
+物理厨具目录只接受当前完整 `AllCookers + LockedCookers` 快照。每个实体槽位由 controller index、非零原生 identity 和三维 grid position 共同标识。C# 业务预约与游戏适配层开锅都使用同一身份：
 
 - 锁定、关闭、忙碌、内容 mutation 未完成或状态不可读的控制器不可预约。
 - 可用状态只有严格空闲，或已正常完成 `Extract`、结果为空但残留旧 `ChosenRecipe` 的已验证例外。

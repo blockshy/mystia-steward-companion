@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
-  configFile: 'apps/companion/vite.config.ts',
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
   logLevel: 'silent',
@@ -424,13 +424,13 @@ function buildSpecialBusiness(overrides = {}) {
 
 async function assertSourceContracts() {
   const [workbench, hook, api, panel, servicePresentation, automation, worker] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/hooks/useOrderRecommendations.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/pages/service/ServiceOrderPresentation.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/hooks/useOrderRecommendations.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/api.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/pages/service/ServiceOrderPresentation.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
   ]);
   const orderSignature = workbench.slice(
     workbench.indexOf('function buildNightBusinessOrderSignature'),
@@ -513,3 +513,4 @@ async function assertSourceContracts() {
   assert.equal(automation.includes('buildWackyFoodTargetSignature'), false);
   assert.match(automation, /reconcileRareRecipeTargetForSpecialBusiness/);
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

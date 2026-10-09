@@ -389,7 +389,8 @@ internal sealed class CompanionDeviceAuthorityStore
         string clientId,
         long expectedAuthorityRevision,
         DateTime nowUtc,
-        out string error)
+        out string error,
+        bool recordActivity = true)
     {
         lock (_lock)
         {
@@ -416,7 +417,8 @@ internal sealed class CompanionDeviceAuthorityStore
                 return false;
             }
 
-            _lastSeenUtc[clientId] = nowUtc.ToUniversalTime();
+            // 后台业务许可检查不能伪造客户端心跳；仅外部真实请求记录在线活动。
+            if (recordActivity) _lastSeenUtc[clientId] = nowUtc.ToUniversalTime();
             error = "";
             return true;
         }
@@ -425,6 +427,16 @@ internal sealed class CompanionDeviceAuthorityStore
     public long ReadAuthorityRevision()
     {
         lock (_lock) return _data?.AuthorityRevision ?? 0;
+    }
+
+    /// <summary>读取后台计算使用的权威配置副本，不刷新任何设备的在线时间。</summary>
+    public CompanionDeviceAuthorityStateDto ReadBusinessState(DateTime nowUtc)
+    {
+        lock (_lock)
+        {
+            var data = RequireData();
+            return BuildState(data, data.PrimaryDeviceId, nowUtc);
+        }
     }
 
     private void Load()

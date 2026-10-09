@@ -14,6 +14,7 @@
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="AtomicFile.cs" />
     <Compile Include="../../mods/bepinex/src/Updates/UpdateService.cs" Link="UpdateService.cs" />
+    <Compile Include="../../mods/bepinex/src/Updates/BusinessPackageManifest.cs" Link="BusinessPackageManifest.cs" />
   </ItemGroup>
 
   <ItemGroup>

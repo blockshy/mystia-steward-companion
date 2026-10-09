@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
-  configFile: 'apps/companion/vite.config.ts',
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
   logLevel: 'silent',
@@ -522,8 +522,8 @@ assert.match(
 );
 
 const [passiveSource, moduleSource] = await Promise.all([
-  readFile(new URL('../../apps/companion/src/companion/domain/special-business/modules/passive-special-business.ts', import.meta.url), 'utf8'),
-  readFile(new URL('../../apps/companion/src/companion/domain/special-business/modules/mizuchi-challenges.ts', import.meta.url), 'utf8'),
+  readFile(new URL('../reference/apps/companion/src/companion/domain/special-business/modules/passive-special-business.ts', import.meta.url), 'utf8'),
+  readFile(new URL('../reference/apps/companion/src/companion/domain/special-business/modules/mizuchi-challenges.ts', import.meta.url), 'utf8'),
 ]);
 assert.doesNotMatch(passiveSource, /Story_Mizuchi/);
 assert.doesNotMatch(moduleSource, /startsWith|includes\(['"]Story_Mizuchi/);
@@ -699,3 +699,4 @@ function buildOrder({ traceId, lifecycle, deskCode, customer, role, firstSeenAtU
     hasServedBeverage: false,
   };
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

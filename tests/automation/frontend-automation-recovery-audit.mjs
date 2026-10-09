@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import {
   assertAutomationDirectDeliveryCompletionInvariant,
   canAdvanceAutomationRuntimeEventSequence,
@@ -23,7 +24,7 @@ import {
   shouldRequestNormalOrderCompletion,
   shouldRetainAutomationStateWithoutCandidate,
   shouldRetireMissingManualBarrier,
-} from '../../apps/companion/src/companion/automation-machine.ts';
+} from '../reference/apps/companion/src/companion/automation-machine.ts';
 import {
   getNightBusinessAutomationPauseMessage,
   getNightBusinessAutomationPauseLabel,
@@ -31,7 +32,7 @@ import {
   NIGHT_BUSINESS_LIFECYCLE_UNAVAILABLE,
   NIGHT_BUSINESS_TUTORIAL_ACTIVE,
   NIGHT_BUSINESS_TUTORIAL_STATE_UNAVAILABLE,
-} from '../../apps/companion/src/companion/domain/automation-runtime.ts';
+} from '../reference/apps/companion/src/companion/domain/automation-runtime.ts';
 
 const root = new URL('../../', import.meta.url);
 const initial = { retryCount: 2, lastProgressAtMs: 1000, retryStage: 'ensure-beverage' };
@@ -583,9 +584,9 @@ console.log('PASS: structured automation outcomes preserve waiting state, bound 
 
 async function assertOldRecoveryLogicRemoved() {
   const files = [
-    'apps/companion/src/companion/automation-state.ts',
-    'apps/companion/src/companion/domain/automation.ts',
-    'apps/companion/src/companion/ModWorkbench.tsx',
+    'tests/reference/apps/companion/src/companion/automation-state.ts',
+    'tests/reference/apps/companion/src/companion/domain/automation.ts',
+    'tests/reference/apps/companion/src/companion/ModWorkbench.tsx',
   ];
   const source = (await Promise.all(files.map(async (file) => readFile(new URL(file, root), 'utf8')))).join('\n');
   for (const removed of [
@@ -602,17 +603,17 @@ async function assertOldRecoveryLogicRemoved() {
 }
 
 async function assertStageAndControlContracts() {
-  const workbench = await readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8');
-  const domain = await readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8');
-  const normalOrderKey = await readFile(new URL('apps/companion/src/companion/domain/normal-order-key.ts', root), 'utf8');
-  const intervals = await readFile(new URL('apps/companion/src/companion/hooks/useOrderAutomationIntervals.ts', root), 'utf8');
-  const storage = await readFile(new URL('apps/companion/src/companion/storage.ts', root), 'utf8');
-  const api = await readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8');
-  const types = await readFile(new URL('apps/companion/src/companion/types.ts', root), 'utf8');
-  const servicePanel = await readFile(new URL('apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8');
-  const stateMachine = await readFile(new URL('apps/companion/src/companion/automation-state.ts', root), 'utf8');
-  const automationMachine = await readFile(new URL('apps/companion/src/companion/automation-machine.ts', root), 'utf8');
-  const connection = await readFile(new URL('apps/companion/src/companion/hooks/useCompanionConnection.ts', root), 'utf8');
+  const workbench = await readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8');
+  const domain = await readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8');
+  const normalOrderKey = await readFile(new URL('tests/reference/apps/companion/src/companion/domain/normal-order-key.ts', root), 'utf8');
+  const intervals = await readFile(new URL('tests/reference/apps/companion/src/companion/hooks/useOrderAutomationIntervals.ts', root), 'utf8');
+  const storage = await readFile(new URL('tests/reference/apps/companion/src/companion/storage.ts', root), 'utf8');
+  const api = await readFile(new URL('tests/reference/apps/companion/src/companion/api.ts', root), 'utf8');
+  const types = await readFile(new URL('tests/reference/apps/companion/src/companion/types.ts', root), 'utf8');
+  const servicePanel = await readFile(new URL('tests/reference/apps/companion/src/companion/pages/ModServicePanel.tsx', root), 'utf8');
+  const stateMachine = await readFile(new URL('tests/reference/apps/companion/src/companion/automation-state.ts', root), 'utf8');
+  const automationMachine = await readFile(new URL('tests/reference/apps/companion/src/companion/automation-machine.ts', root), 'utf8');
+  const connection = await readFile(new URL('tests/reference/apps/companion/src/companion/hooks/useCompanionConnection.ts', root), 'utf8');
   const runtime = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.cs', root), 'utf8');
   const delivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.Delivery.cs', root), 'utf8');
   const directDelivery = await readFile(new URL('mods/bepinex/src/Save/RuntimeOrderPreparationService.DirectDelivery.cs', root), 'utf8');
@@ -1081,7 +1082,7 @@ async function assertMockProtocol() {
   const port = 32157;
   const child = spawn(
     process.execPath,
-    [new URL('scripts/mock-local-api.mjs', root).pathname],
+    [fileURLToPath(new URL('scripts/mock-local-api.mjs', root))],
     {
       env: {
         ...process.env,
@@ -1178,159 +1179,28 @@ async function assertMockProtocol() {
     assert.deepEqual(acknowledgedSnapshot.automationEvents, []);
     assert.notEqual(acknowledgedSnapshot.snapshotSignature, snapshot.snapshotSignature);
 
-    const missingLifecycle = await fetch(
-      `http://127.0.0.1:${port}/orders/prepare-next`,
-      { method: 'POST', headers: runtimeHeaders },
-    );
-    assert.equal(missingLifecycle.status, 400);
-    assert.equal((await missingLifecycle.json()).error, 'missing or invalid orderLifecycleSequence');
+    // 当前协议只允许提交 UI 意图和人工重试请求；旧候选/动作协议必须显式拒绝，且不创建烹饪任务。
+    // 实际任务暂停、恢复和原生副作用由 C# 状态机及宿主集成测试验证，不再从旧 POST 伪造 job。
+    const beforeRejected = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    for (const legacyPath of ['/orders/prepare-next', '/orders/complete-first', '/orders/normal/complete-first', '/ui-pinning/targets']) {
+      for (const query of ['', '?orderLifecycleSequence=1&recipeId=111&foodId=11&businessGeneration=1&targetCount=0']) {
+        const rejected = await fetch(`http://127.0.0.1:${port}${legacyPath}${query}`, { method: 'POST', headers: runtimeHeaders });
+        assert.equal(rejected.status, 403, `${legacyPath} must reject client-owned business commands.`);
+        assert.deepEqual(await rejected.json(), { ok: false, error: '客户端业务执行入口已移至 C# 宿主。' });
+      }
+    }
+    const afterRejected = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.deepEqual(afterRejected.automationCookingJobs, beforeRejected.automationCookingJobs);
+    assert.deepEqual(afterRejected.automationEvents, beforeRejected.automationEvents);
 
-    const response = await postJson(
-      `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=1`,
-      runtimeHeaders,
-    );
-    assert.equal(response.automation.outcome, 'progressed');
-    assert.equal(response.automation.stage, 'cooking-start');
-    assert.equal(response.automation.reasonCode, 'cooking-started');
-    assert.equal(typeof response.automation.jobId, 'string');
-
-    const activeSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    const activeJob = activeSnapshot.automationCookingJobs.find((job) => job.jobId === response.automation.jobId);
-    assert.ok(activeJob, 'Mock snapshot must expose the cooking job created by the action response.');
-    assert.equal('autoFinalizeCookingJob' in activeJob, false);
-    assert.equal('autoDeliverFood' in activeJob, false,
-      'A cooking job must not latch its creation-time delivery switch.');
-    assert.equal(activeJob.controlState, 'active');
-    assert.equal(activeJob.controlReasonCode, '');
-    assert.equal(activeJob.controlAuthorityRevision, registration.authorityRevision);
-    assert.equal(activeJob.controlStage, 'FoodDelivery');
-    assert.equal(activeJob.controlSuspendedAtUtc, null);
-    assert.equal(activeJob.warmerStoreCommitUncertain, false);
-    assert.equal(activeJob.foodDeliveryCommitted, false);
-    assert.equal(activeJob.foodDeliveryCommitUncertain, false);
-    assert.equal(activeJob.foodDeliveryCleanupAttempts, 0);
-    assert.equal(activeJob.transactionStage, 'cooking');
-    assert.equal(activeJob.holdsControllerReservation, true);
-    assert.equal(activeJob.controllerLeaseReleaseReason, '');
-    assert.equal(activeJob.orderRuntimeKind, 'Special');
-    assert.equal(activeJob.orderId, 'mock-order-1');
-    assert.equal(activeJob.orderControllerId, 'mock-order-controller-1');
-    assert.equal(activeJob.orderLifecycleSequence, 1);
-    assert.equal(activeJob.foodDeliveryCleanupCompleted, false);
-    assert.equal(activeJob.foodDeliveryCleanupTerminal, false);
-    assert.equal(activeJob.foodDeliveryEvaluationState, 'Pending');
-    assert.equal(activeJob.foodDeliveryEvaluationAttempts, 0);
-    assert.equal(activeJob.foodDeliveryEvaluationEffectiveSeconds, 0);
-
-    const released = await postJson(
-      `http://127.0.0.1:${port}/automation/lease/release`,
-      runtimeHeaders,
-    );
+    const released = await postJson(`http://127.0.0.1:${port}/automation/lease/release`, runtimeHeaders);
     assert.equal(released.ok, true);
     assert.equal(released.owned, false);
-    const leaseSuspendedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(leaseSuspendedSnapshot.automationCookingJobs.length, 1);
-    assert.equal(leaseSuspendedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(leaseSuspendedSnapshot.automationCookingJobs[0].controlState, 'suspended-authority');
-    assert.equal(leaseSuspendedSnapshot.automationCookingJobs[0].controlReasonCode, 'automation-lease-released');
-
     const reacquired = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
     assert.equal(reacquired.owned, true);
-    const leaseResumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(leaseResumedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(leaseResumedSnapshot.automationCookingJobs[0].controlState, 'active');
-
-    const deliveryDisabledProfile = { ...enabledProfile, autoPrepCollectCooking: false };
-    const disabledAuthority = await postJsonBody(
-      `http://127.0.0.1:${port}/devices/profile`,
-      headers,
-      {
-        protocolVersion: 1,
-        profileSchemaVersion: 1,
-        expectedAuthorityRevision: registration.authorityRevision,
-        expectedProfileRevision: registration.activeProfileRevision,
-        profile: deliveryDisabledProfile,
-      },
-    );
-    runtimeHeaders = {
-      ...headers,
-      'x-mystia-steward-companion-authority-revision': String(disabledAuthority.authorityRevision),
-    };
-    const profileTransitionSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(profileTransitionSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(profileTransitionSnapshot.automationCookingJobs[0].controlState, 'suspended-authority');
-    assert.equal(profileTransitionSnapshot.automationCookingJobs[0].controlReasonCode, 'automation-profile-changing');
-    const disabledLease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
-    assert.equal(disabledLease.owned, true);
-    const configurationSuspendedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(configurationSuspendedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(configurationSuspendedSnapshot.automationCookingJobs[0].controlState, 'suspended-configuration');
-    assert.equal(configurationSuspendedSnapshot.automationCookingJobs[0].controlReasonCode, 'rare-food-delivery-disabled');
-
-    const enabledAuthority = await postJsonBody(
-      `http://127.0.0.1:${port}/devices/profile`,
-      headers,
-      {
-        protocolVersion: 1,
-        profileSchemaVersion: 1,
-        expectedAuthorityRevision: disabledAuthority.authorityRevision,
-        expectedProfileRevision: disabledAuthority.activeProfileRevision,
-        profile: enabledProfile,
-      },
-    );
-    runtimeHeaders = {
-      ...headers,
-      'x-mystia-steward-companion-authority-revision': String(enabledAuthority.authorityRevision),
-    };
-    await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, runtimeHeaders);
-    const configurationResumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(configurationResumedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(configurationResumedSnapshot.automationCookingJobs[0].controlState, 'active');
-
-    const nextHeaders = {
-      'x-mystia-steward-companion-client-id': 'automation-audit-next',
-      'x-mystia-steward-companion-client-label': 'Automation Audit Next',
-    };
-    const nextRegistration = await postJsonBody(
-      `http://127.0.0.1:${port}/devices/register`,
-      nextHeaders,
-      {
-        protocolVersion: 1,
-        profileSchemaVersion: 1,
-        platform: 'browser',
-        appVersion: '1.2.0',
-        profile: enabledProfile,
-      },
-    );
-    const switchedAuthority = await postJsonBody(
-      `http://127.0.0.1:${port}/devices/primary`,
-      headers,
-      {
-        protocolVersion: 1,
-        expectedAuthorityRevision: nextRegistration.authorityRevision,
-        deviceId: nextRegistration.currentDeviceId,
-      },
-    );
-    const switchSuspendedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(switchSuspendedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(switchSuspendedSnapshot.automationCookingJobs[0].controlState, 'suspended-authority');
-    assert.equal(switchSuspendedSnapshot.automationCookingJobs[0].controlReasonCode, 'automation-primary-device-changing');
-    const nextRuntimeHeaders = {
-      ...nextHeaders,
-      'x-mystia-steward-companion-authority-revision': String(switchedAuthority.authorityRevision),
-    };
-    const nextLease = await postJson(`http://127.0.0.1:${port}/automation/lease/acquire`, nextRuntimeHeaders);
-    assert.equal(nextLease.owned, true);
-    const switchResumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
-    assert.equal(switchResumedSnapshot.automationCookingJobs[0].jobId, activeJob.jobId);
-    assert.equal(switchResumedSnapshot.automationCookingJobs[0].controlState, 'active');
-
-    const superseded = await postJson(
-      `http://127.0.0.1:${port}/orders/prepare-next?orderLifecycleSequence=2`,
-      runtimeHeaders,
-    );
-    assert.equal(superseded.ok, false);
-    assert.equal(superseded.automation.reasonCode, 'automation-lease-unavailable');
+    const resumedSnapshot = await getJson(`http://127.0.0.1:${port}/snapshot`);
+    assert.deepEqual(resumedSnapshot.automationCookingJobs, beforeRejected.automationCookingJobs,
+      'Acquiring a lease must not recreate tasks from removed client commands.');
   } finally {
     child.kill('SIGTERM');
     if (child.exitCode === null) await once(child, 'exit');
@@ -1372,3 +1242,4 @@ async function postJsonBody(url, headers, body) {
   assert.equal(response.ok, true);
   return response.json();
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

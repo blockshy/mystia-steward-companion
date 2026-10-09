@@ -1,6 +1,6 @@
 # 更新系统
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文说明版本检测、累计版本说明、包下载和独立更新程序的完整链路。正式发布如何生成对应资产见
 [发布流程](local-release.md)；接口认证与方法矩阵见 [本地 API](local-api.md)。
@@ -31,6 +31,14 @@ catalog 获取或校验失败时，更新仍可检测、下载和安装，只把
 所有资产必须通过 tag 固定的 Release 下载地址读取。manifest 与 catalog 都执行严格 schema、owner、通道、
 SemVer、数量、大小、URL 和 SHA-256 门禁。catalog 的版本必须严格升序，包含唯一 owner，且不能包含晚于
 owner 的版本。ZIP 下载同时校验声明长度与 SHA-256，并在 staging 中拒绝路径穿越和不符合包结构的内容。
+
+### C# 业务组件成套校验
+
+每份插件包必须同时包含主 Mod DLL、`MystiaStewardCompanion.Contracts.dll`、`MystiaStewardCompanion.Business.dll`、Windows 客户端和 updater，并附 `business-bundle.sha256`。清单严格列出这五个非空组件的 SHA-256，不接受缺项、重复项、未知路径或混装文件。
+
+PowerShell/Bash 打包入口先验证全部输入，再事务替换 dist；C# 下载服务与 Rust updater 在 staging/安装后分别核对清单。清单用于发现缺包或组件混装，外部可信来源仍由 Release manifest 的整包 SHA-256 与受限下载地址保证。业务协议升级后必须成套更新；旧客户端上传订单方案的入口明确拒绝。
+
+本地开发安装可使用 `mods/bepinex/tools/install-local-package.ps1`：显式提供游戏、包、存档和工作区记录目录，默认只读校验，`-Execute` 才成套替换。它要求相关进程停止、验证原件备份，并对配置、存档及核心文件做前后摘要检查。安装后校验失败恢复完整原插件；工作区备份保留用于人工回退。离线事务验证入口为 `pwsh -NoProfile -File tests/csharp-business-package/install-transaction.ps1`。
 
 ## 版本发现策略
 
@@ -111,8 +119,8 @@ HWND 前启用 Per-Monitor DPI Awareness V2，使用系统 message font、逻辑
 5. 以原子方式持续写入状态、消息和进度，供下一次 Mod 启动读取。
 6. 失败时尽力恢复备份，并写入可展示的失败状态。
 
-updater 不从网络下载文件。它接收 `UpdateService` 已校验的 staging 路径，并在替换前后再次检查目标目录名和
-最小文件集合；包的长度、SHA-256 和 ZIP 安全性仍由启动它的 `UpdateService` 负责。
+updater 不从网络下载文件。它接收 `UpdateService` 已校验的 staging 路径，并在替换前后再次检查目标目录名、
+五组件完整性及 `business-bundle.sha256`；整包长度、SHA-256 和 ZIP 安全性仍由启动它的 `UpdateService` 负责。
 
 ## 维护规则
 

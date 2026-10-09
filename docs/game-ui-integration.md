@@ -1,8 +1,8 @@
 # 游戏界面辅助
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
-本文说明 Mod 如何把伴随窗口选出的普客与稀客目标投影到游戏原生 UI。目标如何选出见
+本文说明 Mod 如何把 C# 业务层选出的普客与稀客目标投影到游戏原生 UI。目标如何选出见
 [推荐引擎](recommendation-engine.md)，订单身份和生命周期见
 [订单运行时生命周期](runtime-order-lifecycle.md)。
 
@@ -21,9 +21,10 @@
 
 ## 目标发布模型
 
-前端通过 `apps/companion/src/companion/domain/game-ui-targets.ts` 构造目标，
-`apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts` 以一个原子 target set 发布到
-`POST /ui-pinning/targets`。
+`modules/companion-business/Domain/GameUi/GameUiTargetService.cs` 使用权威快照和同一订单主方案构造目标，
+`mods/bepinex/src/LocalApi/LocalApiServer.Business.cs` 在后台业务结果仍为当前版本时原子发布。
+客户端只编辑共享功能开关、颜色等设置，并通过 `/business/status` 的 `gameUiTargets` 查看投影；
+旧的 `POST /ui-pinning/targets` 客户端入口拒绝写入。业务线程只处理托管值，Unity 绑定仍由主线程处理。
 
 一个 target set 最多包含一个稀客目标和一个普客目标，并按稀客、普客的稳定顺序发布。每个目标必须携带：
 
@@ -116,11 +117,14 @@ Hook。料理页生命周期由 open/close 登记和每帧指针验证处理。�
 
 ## 验证
 
-前端目标发布：
+客户端设置意图和真实 C# 离线目标投影（需先启动仓库 mock API 与客户端预览）：
 
 ```bash
 corepack pnpm audit:ui-pinning
 ```
+
+此项验证不启动真实游戏。它覆盖前端不再发布目标、稀客/普客开关独立生效、颜色变化不更换业务身份；
+游戏原生 UI、IL2CPP wrapper 与实际渲染行为仍需独立实机证据。
 
 后端各表面：
 

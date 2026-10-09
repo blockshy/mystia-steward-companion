@@ -1,12 +1,12 @@
 # 项目事实与决策索引
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文保存需要跨会话快速确认、但不属于具体操作步骤的稳定项目决策。它不是功能流水账，也不复制专题契约；细节以链接文档和测试源码为准。
 
 ## 项目定位
 
-- `mystia-steward-companion` 由 BepInEx IL2CPP Mod、React 伴随窗口和 Tauri 桌面/Android 壳组成。
+- `mystia-steward-companion` 由纯 C# 业务类库、BepInEx IL2CPP 游戏适配层、React 伴随窗口和 Tauri 桌面/Android 壳组成；Flutter 留待后续独立阶段。
 - Mod 在游戏电脑上读取运行时状态并提供本地 API；伴随窗口可以同机运行，也可以作为局域网内的另一台 Windows/Android 设备连接。
 - 伴随窗口是唯一用户界面。游戏内不提供备用 IMGUI 或嵌入式菜单页面。
 - 当前产品版本、支持平台和用户操作以两份用户 README 与内置帮助为准；本文不保存发布版本快照。
@@ -17,9 +17,10 @@
 
 | 路径 | 作用 |
 | --- | --- |
-| `apps/companion/src/` | React 页面、领域逻辑、推荐引擎、Worker 和结构化数据 |
+| `apps/companion/src/` | React 页面、结果展示、用户意图、连接与本地偏好 |
+| `modules/companion-contracts/`、`modules/companion-business/` | 业务协议、推荐规则、订单与唯一自动化编排，不依赖 Unity/BepInEx |
 | `apps/companion/src-tauri/` | Tauri 桌面/移动入口、窗口控制、本地代理和更新程序 |
-| `mods/bepinex/src/` | 运行时 Provider、业务服务、本地 API、自动化和游戏 UI 集成 |
+| `mods/bepinex/src/` | 运行时 Provider、计算宿主、本地 API、游戏副作用与 UI 适配 |
 | `mods/bepinex/References/` | 由 lock 精确校验、但不提交真实 DLL 的构建引用目录 |
 | `tests/` | C# smoke、Node audit、mock 与 Playwright 契约 |
 | `docs/` | 按职责拆分的开发、运行时、机制与发布文档 |
@@ -34,7 +35,7 @@
 | 运行时数据 | 静态目录、玩家状态和业务快照分层；完整目录按内容签名独立获取 | [运行时数据 Provider](runtime-provider.md) |
 | 订单 | 普客与稀客都以成功原生创建边界形成的精确捕获为权威；HUD 只补展示，不证明所有权 | [订单捕获与生命周期](runtime-order-lifecycle.md) |
 | 自动化 | 每次副作用受当前主设备 profile、authority revision、automation lease、经营 generation 和订单 lifecycle 共同约束 | [自动化运行时](automation-runtime.md) |
-| 推荐 | 候选管线先执行硬过滤，再组合和排序；只有完整计划为空才生成阻断诊断 | [推荐引擎](recommendation-engine.md) |
+| 推荐 | C# 候选管线先执行硬过滤，再组合和排序；客户端读取同一主方案，只有完整计划为空才生成阻断诊断 | [推荐引擎](recommendation-engine.md) |
 | 游戏 UI | 后台只发布 immutable target；Unity 主线程按精确 ownership 应用 Mod-owned 视觉和加料事务 | [游戏 UI 集成](game-ui-integration.md) |
 | 设备配置 | 设备注册表中只有一个主设备；主设备 profile 是生效配置，非主设备可显式同步 | [本地 API](local-api.md) |
 | 任务 | tracked 与 available 是两条只读业务链，不用存档 bool 或副作用查询补全状态 | [任务系统](missions.md) |

@@ -1,6 +1,6 @@
 # 本地 API
 
-更新日期：2026-08-19
+更新日期：2026-10-10
 
 本文档只定义游戏进程内本地 HTTP API 的监听、鉴权、设备权威、方法矩阵、请求生命周期和传输边界。运行时数据含义见 [运行时 Provider](runtime-provider.md)，订单身份见 [运行时订单生命周期](runtime-order-lifecycle.md)，自动化状态机见 [自动化运行时](automation-runtime.md)。
 
@@ -65,6 +65,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | `/missions/tracked` | active-only 已追踪任务快照 |
 | `/missions/available` | Unity 主线程 fresh read 的可接取任务快照 |
 | `/automation/lease` | 当前客户端的 automation lease 状态 |
+| `/business/status?protocolVersion=1` | C# 业务结果、自动化状态与当前性；只读后台缓存 |
 | `/logs/settings` | 总日志和控制台状态 |
 | `/favorites` | 料理与酒水收藏 |
 | `/custom-recipes` | 自定义推荐料理配置 |
@@ -76,17 +77,32 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | --- | --- |
 | 设备权威 | `/devices/register`、`/devices/profile`、`/devices/primary`、`/devices/sync`、`/devices/sync-ack`、`/devices/rename`、`/devices/forget` |
 | 自动化控制 | `/automation/lease/acquire`、`/automation/lease/release`、`/automation/barriers/ack` |
+| 业务意图 | `/business/query`、`/business/automation/retry` |
 | 本机连接 | `/local-api/config`、`/local-api/token/regenerate` |
 | 更新 | `/updates/status`、`/updates/check`、`/updates/download`、`/updates/install-on-exit` |
 | 日志与诊断 | `/diagnostics/automation-decision`、`/logs/export-diagnostics`、`/logs/config`、`/logs/console`、`/logs/open-folder` |
 | 运行时库存 | `/inventory/set`、`/inventory/bulk-set` |
-| 订单 | `/orders/prepare-next`、`/orders/complete-first`、`/orders/normal/complete-first`、`/orders/rare/dismiss` |
+| 订单 | `/orders/rare/dismiss` |
 | 稀客邀请 | `/rare-guests/invite`、`/rare-guests/invite-all` |
-| 游戏 UI 目标 | `/ui-pinning/targets` |
 | 收藏 | `/favorites/add-recipe`、`/favorites/remove-recipe`、`/favorites/add-beverage`、`/favorites/remove-beverage` |
 | 自定义料理 | `/custom-recipes/upsert`、`/custom-recipes/remove`、`/custom-recipes/settings`、`/custom-recipes/update-flags`、`/custom-recipes/move` |
 
-设备权威 POST 使用有界 JSON body 和 exact property set。其余当前端点使用 URL query；新增协议不能同时保留 query、JSON 或别名多套写法。
+设备权威与业务意图 POST 使用有界 JSON body 和 exact property set。其余当前端点使用 URL query；新增协议不能同时保留 query、JSON 或别名多套写法。
+
+`/orders/prepare-next`、`/orders/complete-first`、`/orders/normal/complete-first` 和 `/ui-pinning/targets` 只返回 HTTP 409 升级拒绝响应，不再执行客户端提交的方案。桌面客户端、Android 客户端和 Mod 必须成套升级。
+
+## 纯 C# 业务协议
+
+`modules/companion-business` 负责候选搜索、订单方案、特殊经营规则、UI 目标投影与自动化编排。`LocalApiServer.Business.cs` 是游戏进程内宿主：独立后台任务读取冻结快照和权威配置，HTTP 线程只排队意图和返回缓存，Unity 主线程只捕获事实与执行经复核的动作。
+
+- `GET /business/status?protocolVersion=1` 返回 `isCurrent`、`pending`、`error`、`inputVersion`、`sourceSnapshotSignature`、推荐、运行时集合、游戏 UI 目标和自动化诊断。客户端不能把旧结果或错误状态解释为可执行结果。
+- `POST /business/query` body 必须含 `protocolVersion: 1` 和 `kind: normal|rare`，可附 `selectedPlace`、`customerId`、`foodTag`、`beverageTag`。文本最长 100 字符，稀客 ID 必须为非负整数。只传筛选意图；目录、库存、偏好和收藏均由宿主读取，客户端不能上传业务快照。
+- 页面查询按设备与种类合并，最多 16 个槽位，每周期按序处理一个；结果必须重新通过输入版本检查，过期结果不会作为当前结果返回。
+- `POST /business/automation/retry` 只接受 `{protocolVersion, kind, key}`；重试还需要当前主设备、精确权威 revision 和有效租约。实际动作由编排器根据最新事实重新决定。
+- 后台读取不会更新设备在线时间，也不会自动取得或续期租约；现有客户端心跳继续承担在线许可。
+- 候选缓存仅存完整值参数对应的纯计算结果；订单身份、代次、执行许可和副作用结果不缓存。输入变化会撤销旧帧，动作排队和主线程执行前再次核对版本。
+
+协议版本不匹配时明确提示成套升级；不存在客户端算法回退或两个自动化 writer。
 
 ## 设备配置权威
 
@@ -116,7 +132,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 - 另一设备或不同 revision 不能接管尚未失效的 lease。
 - 从无 lease 状态第一次取得控制、显式释放、主设备切换或 profile revision 变化会推进 command epoch。lease 过期会立即撤销控制许可；下一次从空状态取得控制时再推进 epoch。
 - release 只撤销未来副作用权限并推进 epoch，不删除活动 cooking job。
-- 三个订单动作端点要求有效 lease，并把验证后的 epoch写入主线程命令。
+- C# 宿主派发订单动作时要求有效 lease，并把验证后的 epoch 和输入版本检查器写入主线程命令。
 - barrier ack 还必须由当前 lease owner 按正 sequence 发起。
 
 运行时阶段 permit 与 job 行为由 [自动化运行时](automation-runtime.md) 定义。
@@ -131,7 +147,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 
 ## 生命周期与错误
 
-listener shutdown 的顺序固定为：停止接收新客户端、通知更新服务取消、关闭在途 socket、等待 handler、最后释放更新服务。资源释放或诊断失败不能泄漏 handler 槽位，也不能让 worker 无限重启。
+shutdown 先取消业务循环并撤销旧输入，再停止接收新客户端、通知更新服务取消、关闭在途 socket、等待 handler、最后释放更新服务。Unity 主线程不等待可能正在排队等待它的业务任务；版本栅栏阻止取消后的任务提交动作。资源释放或诊断失败不能泄漏 handler 槽位，也不能让 worker 无限重启。
 
 传输层使用明确 HTTP 状态处理协议错误；业务层可能以 200 返回结构化 `ok=false`、`error`、outcome 或 unavailable 状态。客户端必须读取结构化响应，不能仅凭 HTTP 200 推断副作用成功。
 

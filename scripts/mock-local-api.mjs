@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { createHash, randomUUID } from 'node:crypto';
+import { MockBusinessHost } from './mock-business-host.mjs';
 
 /**
  * 本地 API 模拟服务。
@@ -53,6 +54,7 @@ const MOCK_LAN_ENDPOINTS = [
   },
 ];
 const AUTOMATION_LEASE_TTL_MS = 15000;
+const businessHost = new MockBusinessHost();
 
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
@@ -355,6 +357,12 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === 'POST') {
     try {
+      if (path === '/business/query') {
+        requireMockDevice(request);
+        const intent = await readJsonBody(request);
+        sendJson(response, 200, await businessHost.request('query', { clientId: 'mock-business-primary', intent }, buildBusinessInput()));
+        return;
+      }
       if (path === '/devices/register') {
         sendJson(response, 200, registerMockDevice(request, await readJsonBody(request)));
         return;
@@ -540,63 +548,13 @@ const server = http.createServer(async (request, response) => {
       }
 
       if (path === '/orders/prepare-next' || path === '/orders/complete-first' || path === '/orders/normal/complete-first') {
-        const orderLifecycleSequence = Number(requestUrl.searchParams.get('orderLifecycleSequence'));
-        if (!Number.isSafeInteger(orderLifecycleSequence) || orderLifecycleSequence <= 0) {
-          sendJson(response, 400, {
-            ok: false,
-            prepared: false,
-            error: 'missing or invalid orderLifecycleSequence',
-          });
-          return;
-        }
-        const lease = readAutomationLease(request);
-        if (!lease.owned) {
-          sendJson(response, 200, {
-            ok: false,
-            prepared: false,
-            error: lease.error || (lease.ownerLabel ? `自动化当前由 ${lease.ownerLabel} 控制，本窗口仅查看。` : '自动化控制权不可用。'),
-            order: {
-              traceId: '',
-              deskCode: -1,
-              guestId: null,
-              guestName: '',
-              foodTag: '',
-              beverageTag: '',
-            },
-            recipeId: -1,
-            recipeName: '',
-            beverageId: -1,
-            beverageName: '',
-            automation: {
-              outcome: 'retryable-failure',
-              stage: 'lease',
-              reasonCode: 'automation-lease-unavailable',
-              jobId: '',
-              retryAfterMs: 1000,
-            },
-            steps: [],
-          });
-          return;
-        }
-        const actionResponse = buildOrderActionResponse(requestUrl.searchParams);
-        automationCookingJobs = [buildMockAutomationCookingJob(actionResponse, path, requestUrl.searchParams)];
-        refreshMockAutomationCookingJobControls();
-        sendJson(response, 200, actionResponse);
+        // 模拟 API 必须与生产边界一致：旧客户端不能上传本地计算的候选绕过 C# 唯一编排器。
+        sendJson(response, 403, { ok: false, error: '客户端业务执行入口已移至 C# 宿主。' });
         return;
       }
 
       if (path === '/ui-pinning/targets') {
-        const authority = authorizeMockRuntimeWriter(request);
-        if (!authority.ok) {
-          sendJson(response, 200, { ok: false, error: authority.error });
-          return;
-        }
-        const validationError = validateUiTargetPublication(requestUrl.searchParams);
-        if (validationError) {
-          sendJson(response, 400, { ok: false, error: validationError });
-          return;
-        }
-        sendJson(response, 200, { ok: true, status: 'mock target accepted' });
+        sendJson(response, 403, { ok: false, error: '客户端业务执行入口已移至 C# 宿主。' });
         return;
       }
 
@@ -649,6 +607,11 @@ const server = http.createServer(async (request, response) => {
   }
 
   try {
+    if (path === '/business/status') {
+      requireMockDevice(request);
+      sendJson(response, 200, await businessHost.request('status', { protocolVersion: Number(requestUrl.searchParams.get('protocolVersion')) }, buildBusinessInput()));
+      return;
+    }
     if (path === '/health') {
       sendJson(response, 200, buildHealth());
       return;
@@ -731,8 +694,18 @@ server.listen(port, host, () => {
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
+    businessHost.close();
     server.close(() => process.exit(0));
   });
+}
+
+/** 可信输入只从模拟服务自己的状态构造；前端查询不能替换库存、目录或主设备配置。 */
+function buildBusinessInput() {
+  const primary = mockDeviceAuthority.devices.get(mockDeviceAuthority.primaryDeviceId);
+  if (!primary) throw mockHttpError(503, 'mock 主设备尚未初始化。');
+  return { snapshot: buildSnapshot(), catalog: buildRuntimeData(), profile: structuredClone(primary.profile),
+    primaryOnline: Date.now() - Date.parse(primary.lastSeenAtUtc) <= 20_000,
+    favorites: structuredClone(favoriteData), customRecipes: structuredClone(customRecipeData) };
 }
 
 function buildSnapshot() {
@@ -1160,101 +1133,6 @@ function buildInvitationResponse(path, params) {
   };
 }
 
-function buildOrderActionResponse(params) {
-  const recipeName = params.get('recipeName') || params.get('food') || '蜂蜜蛋糕';
-  const beverageName = params.get('beverageName') || '果味米酒';
-  const deskCode = Number(params.get('deskCode') || 1);
-  const guestIdText = params.get('guestId') || '';
-  return {
-    ok: true,
-    prepared: true,
-    servedFood: false,
-    servedBeverage: true,
-    completedOrder: false,
-    error: null,
-    order: {
-      deskCode: Number.isFinite(deskCode) ? deskCode : 1,
-      guestId: guestIdText ? Number(guestIdText) : null,
-      guestName: params.get('guestName') || 'Mock Guest',
-      foodTag: params.get('foodTag') || '',
-      beverageTag: params.get('beverageTag') || '',
-    },
-    recipeId: Number(params.get('recipeId') || params.get('foodId') || -1),
-    recipeName,
-    beverageId: Number(params.get('beverageId') || -1),
-    beverageName,
-    automation: {
-      outcome: 'progressed',
-      stage: 'cooking-start',
-      reasonCode: 'cooking-started',
-      jobId: 'CJ-MOCK-000001',
-      retryAfterMs: 0,
-    },
-    steps: [
-      { code: 'beverage-delivered', name: 'ensure-beverage', ok: true, skipped: false, message: `mock served ${beverageName}` },
-      { code: 'cooking-started', name: 'ensure-cooking', ok: true, skipped: false, message: `mock started ${recipeName}` },
-    ],
-  };
-}
-
-function buildMockAutomationCookingJob(response, path, params) {
-  const now = nowIso();
-  return {
-    jobId: response.automation.jobId,
-    targetKind: path === '/orders/normal/complete-first' ? 'normal' : 'rare',
-    traceId: params.get('traceId') || '',
-    orderKey: params.get('orderKey') || '',
-    deskCode: response.order.deskCode,
-    guestId: response.order.guestId,
-    guestName: response.order.guestName,
-    foodId: Number(params.get('foodId') || -1),
-    foodName: response.recipeName,
-    recipeId: response.recipeId,
-    state: 'cooking',
-    outcome: 'progressed',
-    reasonCode: 'cooking-started',
-    transactionStage: 'cooking',
-    specialTargetRevision: 0,
-    allowYuumaControlledProgression:
-      params.get('allowYuumaControlledProgression') === 'true',
-    controlState: 'suspended-authority',
-    controlReasonCode: 'automation-authority-unavailable',
-    controlMessage: '自动化主设备控制权尚未就绪。',
-    controlAuthorityRevision: mockDeviceAuthority.authorityRevision,
-    controlStage: 'FoodDelivery',
-    controlSuspendedAtUtc: now,
-    holdsControllerReservation: true,
-    controllerLeaseReleaseReason: '',
-    orderRuntimeKind: path === '/orders/normal/complete-first' ? 'Normal' : 'Special',
-    orderId: 'mock-order-1',
-    orderControllerId: 'mock-order-controller-1',
-    orderLifecycleSequence: Number(params.get('orderLifecycleSequence')),
-    controllerId: 'mock-cooker-1',
-    resultId: 'mock-result-1',
-    generation: 1,
-    contentRevision: 1,
-    cookerPhase: 1,
-    cookerProgress: 0.25,
-    ownershipObservationFailures: 0,
-    regressiveObservations: 0,
-    deliveryFailureAttempts: 0,
-    manualHandoffReadFailures: 0,
-    warmerStoreCommitted: false,
-    warmerStoreCommitUncertain: false,
-    warmerResetAttempts: 0,
-    foodDeliveryCommitted: false,
-    foodDeliveryCommitUncertain: false,
-    foodDeliveryCleanupAttempts: 0,
-    foodDeliveryCleanupCompleted: false,
-    foodDeliveryCleanupTerminal: false,
-    foodDeliveryEvaluationState: 'Pending',
-    foodDeliveryEvaluationAttempts: 0,
-    foodDeliveryEvaluationEffectiveSeconds: 0,
-    startedAtUtc: now,
-    lastObservedAtUtc: now,
-    lastProgressAtUtc: now,
-  };
-}
 
 function mutateRecipeFavorite(params) {
   const customerId = Number(params.get('customerId') || 0);

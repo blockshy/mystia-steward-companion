@@ -10,6 +10,7 @@
     allow(dead_code)
 )]
 
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -152,7 +153,8 @@ fn parse_install_context(args: &HashMap<String, String>) -> Result<InstallContex
 /// 执行完整的退出等待、备份、替换和最终校验流程。
 ///
 /// 参数由 Mod 的 `UpdateService.InstallOnExit` 传入；调用方必须保证 staged 目录已经通过
-/// zip 路径安全检查和 SHA256 校验。本函数仍会重新检查最小文件集合，防止暂存目录被外部修改。
+/// zip 路径安全检查和 SHA256 校验。本函数在等待前与实际替换事务中复核成套摘要；
+/// 安装后的校验也属于同一事务，失败时保留新包诊断材料并恢复原目录。
 fn run_install(
     context: &InstallContext,
     status_file: &Path,
@@ -249,13 +251,6 @@ fn run_install(
         status_file,
         progress,
     )?;
-    publish_progress(
-        status_file,
-        progress,
-        InstallProgress::new("verifying", "正在校验新版本文件。", 90),
-    );
-    validate_staged_package(&context.plugin_dir)?;
-
     publish_progress(
         status_file,
         progress,
@@ -440,6 +435,54 @@ fn validate_staged_package(staged_dir: &Path) -> Result<(), String> {
     require_file(staged_dir, REQUIRED_DLL)?;
     require_file(staged_dir, REQUIRED_COMPANION_EXE)?;
     require_file(staged_dir, REQUIRED_UPDATER_EXE)?;
+    validate_business_bundle(staged_dir)?;
+    Ok(())
+}
+
+/// 校验成套文件的精确集合及内容；清单中的名字必须来自白名单，不能用于任意路径读取。
+fn validate_business_bundle(root: &Path) -> Result<(), String> {
+    let required = [
+        REQUIRED_DLL,
+        "MystiaStewardCompanion.Contracts.dll",
+        "MystiaStewardCompanion.Business.dll",
+        REQUIRED_COMPANION_EXE,
+        REQUIRED_UPDATER_EXE,
+    ];
+    let path = root.join("business-bundle.sha256");
+    if fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len()
+        > 4096
+    {
+        return Err("business bundle manifest is too large".into());
+    }
+    let manifest = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let lines: Vec<_> = manifest.lines().collect();
+    if lines.len() != required.len() {
+        return Err("business bundle file count mismatch".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for line in lines {
+        let Some((hash, name)) = line.split_once("  ") else {
+            return Err("invalid business bundle line".into());
+        };
+        if hash.len() != 64
+            || !hash.bytes().all(|value| value.is_ascii_hexdigit())
+            || !required.contains(&name)
+            || !seen.insert(name)
+        {
+            return Err("invalid or duplicate business bundle entry".into());
+        }
+        let mut file = fs::File::open(root.join(name)).map_err(|error| error.to_string())?;
+        if file.metadata().map_err(|error| error.to_string())?.len() == 0 {
+            return Err(format!("empty business component: {name}"));
+        }
+        let mut digest = Sha256::new();
+        std::io::copy(&mut file, &mut digest).map_err(|error| error.to_string())?;
+        if !format!("{:x}", digest.finalize()).eq_ignore_ascii_case(hash) {
+            return Err(format!("business component hash mismatch: {name}"));
+        }
+    }
     Ok(())
 }
 
@@ -463,9 +506,10 @@ fn prepare_parent(path: &Path) -> Result<(), String> {
         .map_err(|error| format!("failed to create {}: {error}", parent.display()))
 }
 
-/// 用暂存目录替换当前插件目录，失败时尽量回滚旧目录。
+/// 用暂存目录替换当前插件目录，安装后校验失败时尽量回滚旧目录。
 ///
 /// 替换采用目录重命名而不是逐文件覆盖，减少部分文件成功、部分文件失败的窗口期。
+/// 旧目录可能来自尚未引入业务清单的版本，因此恢复时只移动完整旧目录，不对它套用新包规范。
 fn replace_plugin_directory(
     plugin_dir: &Path,
     staged_dir: &Path,
@@ -473,6 +517,10 @@ fn replace_plugin_directory(
     status_file: &Path,
     progress: &mut dyn FnMut(InstallProgress),
 ) -> Result<(), String> {
+    // 进入本事务时游戏已经退出。等待可能持续很久，不能复用等待前对暂存目录的校验结果；
+    // 本次失败发生在任何旧目录移动之前，因此已安装版本完全不受影响。
+    validate_staged_package(staged_dir)?;
+
     if backup_dir.exists() {
         let fallback = backup_dir.with_extension(format!("old-{}", process::id()));
         fs::rename(backup_dir, &fallback).map_err(|error| {
@@ -513,6 +561,42 @@ fn replace_plugin_directory(
                 format!("failed to install staged package: {error}; {restore_error}")
             }
         });
+    }
+
+    publish_progress(
+        status_file,
+        progress,
+        InstallProgress::new("verifying", "正在校验新版本文件。", 90),
+    );
+    if let Err(error) = validate_staged_package(plugin_dir) {
+        publish_progress(
+            status_file,
+            progress,
+            InstallProgress::new("rolling-back", "新版本校验失败，正在恢复原插件目录。", 92),
+        );
+        // 不删除失败的新包：原 staging 路径在成功重命名后为空，将完整失败目录移回此处供诊断。
+        // 只有隔离成功才恢复旧目录，避免逐文件覆盖两个版本。任一步失败均明确保留旧备份位置。
+        if let Err(isolation_error) = retry_rename(plugin_dir, staged_dir, Duration::from_secs(30))
+        {
+            return Err(format!(
+                "installed package validation failed: {error}; failed to isolate rejected package: \
+                 {isolation_error}; previous version remains at {}",
+                backup_dir.display()
+            ));
+        }
+        if let Err(restore_error) = retry_rename(backup_dir, plugin_dir, Duration::from_secs(30)) {
+            return Err(format!(
+                "installed package validation failed: {error}; rejected package retained at {}; \
+                 failed to restore previous version from {}: {restore_error}",
+                staged_dir.display(),
+                backup_dir.display()
+            ));
+        }
+        return Err(format!(
+            "installed package validation failed and restored previous version: {error}; \
+             rejected package retained at {}",
+            staged_dir.display()
+        ));
     }
 
     Ok(())
@@ -1382,6 +1466,207 @@ mod windows_updater_ui {
 #[cfg(test)]
 mod tests {
     use super::scale_logical_pixels;
+
+    /// 安装事务测试专用目录。所有组件都是普通文本，不加载 DLL、不启动程序，也不连接真实游戏。
+    struct PackageTransactionFixture {
+        root: std::path::PathBuf,
+        plugin: std::path::PathBuf,
+        staged: std::path::PathBuf,
+        backup: std::path::PathBuf,
+        status: std::path::PathBuf,
+    }
+
+    impl PackageTransactionFixture {
+        fn new() -> Self {
+            use super::*;
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = env::temp_dir().join(format!(
+                "mystia-updater-transaction-{}-{nonce}",
+                process::id()
+            ));
+            let fixture = Self {
+                plugin: root.join("mystia-steward-companion"),
+                staged: root.join("staged"),
+                backup: root.join("backup"),
+                status: root.join("status.json"),
+                root,
+            };
+            fs::create_dir_all(&fixture.plugin).unwrap();
+            // 故意模拟没有业务 DLL 和清单的旧包，以验证回退不受新包规范约束。
+            fs::write(
+                fixture.plugin.join("old-plugin.txt"),
+                "previous complete version",
+            )
+            .unwrap();
+            fs::create_dir_all(fixture.staged.join("companion")).unwrap();
+            let mut manifest = String::new();
+            for name in [
+                REQUIRED_DLL,
+                "MystiaStewardCompanion.Contracts.dll",
+                "MystiaStewardCompanion.Business.dll",
+                REQUIRED_COMPANION_EXE,
+                REQUIRED_UPDATER_EXE,
+            ] {
+                let bytes = format!("new component: {name}").into_bytes();
+                fs::write(fixture.staged.join(name), &bytes).unwrap();
+                manifest.push_str(&format!("{:x}  {name}\n", Sha256::digest(&bytes)));
+            }
+            fs::write(fixture.staged.join("business-bundle.sha256"), manifest).unwrap();
+            fixture
+        }
+
+        fn assert_old_version_active(&self) {
+            assert_eq!(
+                std::fs::read_to_string(self.plugin.join("old-plugin.txt")).unwrap(),
+                "previous complete version"
+            );
+            assert!(!self.plugin.join("business-bundle.sha256").exists());
+            assert!(!self
+                .plugin
+                .join("MystiaStewardCompanion.Business.dll")
+                .exists());
+            assert!(!self.backup.exists());
+        }
+    }
+
+    impl Drop for PackageTransactionFixture {
+        fn drop(&mut self) {
+            // root 是本测试新建的固定前缀唯一目录，只清理本 fixture，不接触任何游戏路径。
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn package_transaction_rechecks_staging_before_moving_old_version() {
+        use super::*;
+        let fixture = PackageTransactionFixture::new();
+        // 模拟等待游戏退出期间暂存组件发生变化；事务入口必须拒绝，旧目录不应被移动。
+        validate_staged_package(&fixture.staged).unwrap();
+        fs::write(
+            fixture.staged.join("MystiaStewardCompanion.Business.dll"),
+            "changed during wait",
+        )
+        .unwrap();
+        let mut observed = Vec::new();
+        let result = replace_plugin_directory(
+            &fixture.plugin,
+            &fixture.staged,
+            &fixture.backup,
+            &fixture.status,
+            &mut |event| observed.push(event.state),
+        );
+        assert!(result.unwrap_err().contains("hash mismatch"));
+        assert!(
+            observed.is_empty(),
+            "validation must precede all backup/install progress"
+        );
+        fixture.assert_old_version_active();
+        assert!(fixture.staged.exists());
+    }
+
+    #[test]
+    fn package_transaction_restores_legacy_package_after_final_hash_failure() {
+        use super::*;
+        let fixture = PackageTransactionFixture::new();
+        let mut observed = Vec::new();
+        let result = replace_plugin_directory(
+            &fixture.plugin,
+            &fixture.staged,
+            &fixture.backup,
+            &fixture.status,
+            &mut |event| {
+                // 使用真实生产进度回调在重命名完成后注入损坏，覆盖安装后校验的失败路径。
+                if event.state == "verifying" {
+                    fs::write(
+                        fixture.plugin.join("MystiaStewardCompanion.Business.dll"),
+                        "post-move corruption",
+                    )
+                    .unwrap();
+                }
+                observed.push(event.state);
+            },
+        );
+        assert!(result.unwrap_err().contains("restored previous version"));
+        assert!(observed.contains(&"rolling-back"));
+        fixture.assert_old_version_active();
+        assert_eq!(
+            fs::read_to_string(fixture.staged.join("MystiaStewardCompanion.Business.dll")).unwrap(),
+            "post-move corruption",
+            "the rejected new package must remain available for diagnosis"
+        );
+    }
+
+    #[test]
+    fn package_transaction_keeps_legacy_backup_after_success() {
+        use super::*;
+        let fixture = PackageTransactionFixture::new();
+        replace_plugin_directory(
+            &fixture.plugin,
+            &fixture.staged,
+            &fixture.backup,
+            &fixture.status,
+            &mut |_| {},
+        )
+        .unwrap();
+        validate_staged_package(&fixture.plugin).unwrap();
+        assert!(!fixture.staged.exists());
+        assert!(!fixture.plugin.join("old-plugin.txt").exists());
+        assert_eq!(
+            fs::read_to_string(fixture.backup.join("old-plugin.txt")).unwrap(),
+            "previous complete version"
+        );
+        assert!(!fixture.backup.join("business-bundle.sha256").exists());
+    }
+
+    /// 真正调用安装前校验器，覆盖完整包、组件混版、缺失与重复清单；全部文件位于独立临时目录。
+    #[test]
+    fn business_bundle_rejects_missing_mixed_and_duplicate_components() {
+        use super::*;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            env::temp_dir().join(format!("mystia-business-bundle-{}-{nonce}", process::id()));
+        fs::create_dir_all(root.join("companion")).unwrap();
+        let files = [
+            REQUIRED_DLL,
+            "MystiaStewardCompanion.Contracts.dll",
+            "MystiaStewardCompanion.Business.dll",
+            REQUIRED_COMPANION_EXE,
+            REQUIRED_UPDATER_EXE,
+        ];
+        let reset = || {
+            let mut manifest = String::new();
+            for file in files {
+                let bytes = format!("受控测试组件：{file}").into_bytes();
+                fs::write(root.join(file), &bytes).unwrap();
+                manifest.push_str(&format!("{:x}  {file}\n", Sha256::digest(&bytes)));
+            }
+            fs::write(root.join("business-bundle.sha256"), manifest).unwrap();
+        };
+        reset();
+        assert!(validate_staged_package(&root).is_ok());
+        for file in files {
+            reset();
+            fs::remove_file(root.join(file)).unwrap();
+            assert!(validate_staged_package(&root).is_err(), "missing {file}");
+            reset();
+            fs::write(root.join(file), "另一轮构建").unwrap();
+            assert!(validate_staged_package(&root).is_err(), "mixed {file}");
+        }
+        reset();
+        let text = fs::read_to_string(root.join("business-bundle.sha256")).unwrap();
+        let mut lines: Vec<_> = text.lines().collect();
+        lines[1] = lines[0];
+        fs::write(root.join("business-bundle.sha256"), lines.join("\n")).unwrap();
+        assert!(validate_staged_package(&root).is_err());
+        // root 是当前测试独有、固定前缀的临时目录，清理不接触真实插件文件。
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn logical_pixels_scale_for_supported_dpi_steps() {

@@ -20,7 +20,7 @@ namespace MystiaStewardCompanion.LocalApi;
 /// 始终保留回环监听，LAN 监听只能作为显式开启的附加通道。除 <c>/health</c> 外所有端点都要求 Token。
 /// GET 端点只读取状态，任何会修改运行时、配置、文件或外部进程状态的操作都只接受 POST。
 /// </remarks>
-internal sealed class LocalApiServer : IDisposable
+internal sealed partial class LocalApiServer : IDisposable
 {
     private const int MaxRequestHeaderBytes = 32768;
     private const int MaxRequestBodyBytes = 65536;
@@ -244,6 +244,7 @@ internal sealed class LocalApiServer : IDisposable
                 StartListener("loopback", BindAddress, lanCandidate: null);
                 ApplyLanSettingsCore(_lanEnabled, _lanBindHost);
                 _updateService.StartAutoCheckScheduler();
+                StartBusinessHost();
                 _log.LogInfo($"Local API loopback listener is available at {BaseUrl}. LAN listener is an optional add-on for trusted private networks.");
             }
             catch
@@ -270,6 +271,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             _snapshotJson = snapshotJson;
             _snapshotSignature = snapshotSignature;
+            InvalidateBusinessInput();
         }
     }
 
@@ -278,11 +280,14 @@ internal sealed class LocalApiServer : IDisposable
         lock (_snapshotLock)
         {
             _runtimeDataJson = runtimeDataJson;
+            InvalidateBusinessInput();
         }
     }
 
     public void Dispose()
     {
+        // 主线程停止时只撤销未来许可，不等待可能仍在等待主线程结果的后台业务线程。
+        StopBusinessHost();
         RuntimeAutomationControlState.Reset("本地 API 已停止；现有自动料理任务保持暂停。");
         lock (_lanSettingsLock)
         {
@@ -581,8 +586,23 @@ internal sealed class LocalApiServer : IDisposable
 
             if (isPost)
             {
+                var mutatesBusinessInput = IsBusinessInputMutation(path);
+                if (mutatesBusinessInput)
+                {
+                    // 与冻结输入使用同一锁：写入开始即作废旧帧，落盘结束后才允许捕获下一帧。
+                    Monitor.Enter(_authorityTransitionLock);
+                    InvalidateBusinessInput();
+                }
+                try
+                {
                 switch (path)
                 {
+                    case "/business/query":
+                        WriteResponse(stream, 200, "OK", QueueBusinessPageQuery(request, requestData));
+                        break;
+                    case "/business/automation/retry":
+                        WriteResponse(stream, 200, "OK", RetryBusinessAutomation(request, requestData));
+                        break;
                     case "/devices/register":
                         WriteResponse(stream, 200, "OK", ToJson(RegisterCompanionDevice(request, requestData)));
                         break;
@@ -678,28 +698,9 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query));
                         break;
                     case "/orders/prepare-next":
-                        if (!TryRequireAutomationLease(request, out var prepareLeaseError, out var prepareEpoch))
-                        {
-                            WriteResponse(stream, 200, "OK", ToJson(prepareLeaseError));
-                            break;
-                        }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder, prepareEpoch));
-                        break;
                     case "/orders/complete-first":
-                        if (!TryRequireAutomationLease(request, out var completeLeaseError, out var completeEpoch))
-                        {
-                            WriteResponse(stream, 200, "OK", ToJson(completeLeaseError));
-                            break;
-                        }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder, completeEpoch));
-                        break;
                     case "/orders/normal/complete-first":
-                        if (!TryRequireAutomationLease(request, out var normalLeaseError, out var normalEpoch))
-                        {
-                            WriteResponse(stream, 200, "OK", ToJson(normalLeaseError));
-                            break;
-                        }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder, normalEpoch));
+                        WriteResponse(stream, 409, "Conflict", BusinessProtocolUpgradeRequired());
                         break;
                     case "/orders/rare/dismiss":
                         WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
@@ -725,7 +726,7 @@ internal sealed class LocalApiServer : IDisposable
                                 ReadRareGuestInvitationWriteExpectation(query))));
                         break;
                     case "/ui-pinning/targets":
-                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetsJson(request, query));
+                        WriteResponse(stream, 409, "Conflict", BusinessProtocolUpgradeRequired());
                         break;
                     case "/favorites/add-recipe":
                         WriteResponse(stream, 200, "OK", AddRecipeFavoriteJson(query));
@@ -760,11 +761,23 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
                         break;
                 }
+                }
+                finally
+                {
+                    if (mutatesBusinessInput)
+                    {
+                        InvalidateBusinessInput();
+                        Monitor.Exit(_authorityTransitionLock);
+                    }
+                }
                 return;
             }
 
             switch (path)
             {
+                case "/business/status":
+                    WriteResponse(stream, 200, "OK", GetBusinessStatusJson(query));
+                    break;
                 case "/health":
                     WriteResponse(stream, 200, "OK", BuildHealthJson());
                     break;
@@ -1445,7 +1458,10 @@ internal sealed class LocalApiServer : IDisposable
                     };
                 }
 
-                return _ackAutomationSafetyBarrier(sequence);
+                var result = _ackAutomationSafetyBarrier(sequence);
+                _businessCoordinator.AcknowledgeResult(sequence,
+                    System.Text.Json.Nodes.JsonNode.Parse(ToJson(result))!.AsObject(), BusinessNow);
+                return result;
             }
         }
     }
@@ -1856,13 +1872,15 @@ internal sealed class LocalApiServer : IDisposable
     private string BuildOrderActionJson(
         string query,
         Func<OrderPreparationRequest, OrderPreparationResult> action,
-        long automationEpoch)
+        long automationEpoch,
+        Func<bool>? isBusinessInputCurrent = null)
     {
         try
         {
             var request = new OrderPreparationRequest
             {
                 AutomationEpoch = automationEpoch,
+                IsBusinessInputCurrent = isBusinessInputCurrent,
                 TraceId = ReadStringQuery(query, "traceId"),
                 OrderKey = ReadStringQuery(query, "orderKey"),
                 OrderLifecycleSequence = ReadLongQuery(query, "orderLifecycleSequence", -1),

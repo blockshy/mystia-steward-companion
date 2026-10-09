@@ -1,11 +1,6 @@
-import type {
-  OrderPreparationResponse,
-  RareAutomationBeverageTarget,
-  RareAutomationRecipeTarget,
-} from '@/companion/automation-state';
-import { assertAutomationDirectDeliveryCompletionInvariant } from '@/companion/automation-machine';
+/** 客户端仅保留协议、表单和展示辅助；业务推荐与自动化决策由 C# 服务计算。 */
 import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
-import type { CompanionPreferences, SharedCompanionPreferences } from '@/companion/preferences';
+import type { SharedCompanionPreferences } from '@/companion/preferences';
 import { SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION, normalizeEditableQuantity } from '@/companion/preferences';
 import { serializeRareGuestInvitationLevels } from '@/companion/storage';
 import type {
@@ -19,10 +14,8 @@ import type {
   CustomRecipeUpsertInput,
   CompanionDeviceAuthorityState,
   CompanionDevicePlatform,
-  CookerControllerReservation,
   FavoriteData,
   FavoriteMutationResponse,
-  GameUiTargetSlots,
   InventoryBulkEditResponse,
   InventoryEditResponse,
   LocalApiAutomationLease,
@@ -30,55 +23,17 @@ import type {
   LocalApiFolderResponse,
   LocalApiLogSettings,
   LocalApiSnapshotResponse,
-  LocalApiStatusResponse,
   NightBusinessOrder,
-  NormalOrderExecutionTarget,
-  NormalBusinessOrder,
-  OrderRecommendation,
   RareGuestInvitationResponse,
   RareGuestInvitationScope,
   RareGuestInvitationWriteContext,
   RareOrderDismissResponse,
-  SpecialFoodTargetWirePolicy,
   TrackedMissionsApiResponse,
   UpdateStatusResponse,
 } from '@/companion/types';
-import {
-  DEFAULT_RECOMMENDATION_DATA,
-  buildRecommendationDataIndexes,
-  type RuntimeDataCatalogSnapshot,
-  type RecommendationDataSet,
-} from '@/lib/recommendation-data';
-import type {
-  RareCustomerCatalogItem,
-} from '@/lib/catalog-types';
-import type { RareBeverageRecommendation, RareOrderRecommendationPlan, RareRecipeRecommendation } from '@/recommendation-engine';
-
-export interface AutomationDecisionDiagnosticRequest {
-  signature: string;
-  eventName: string;
-  message: string;
-  scene: string;
-  challengeType: string;
-  phase: string;
-  specialBusinessRole: string;
-  orderCount: number;
-  selectionCount: number;
-  skipCount: number;
-  automationEnabled: boolean;
-  leaseOwned: boolean;
-  autoCompleteOrder: boolean;
-  autoTakeBeverage: boolean;
-  autoStartCooking: boolean;
-  autoCollectCooking: boolean;
-  recipeFavoritesOnly: boolean;
-  beverageFavoritesOnly: boolean;
-  rareConcurrency: number;
-  leaseMessage: string;
-  orderLines: string[];
-  selectionLines: string[];
-  skipLines: string[];
-}
+import { type RuntimeDataCatalogSnapshot } from '@/lib/recommendation-data';
+import type { RareCustomerCatalogItem } from '@/lib/catalog-types';
+import type { RareBeverageRecommendation, RareRecipeRecommendation } from '@/recommendation-engine';
 
 const COMPANION_DEVICE_PROTOCOL_VERSION = 1;
 
@@ -214,7 +169,7 @@ async function writeDeviceAuthorityMutation(
 /**
  * 伴随窗口访问 Mod 本地 API 的类型化门面。
  *
- * 该文件只负责把 UI/推荐引擎中的领域对象转换为本地 API 协议参数，不直接保存状态。
+ * 该文件只负责把 界面输入转换为本地 API 协议参数，不直接保存状态。
  * 纯读取端点使用 GET；任何会修改 Mod、游戏运行时、文件或宿主窗口状态的命令都通过
  * `writeLocalApiJsonWithTimeout` 使用 POST，避免被普通刷新或预取误触发。
  */
@@ -370,44 +325,6 @@ export async function acknowledgeAutomationSafetyBarrier(
     `/automation/barriers/ack?${params.toString()}`,
     2800,
     { authorityRevision },
-  );
-}
-
-export async function appendAutomationDecisionDiagnostic(
-  endpoint: string,
-  apiToken: string,
-  diagnostic: AutomationDecisionDiagnosticRequest,
-): Promise<LocalApiStatusResponse> {
-  const params = new URLSearchParams({
-    signature: diagnostic.signature,
-    eventName: diagnostic.eventName,
-    message: diagnostic.message,
-    scene: diagnostic.scene,
-    challengeType: diagnostic.challengeType,
-    phase: diagnostic.phase,
-    specialBusinessRole: diagnostic.specialBusinessRole,
-    orderCount: String(diagnostic.orderCount),
-    selectionCount: String(diagnostic.selectionCount),
-    skipCount: String(diagnostic.skipCount),
-    automationEnabled: String(diagnostic.automationEnabled),
-    leaseOwned: String(diagnostic.leaseOwned),
-    autoCompleteOrder: String(diagnostic.autoCompleteOrder),
-    autoTakeBeverage: String(diagnostic.autoTakeBeverage),
-    autoStartCooking: String(diagnostic.autoStartCooking),
-    autoCollectCooking: String(diagnostic.autoCollectCooking),
-    recipeFavoritesOnly: String(diagnostic.recipeFavoritesOnly),
-    beverageFavoritesOnly: String(diagnostic.beverageFavoritesOnly),
-    rareConcurrency: String(diagnostic.rareConcurrency),
-    leaseMessage: diagnostic.leaseMessage,
-    orderLines: diagnostic.orderLines.join('\n'),
-    selectionLines: diagnostic.selectionLines.join('\n'),
-    skipLines: diagnostic.skipLines.join('\n'),
-  });
-  return writeLocalApiJsonWithTimeout<LocalApiStatusResponse>(
-    endpoint,
-    apiToken,
-    `/diagnostics/automation-decision?${params.toString()}`,
-    2500,
   );
 }
 
@@ -614,168 +531,6 @@ export async function writeInventoryBulkQuantity(
   );
 }
 
-export async function publishGameUiTargets(
-  endpoint: string,
-  apiToken: string,
-  businessGeneration: number,
-  targetSlots: GameUiTargetSlots,
-  authorityRevision: number,
-  signal?: AbortSignal,
-): Promise<void> {
-  const targets = [targetSlots.rare, targetSlots.normal].filter((target) => target !== null);
-  const params = new URLSearchParams({
-    businessGeneration: String(businessGeneration),
-    targetCount: String(targets.length),
-  });
-  targets.forEach((target, index) => {
-    const prefix = `target${index}`;
-    params.set(`${prefix}Kind`, target.kind);
-    params.set(`${prefix}ListPinningEnabled`, String(target.features.listPinningEnabled));
-    params.set(`${prefix}RecipeVariantEnabled`, String(target.features.recipeVariantEnabled));
-    params.set(`${prefix}CookerHighlightEnabled`, String(target.features.cookerHighlightEnabled));
-    params.set(`${prefix}SeatHighlightEnabled`, String(target.features.seatHighlightEnabled));
-    params.set(`${prefix}OrderHighlightEnabled`, String(target.features.orderHighlightEnabled));
-    params.set(`${prefix}Revision`, target.targetRevision);
-    params.set(`${prefix}Color`, target.color.slice(1));
-    params.set(`${prefix}TraceId`, target.traceId);
-    params.set(`${prefix}OrderKey`, target.orderKey);
-    params.set(`${prefix}OrderLifecycleSequence`, String(target.orderLifecycleSequence));
-    params.set(`${prefix}DeskCode`, String(target.deskCode));
-    params.set(`${prefix}RecipeId`, String(target.recipeId));
-    params.set(`${prefix}IngredientIds`, target.ingredientIds.join(','));
-    params.set(`${prefix}ExtraIngredientIds`, target.extraIngredientIds.join(','));
-    params.set(`${prefix}BeverageId`, String(target.beverageId));
-    params.set(`${prefix}CookerTypeId`, String(target.cookerTypeId));
-  });
-  const response = await writeLocalApiJsonWithTimeout<{ ok: boolean; status?: string; error?: string | null }>(
-    endpoint,
-    apiToken,
-    `/ui-pinning/targets?${params.toString()}`,
-    2200,
-    { signal, authorityRevision },
-  );
-  if (!response.ok) {
-    throw new Error(response.error || response.status || '游戏界面置顶目标更新失败。');
-  }
-}
-
-export async function prepareNextRareOrder(
-  endpoint: string,
-  apiToken: string,
-  item: OrderRecommendation,
-  specialTargetPolicy: SpecialFoodTargetWirePolicy,
-  recipeTarget: RareAutomationRecipeTarget | null,
-  beverageTarget: RareAutomationBeverageTarget | null,
-  preferences: CompanionPreferences,
-  cookerReservation: CookerControllerReservation | null,
-  authorityRevision: number,
-): Promise<OrderPreparationResponse> {
-  return rareOrderAction(
-    endpoint,
-    apiToken,
-    '/orders/prepare-next',
-    item,
-    specialTargetPolicy,
-    recipeTarget,
-    beverageTarget,
-    preferences,
-    cookerReservation,
-    authorityRevision,
-  );
-}
-
-export async function completeFirstRareOrder(
-  endpoint: string,
-  apiToken: string,
-  item: OrderRecommendation,
-  specialTargetPolicy: SpecialFoodTargetWirePolicy,
-  recipeTarget: RareAutomationRecipeTarget | null,
-  beverageTarget: RareAutomationBeverageTarget | null,
-  preferences: CompanionPreferences,
-  cookerReservation: CookerControllerReservation | null,
-  authorityRevision: number,
-): Promise<OrderPreparationResponse> {
-  return rareOrderAction(
-    endpoint,
-    apiToken,
-    '/orders/complete-first',
-    item,
-    specialTargetPolicy,
-    recipeTarget,
-    beverageTarget,
-    preferences,
-    cookerReservation,
-    authorityRevision,
-  );
-}
-
-export async function completeFirstNormalOrder(
-  endpoint: string,
-  apiToken: string,
-  order: NormalBusinessOrder,
-  specialTargetPolicy: SpecialFoodTargetWirePolicy,
-  preferences: CompanionPreferences,
-  cookerReservation: CookerControllerReservation | null,
-  authorityRevision: number,
-  data: RecommendationDataSet = DEFAULT_RECOMMENDATION_DATA,
-  executionTarget: NormalOrderExecutionTarget | null = null,
-): Promise<OrderPreparationResponse> {
-  assertAutomationDirectDeliveryCompletionInvariant({
-    beverageDeliveryEnabled: preferences.autoNormalTakeBeverage,
-    completionEnabled: preferences.autoNormalCompleteOrder,
-    foodDeliveryEnabled: preferences.autoNormalDeliverFood,
-    targetLabel: '普客',
-  });
-  const indexes = buildRecommendationDataIndexes(data);
-  const recipe = indexes.recipeByFoodId.get(order.foodId) ?? null;
-  const targetRecipeId = executionTarget?.recipeId ?? recipe?.recipeId ?? -1;
-  const targetFoodId = executionTarget?.foodId ?? order.foodId;
-  const targetBeverageId = executionTarget?.beverageId ?? order.beverageId;
-  const params = new URLSearchParams({
-    traceId: order.traceId ?? '',
-    orderKey: order.orderKey ?? '',
-    orderLifecycleSequence: String(order.orderLifecycleSequence),
-    deskCode: String(order.deskCode),
-    guestName: order.guestName || '普客',
-    specialBusinessRole: order.specialBusinessRole ?? '',
-    matchFoodId: String(executionTarget?.matchFoodId ?? order.foodId),
-    matchBeverageId: String(executionTarget?.matchBeverageId ?? order.beverageId),
-    foodId: String(targetFoodId),
-    recipeId: String(targetRecipeId),
-    recipeName: executionTarget?.recipeName || order.foodName || recipe?.name || '',
-    extraIngredientIds: executionTarget ? executionTarget.extraIngredientIds.join(',') : '',
-    predictedFoodTags: executionTarget ? executionTarget.foodTags.join(',') : '',
-    expectedFoodModifierTags: executionTarget ? executionTarget.expectedFoodModifierTags.join(',') : '',
-    specialTargetChallenge: specialTargetPolicy.specialTargetChallenge,
-    specialTargetOwner: specialTargetPolicy.specialTargetOwner,
-    specialTargetGeneration: String(specialTargetPolicy.specialTargetGeneration),
-    specialTargetRevision: String(specialTargetPolicy.specialTargetRevision),
-    specialTargetFoodTags: specialTargetPolicy.specialTargetFoodTags.join(','),
-    specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
-    specialTargetSignature: specialTargetPolicy.specialTargetSignature,
-    executionMode: executionTarget?.executionMode ?? '',
-    allowYuumaControlledProgression: String(executionTarget?.allowYuumaControlledProgression === true),
-    executionReason: executionTarget?.reason ?? '',
-    beverageId: String(targetBeverageId),
-    beverageName: executionTarget?.beverageName || order.beverageName || indexes.beverageNameById.get(order.beverageId) || '',
-    autoTakeBeverage: String(preferences.autoNormalTakeBeverage),
-    autoStartCooking: String(preferences.autoNormalStartCooking),
-    autoCollectCooking: String(preferences.autoNormalDeliverFood),
-    autoDeliverFood: String(preferences.autoNormalDeliverFood),
-    autoCompleteOrder: String(preferences.autoNormalCompleteOrder),
-    stopOnError: String(preferences.autoNormalStopOnError),
-  });
-  if (order.runtimeGuestId != null) params.set('runtimeGuestId', String(order.runtimeGuestId));
-  appendCookerReservation(params, cookerReservation);
-  return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
-    endpoint,
-    apiToken,
-    `/orders/normal/complete-first?${params.toString()}`,
-    5000,
-    { authorityRevision },
-  );
-}
-
 export async function readFavorites(endpoint: string, apiToken: string, signal: AbortSignal): Promise<FavoriteData> {
   return readLocalApiJson<FavoriteData>(endpoint, apiToken, '/favorites', signal);
 }
@@ -909,136 +664,6 @@ async function mutateRareGuestInvitation(
   path: string,
 ): Promise<RareGuestInvitationResponse> {
   return writeLocalApiJsonWithTimeout<RareGuestInvitationResponse>(endpoint, apiToken, path, 5000);
-}
-
-async function rareOrderAction(
-  endpoint: string,
-  apiToken: string,
-  path: string,
-  item: OrderRecommendation,
-  specialTargetPolicy: SpecialFoodTargetWirePolicy,
-  recipeTarget: RareAutomationRecipeTarget | null,
-  beverageTarget: RareAutomationBeverageTarget | null,
-  preferences: CompanionPreferences,
-  cookerReservation: CookerControllerReservation | null,
-  authorityRevision: number,
-): Promise<OrderPreparationResponse> {
-  assertAutomationDirectDeliveryCompletionInvariant({
-    beverageDeliveryEnabled: preferences.autoPrepTakeBeverage,
-    completionEnabled: preferences.autoPrepCompleteOrder,
-    foodDeliveryEnabled: preferences.autoPrepCollectCooking,
-    targetLabel: '稀客',
-  });
-  // 订单自动化需要把本次推荐锁定的料理、加料和酒水传给 Mod，避免轮询刷新后前端列表变化影响正在执行的订单。
-  const params = new URLSearchParams({
-    traceId: item.order.traceId ?? '',
-    orderLifecycleSequence: String(item.order.orderLifecycleSequence),
-    deskCode: String(item.order.deskCode),
-    guestId: item.order.guestId == null ? '' : String(item.order.guestId),
-    guestName: item.order.guestName,
-    specialBusinessRole: item.order.specialBusinessRole ?? '',
-    foodTag: item.order.foodTag,
-    beverageTag: item.order.beverageTag,
-    foodId: recipeTarget ? String(recipeTarget.foodId) : '-1',
-    recipeId: recipeTarget ? String(recipeTarget.recipeId) : '-1',
-    recipeName: recipeTarget?.recipeName ?? '',
-    extraIngredientIds: recipeTarget ? recipeTarget.extraIngredientIds.join(',') : '',
-    predictedFoodTags: recipeTarget ? recipeTarget.foodTags.join(',') : '',
-    specialTargetChallenge: specialTargetPolicy.specialTargetChallenge,
-    specialTargetOwner: specialTargetPolicy.specialTargetOwner,
-    specialTargetGeneration: String(specialTargetPolicy.specialTargetGeneration),
-    specialTargetRevision: String(specialTargetPolicy.specialTargetRevision),
-    specialTargetFoodTags: specialTargetPolicy.specialTargetFoodTags.join(','),
-    specialTargetMatchMode: specialTargetPolicy.specialTargetMatchMode,
-    specialTargetSignature: specialTargetPolicy.specialTargetSignature,
-    executionReason: buildRareOrderExecutionReason(item, recipeTarget, beverageTarget),
-    beverageId: beverageTarget ? String(beverageTarget.beverageId) : '-1',
-    beverageName: beverageTarget?.beverageName ?? '',
-    autoTakeBeverage: String(preferences.autoPrepTakeBeverage),
-    autoStartCooking: String(preferences.autoPrepStartCooking),
-    autoCollectCooking: String(preferences.autoPrepCollectCooking),
-    autoDeliverFood: String(preferences.autoPrepCollectCooking),
-    autoCompleteOrder: String(preferences.autoPrepCompleteOrder),
-    recipeFavoritesOnly: String(preferences.autoPrepRecipeFavoritesOnly),
-    beverageFavoritesOnly: String(preferences.autoPrepBeverageFavoritesOnly),
-    stopOnError: String(preferences.autoPrepStopOnError),
-    recipeFavorite: String(Boolean(recipeTarget?.favorite)),
-    beverageFavorite: String(Boolean(beverageTarget?.favorite)),
-  });
-  appendCookerReservation(params, cookerReservation);
-  if (item.order.runtimeGuestId != null) params.set('runtimeGuestId', String(item.order.runtimeGuestId));
-  if (item.order.foodTagId != null) params.set('foodTagId', String(item.order.foodTagId));
-  if (item.order.beverageTagId != null) params.set('beverageTagId', String(item.order.beverageTagId));
-  return writeLocalApiJsonWithTimeout<OrderPreparationResponse>(
-    endpoint,
-    apiToken,
-    `${path}?${params.toString()}`,
-    5000,
-    { authorityRevision },
-  );
-}
-
-function appendCookerReservation(
-  params: URLSearchParams,
-  reservation: CookerControllerReservation | null,
-) {
-  params.set('cookerControllerIndex', reservation ? String(reservation.controllerIndex) : '-1');
-  params.set('cookerControllerIdentity', reservation?.controllerIdentity ?? '');
-  params.set('cookerGridX', reservation ? String(reservation.gridPosition.x) : '');
-  params.set('cookerGridY', reservation ? String(reservation.gridPosition.y) : '');
-  params.set('cookerGridZ', reservation ? String(reservation.gridPosition.z) : '');
-}
-
-function buildRareOrderExecutionReason(
-  item: OrderRecommendation,
-  recipeTarget: RareAutomationRecipeTarget | null,
-  beverageTarget: RareAutomationBeverageTarget | null,
-): string {
-  const planReason = findRareOrderExecutionPlanReason(item, recipeTarget, beverageTarget);
-  const details = [
-    item.order.specialBusinessRole ? `特殊经营角色 ${item.order.specialBusinessRole}` : '',
-    planReason,
-    recipeTarget?.foodTags.length ? `预测料理 Tag ${recipeTarget.foodTags.join('、')}` : '',
-    beverageTarget ? `目标酒水 ${beverageTarget.beverageName || `#${beverageTarget.beverageId}`}` : '',
-  ].filter(Boolean);
-  return details.join('；');
-}
-
-function findRareOrderExecutionPlanReason(
-  item: OrderRecommendation,
-  recipeTarget: RareAutomationRecipeTarget | null,
-  beverageTarget: RareAutomationBeverageTarget | null,
-): string {
-  const matchedPlan = item.executionPlans.find((plan) =>
-    rareOrderPlanMatchesTargets(plan, recipeTarget, beverageTarget)
-  ) ?? null;
-  return matchedPlan?.reasons[0] ?? '';
-}
-
-function rareOrderPlanMatchesTargets(
-  plan: RareOrderRecommendationPlan | null,
-  recipeTarget: RareAutomationRecipeTarget | null,
-  beverageTarget: RareAutomationBeverageTarget | null,
-): boolean {
-  if (!plan) return false;
-  if (recipeTarget && (
-    !plan.food
-    || plan.food.recipe.id !== recipeTarget.foodId
-    || plan.food.recipe.recipeId !== recipeTarget.recipeId
-    || !sameNumberList(
-      plan.food.extraIngredients.map((ingredient) => ingredient.id),
-      recipeTarget.extraIngredientIds,
-    )
-  )) return false;
-  if (beverageTarget && (!plan.beverage || plan.beverage.beverage.id !== beverageTarget.beverageId)) return false;
-  return true;
-}
-
-function sameNumberList(left: readonly number[], right: readonly number[]): boolean {
-  if (left.length !== right.length) return false;
-  const normalizedLeft = [...left].sort((a, b) => a - b);
-  const normalizedRight = [...right].sort((a, b) => a - b);
-  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 }
 
 async function mutateFavorite(

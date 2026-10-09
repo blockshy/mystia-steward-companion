@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createServer } from 'vite';
 
 const vite = await createServer({
-  configFile: 'apps/companion/vite.config.ts',
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
   logLevel: 'silent',
@@ -994,20 +994,20 @@ async function assertSourceContracts() {
     normalSnapshot,
     yuumaOrderModule,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/special-business/rules/types.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/types.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/rules/passive.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/rules/yuyuko.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/api.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/recommendation-engine/types.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/yuuma.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/special-business/normal-targets/wacky.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/rules/types.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/types.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/rules/passive.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/rules/yuyuko.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/api.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/hooks/useGameUiTargetPublisher.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/recommendation-engine/types.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/registry.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/normal-targets/yuuma.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/special-business/normal-targets/wacky.ts', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/RuntimeNormalOrderSnapshotService.cs', root), 'utf8'),
     readFile(new URL('mods/bepinex/src/Save/SpecialBusiness/YuumaChallengeOrderModule.cs', root), 'utf8'),
   ]);
@@ -1078,3 +1078,4 @@ async function assertSourceContracts() {
     'The Blood Pond Hell classifier must publish its exact order/controller-verified identity.',
   );
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

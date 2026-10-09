@@ -19,11 +19,14 @@ apps/companion/src-tauri/gen/android/**/*.jks
 apps/companion/src-tauri/gen/android/**/*.keystore
 .game
 *.local
+# Local agent instructions, handover, development plans, and evidence
 AGENTS.md
-SESSION_HANDOVER.md
+# 当前本地文档独立仓库；保留旧 dev/ 规则，防止历史文件被误加入代码仓。
+/local-docs/
 dev/
 temp/
 .playwright-cli/
+/output/playwright/
 mods/bepinex/References/*.dll
 mods/bepinex/References/*.pdb
 mods/bepinex/tools/il2cpp-analysis/__pycache__/

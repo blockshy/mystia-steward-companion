@@ -10,6 +10,7 @@ DIST_ROOT="$ROOT_DIR/dist"
 ZIP_NAME="mystia-steward-companion-bepinex.zip"
 COMPANION_EXE_NAME="mystia-steward-companion-companion-windows-x64.exe"
 DLL_PATH="$OUTPUT_DIR/MystiaStewardCompanion.BepInEx.dll"
+BUSINESS_ASSEMBLIES=("MystiaStewardCompanion.Contracts.dll" "MystiaStewardCompanion.Business.dll")
 STAGE_ROOT=""
 BACKUP_ROOT=""
 
@@ -116,6 +117,9 @@ assert_no_pending_release_transactions() {
 
 assert_no_pending_release_transactions
 assert_input_file "$DLL_PATH" "built Mod DLL"
+for assembly in "${BUSINESS_ASSEMBLIES[@]}"; do
+  assert_input_file "$OUTPUT_DIR/$assembly" "built business DLL"
+done
 
 COMPANION_PATH="$(find_input_file \
   "companion executable" \
@@ -156,8 +160,17 @@ UPDATER_NAME="$(basename "$UPDATER_PATH")"
 
 mkdir -p "$STAGE_PACKAGE_DIR/companion"
 copy_validated_file "$DLL_PATH" "$STAGE_PACKAGE_DIR/$(basename "$DLL_PATH")"
+# 精确复制业务依赖，不泛拷贝编译参考程序集。
+for assembly in "${BUSINESS_ASSEMBLIES[@]}"; do
+  copy_validated_file "$OUTPUT_DIR/$assembly" "$STAGE_PACKAGE_DIR/$assembly"
+done
 copy_validated_file "$COMPANION_PATH" "$STAGE_PACKAGE_DIR/companion/$COMPANION_NAME"
 copy_validated_file "$UPDATER_PATH" "$STAGE_PACKAGE_DIR/$UPDATER_NAME"
+# 两次安装检查均使用这份成套摘要，拒绝缺失或混入不同构建的组件。
+(
+  cd "$STAGE_PACKAGE_DIR"
+  sha256sum "$(basename "$DLL_PATH")" "${BUSINESS_ASSEMBLIES[@]}" "companion/$COMPANION_NAME" "$UPDATER_NAME" >business-bundle.sha256
+)
 
 HAS_STANDALONE_COMPANION=0
 if [[ "$COMPANION_NAME" == *.exe ]]; then

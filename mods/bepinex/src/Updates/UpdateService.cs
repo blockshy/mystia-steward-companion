@@ -1550,6 +1550,7 @@ internal sealed class UpdateService : IDisposable
         RequireFile(directory, RequiredPluginDll);
         RequireFile(directory, RequiredWindowsCompanion);
         RequireFile(directory, RequiredWindowsUpdater);
+        BusinessPackageManifest.Validate(directory);
     }
 
     private static void RequireFile(string root, string relativePath)

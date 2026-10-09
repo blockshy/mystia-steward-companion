@@ -37,18 +37,22 @@ emptySnapshot.normalBusiness = {
 emptySnapshot.snapshotSignature = 'service-order-presentation-empty';
 
 await mkdir(OUTPUT_DIR, { recursive: true });
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless: true,
+  ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH } : {}),
+});
 
 try {
   for (const viewport of viewports) {
     await auditPopulatedOrders(browser, viewport);
     await auditEmptyOrders(browser, viewport);
+    await auditBusinessError(browser, viewport);
   }
+  await auditBusinessTimeout(browser);
 } finally {
   await browser.close();
 }
 
-console.log('PASS: rare and normal service orders share one stable presentation across populated and empty states.');
+console.log('PASS: C# service orders render consistently at 1280/640/390 across populated, empty, and business error states; timed-out status requests recover.');
 console.log(`Screenshots written to ${OUTPUT_DIR}`);
 
 async function auditPopulatedOrders(browserInstance, viewport) {
@@ -168,6 +172,52 @@ async function openWorkbench(browserInstance, viewport, interceptedSnapshot = nu
   return page;
 }
 
+/** 注入业务通道失败，证明错误不会被空数组掩盖；快照和目录仍由 mock 正常提供。 */
+async function auditBusinessError(browserInstance, viewport) {
+  const page = await browserInstance.newPage({ viewport: { width: viewport.width, height: viewport.height } });
+  try {
+    await page.addInitScript(seedLocalStorage, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
+    await page.route(`${API_URL}/business/status**`, (route) => route.fulfill({ status: 503,
+      contentType: 'application/json', headers: { 'access-control-allow-origin': '*' },
+      body: JSON.stringify({ error: '离线注入：业务计算暂不可用。' }),
+    }));
+    await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.body.innerText.includes('1.0.5'));
+    await activateServiceRecommendations(page);
+    for (const kind of ['rare', 'normal']) {
+      await page.locator(`[data-service-order-tab-trigger="${kind}"]`).click();
+      const panel = page.locator(`[data-service-order-collection="${kind}"][data-service-order-state="error"]`);
+      await panel.waitFor({ state: 'visible' });
+      const containerText = await panel.evaluate((element) => element.closest('.steward-list-panel')?.textContent ?? '');
+      assert.match(containerText, /离线注入：业务计算暂不可用/);
+      await assertNoHorizontalOverflow(page, viewport.name, `error ${kind}`);
+      await page.screenshot({ path: path.join(OUTPUT_DIR, `${viewport.name}-error-${kind}.png`), fullPage: true });
+    }
+  } finally { await page.close(); }
+}
+
+/** 首次业务请求挂起后必须在客户端期限内进入错误态，随后新请求恢复，不能永久占住串行轮询。 */
+async function auditBusinessTimeout(browserInstance) {
+  const page = await browserInstance.newPage({ viewport: { width: 640, height: 760 } });
+  let stalled = true;
+  try {
+    await page.addInitScript(seedLocalStorage, { apiUrl: API_URL, apiToken: API_TOKEN, storagePrefix: STORAGE_PREFIX });
+    await page.route(`${API_URL}/business/status**`, async (route) => {
+      if (!stalled) { await route.continue(); return; }
+      // 路由不提供响应，模拟套接字已建立但服务端业务响应永远不返回。
+      // 页面关闭时 Playwright 会统一取消它，不触发外部请求或遗留系统进程。
+    });
+    await page.goto(APP_URL, { waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.body.innerText.includes('1.0.5'));
+    await activateServiceRecommendations(page);
+    await page.getByText('C# 业务状态读取超时，请检查连接。', { exact: true }).first().waitFor({ state: 'visible', timeout: 8000 });
+    await page.screenshot({ path: path.join(OUTPUT_DIR, 'minimum-timeout-rare.png'), fullPage: true });
+    stalled = false;
+    await page.locator('[data-service-order-collection="rare"][data-service-order-state="ready"]').waitFor({ state: 'visible', timeout: 10000 });
+    await assertNoHorizontalOverflow(page, 'minimum', 'timeout recovery');
+  } finally { await page.close(); }
+}
+
 function seedLocalStorage({ apiUrl, apiToken, storagePrefix }) {
   localStorage.setItem(`${storagePrefix}-mod-api-endpoint`, apiUrl);
   localStorage.setItem(`${storagePrefix}-mod-api-token`, apiToken);
@@ -185,6 +235,8 @@ async function inspectOrderCollection(page, kind, options = {}) {
   const collection = page.locator(`[data-service-order-collection="${kind}"]`);
   await collection.waitFor({ state: 'visible', timeout: 10000 });
   if (options.waitForCards) {
+    // C# 后台首次计算期间允许先显示订单占位；有卡片不等于本轮业务结果已提交。
+    await page.locator(`[data-service-order-collection="${kind}"][data-service-order-state="ready"]`).waitFor({ state: 'visible', timeout: 15000 });
     await collection.locator('[data-service-order-card="true"]').first().waitFor({ state: 'visible', timeout: 10000 });
   }
   if (options.emptyText) {

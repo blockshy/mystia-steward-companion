@@ -5,11 +5,11 @@ import {
   buildPrimaryExecutionPlanPolicy,
   getPrimaryExecutionPlan,
   normalizePrimaryExecutionPlans,
-} from '../../apps/companion/src/companion/domain/primary-execution-plan.ts';
+} from '../reference/apps/companion/src/companion/domain/primary-execution-plan.ts';
 
 const root = new URL('../../', import.meta.url);
 const vite = await createServer({
-  configFile: new URL('../../apps/companion/vite.config.ts', import.meta.url).pathname,
+  configFile: 'tests/reference/vite.config.ts',
   server: { middlewareMode: true },
   appType: 'custom',
   logLevel: 'silent',
@@ -710,17 +710,17 @@ async function assertSourceContracts() {
     worker,
     gameUiTargets,
   ] = await Promise.all([
-    readFile(new URL('apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/types.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/recommendation-engine/mission-recipe-priority.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/preferences.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/pages/ModSettingsPanel.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/pages/shared.tsx', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
-    readFile(new URL('apps/companion/src/companion/domain/game-ui-targets.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/service-recommendations.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/automation.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/types.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/ModWorkbench.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/recommendation-engine/mission-recipe-priority.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/recommendation-engine/rare-orders.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/preferences.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/pages/ModSettingsPanel.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/pages/shared.tsx', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/workers/order-recommendations.worker.ts', root), 'utf8'),
+    readFile(new URL('tests/reference/apps/companion/src/companion/domain/game-ui-targets.ts', root), 'utf8'),
   ]);
 
   const normalizeIndex = service.indexOf('normalizePrimaryExecutionPlans(');
@@ -921,3 +921,4 @@ function functionSlice(source, methodName, nextMethodName) {
   assert.ok(end > start, `Method boundary not found: ${methodName} -> ${nextMethodName}`);
   return source.slice(start, end);
 }
+// 此审计固定验证迁移前 TS 行为基线；当前生产业务须另通过 C# 差分/状态机测试。

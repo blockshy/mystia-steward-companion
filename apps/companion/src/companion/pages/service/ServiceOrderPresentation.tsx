@@ -80,6 +80,10 @@ export function ServiceOrderCollectionPanel({
         data-service-order-retaining-rows={showRows ? 'true' : 'false'}
       >
         {notice}
+        {/* 业务宿主失败原因必须直接可读；触屏设备不能依赖 title 悬停提示排错。 */}
+        {state.kind === 'error' && state.detail && (
+          <p role="alert" className="mb-3 break-words text-sm text-destructive">{state.detail}</p>
+        )}
         {!showRows && state.kind !== 'ready' && <EmptyState text={state.message} />}
         {showRows ? children : null}
       </div>

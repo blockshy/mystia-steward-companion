@@ -15,6 +15,7 @@ $PackageDirName = "mystia-steward-companion"
 $ZipName = "mystia-steward-companion-bepinex.zip"
 $CompanionStandaloneExeName = "mystia-steward-companion-companion-windows-x64.exe"
 $DllPath = Join-Path $OutputDir "MystiaStewardCompanion.BepInEx.dll"
+$BusinessAssemblyNames = @("MystiaStewardCompanion.Contracts.dll", "MystiaStewardCompanion.Business.dll")
 $TransactionId = [Guid]::NewGuid().ToString("N")
 $StageRoot = "$DistRoot.staging-$TransactionId"
 $BackupRoot = "$DistRoot.backup-$TransactionId"
@@ -141,6 +142,9 @@ function Assert-NoPendingReleaseTransactions {
 
 Assert-NoPendingReleaseTransactions
 Assert-InputFile -Path $DllPath -Description "built Mod DLL"
+foreach ($AssemblyName in $BusinessAssemblyNames) {
+    Assert-InputFile -Path (Join-Path $OutputDir $AssemblyName) -Description "built business DLL"
+}
 
 $CompanionPath = Find-InputFile `
     -RelativeCandidates @(
@@ -182,8 +186,18 @@ try {
 
     New-Item -ItemType Directory -Path (Join-Path $StagePackageDir "companion") | Out-Null
     Copy-ValidatedFile -Source $DllPath -Destination (Join-Path $StagePackageDir (Split-Path $DllPath -Leaf))
+    # 只复制明确的业务依赖，禁止把 BepInEx/IL2CPP 编译参考程序集打进用户插件目录。
+    foreach ($AssemblyName in $BusinessAssemblyNames) {
+        Copy-ValidatedFile -Source (Join-Path $OutputDir $AssemblyName) -Destination (Join-Path $StagePackageDir $AssemblyName)
+    }
     Copy-ValidatedFile -Source $CompanionPath -Destination (Join-Path (Join-Path $StagePackageDir "companion") $CompanionName)
     Copy-ValidatedFile -Source $UpdaterPath -Destination (Join-Path $StagePackageDir $UpdaterName)
+    # 成套摘要在两次更新校验中复核，防止缺少新 DLL 或暂存后混入另一轮构建的文件。
+    $BundleFiles = @((Split-Path $DllPath -Leaf)) + $BusinessAssemblyNames + @("companion/$CompanionName", $UpdaterName)
+    $BundleLines = foreach ($RelativePath in $BundleFiles) {
+        "$((Get-FileHash -LiteralPath (Join-Path $StagePackageDir $RelativePath) -Algorithm SHA256).Hash.ToLowerInvariant())  $RelativePath"
+    }
+    [IO.File]::WriteAllLines((Join-Path $StagePackageDir 'business-bundle.sha256'), $BundleLines, [Text.UTF8Encoding]::new($false))
 
     $HasStandaloneCompanion = [System.IO.Path]::GetExtension($CompanionPath).Equals(
         ".exe",
@@ -200,6 +214,9 @@ try {
         -ArchivePath $StageZipPath `
         -ExpectedEntries @(
             "$PackageDirName/$(Split-Path $DllPath -Leaf)",
+            "$PackageDirName/MystiaStewardCompanion.Contracts.dll",
+            "$PackageDirName/MystiaStewardCompanion.Business.dll",
+            "$PackageDirName/business-bundle.sha256",
             "$PackageDirName/companion/$CompanionName",
             "$PackageDirName/$UpdaterName"
         )

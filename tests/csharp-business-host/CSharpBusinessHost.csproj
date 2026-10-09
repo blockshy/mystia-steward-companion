@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseAppHost>false</UseAppHost>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiServer.Business.cs" Link="Production/LocalApiServer.Business.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/OrderPreparationModels.cs" Link="Production/OrderPreparationModels.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/HttpRequestReader.cs" Link="Production/HttpRequestReader.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="Production/AtomicFile.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/JsonFileStore.cs" Link="Production/JsonFileStore.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/FavoriteStore.cs" Link="Production/FavoriteStore.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/CustomRecipeStore.cs" Link="Production/CustomRecipeStore.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/CompanionDeviceAuthorityStore.cs" Link="Production/CompanionDeviceAuthorityStore.cs" />
+    <Reference Include="BepInEx.Core"><HintPath>../../mods/bepinex/References/BepInEx.Core.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+</Project>
