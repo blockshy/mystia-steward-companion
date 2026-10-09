@@ -293,6 +293,13 @@ internal sealed partial class LocalApiServer
                 var wire = new JsonObject();
                 foreach (var field in new[] { "kind", "color", "traceId", "orderKey", "orderLifecycleSequence", "deskCode", "recipeId", "ingredientIds", "extraIngredientIds", "beverageId", "cookerTypeId" })
                     wire["target0" + char.ToUpperInvariant(field[0]) + field[1..]] = J.Clone(target[field]);
+                // 偏好与业务投影沿用 main 的 CSS 颜色格式（#RRGGBB），游戏目标协议则只接收 RRGGBB。
+                // 仅在适配边界去掉一个明确的前缀；后续仍由真实协议解析器严格校验大写十六进制，
+                // 不改写业务返回值，也不以 TrimStart 或大小写转换掩盖损坏输入。
+                var color = J.Str(target["color"]);
+                if (color.Length != 7 || color[0] != '#')
+                    throw new FormatException("Business UI target color must use the #RRGGBB format.");
+                wire["target0Color"] = color[1..];
                 wire["target0Revision"] = J.Clone(target["targetRevision"]);
                 foreach (var field in features) wire["target0" + char.ToUpperInvariant(field.Key[0]) + field.Key[1..]] = J.Clone(field.Value);
                 targets.Add(ReadUiPinningTarget(ToBusinessQuery(wire), 0));

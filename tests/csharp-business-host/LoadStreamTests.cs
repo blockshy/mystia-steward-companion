@@ -23,7 +23,7 @@ internal static class LoadStreamTests
             {
                 var settings = J.Obj(JsonNode.Parse(profile.GetRawText())); settings["automationEnabled"] = false;
                 host.Authority.Register("11111111-1111-1111-1111-111111111111", "stream", new CompanionDeviceRegisterRequest
-                { ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, Platform = "windows", AppVersion = "offline", Profile = JsonSerializer.SerializeToElement(settings) }, DateTime.UtcNow);
+                { ProtocolVersion = 1, ProfileSchemaVersion = 1, Platform = "windows", AppVersion = "offline", Profile = JsonSerializer.SerializeToElement(settings) }, DateTime.UtcNow);
                 var catalog = J.Obj(J.Clone(fixture["data"])); catalog["isComplete"] = true;
                 var snapshot = J.Object(("automationSessionId", "stream"), ("nightBusinessGeneration", 1), ("nightBusinessAutomationAllowed", true),
                     ("nightBusiness", J.Object(("orders", fixture["orders"]), ("activeRareGuests", new JsonArray()))),

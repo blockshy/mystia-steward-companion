@@ -64,7 +64,10 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
 try
 {
     var sourcePath = FindServerSource();
-    var source = File.ReadAllText(sourcePath);
+    // UI 目标解析器已等价拆到同一类型的 partial 文件；审计必须覆盖真实实现的两部分，
+    // 不能因物理文件拆分遗漏严格颜色、布尔和整数校验，也不调整既有协议断言。
+    var source = File.ReadAllText(sourcePath) + Environment.NewLine
+        + File.ReadAllText(Path.Combine(Path.GetDirectoryName(sourcePath)!, "LocalApiServer.UiTargetParsing.cs"));
     AssertAbsent(source, "NormalizeApiPath", "Legacy API path normalization still exists.");
     AssertAbsent(source, "case \"/\":", "The root path still aliases another endpoint.");
     AssertAbsent(source, "StartsWith(\"/api/\"", "The /api/* path alias still exists.");

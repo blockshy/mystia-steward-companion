@@ -117,13 +117,6 @@ public sealed partial class AutomationCoordinator
                 ("paused", state["paused"]), ("manualResolutionRequired", state["manualResolutionRequired"]),
                 ("lastRuntimeEventSequence", state["lastRuntimeEventSequence"]),
                 ("controllerAvailable", order["controllerAvailable"]), ("canAutomate", order["canAutomate"]), ("actionBlockReason", J.Str(order["actionBlockReason"])));
-            if (kind == "rare" && RareParticipationBlocked)
-            {
-                diagnostic["paused"] = true;
-                diagnostic["actionBlockReason"] = Domain.Orders.RareGuestParticipationPolicy.Message;
-                diagnostic["detailMessage"] = Domain.Orders.RareGuestParticipationPolicy.Message;
-                diagnostic["nextAction"] = "在设置关闭稀客手动参与模块，恢复默认自动参与。";
-            }
             (kind == "normal" ? normal : rare).Add(diagnostic);
         }
         var barriers = J.Objects(J.Obj(_input["snapshot"])["automationEvents"]).Where(IsManualEvent)
@@ -133,14 +126,12 @@ public sealed partial class AutomationCoordinator
             .Select(e => J.Object(("sequence", e["sequence"]), ("targetKind", e["targetKind"]),
                 ("title", $"{(J.Str(e["targetKind"]) == "normal" ? "普客" : "稀客")} · {J.Str(e["guestName"], "未知客人")} · 桌 {DisplayDesk(e["deskCode"])}"),
                 ("code", Nonempty(J.Str(e["reasonCode"]), J.Str(e["code"]))), ("message", J.Str(e["message"], "请检查游戏现场后确认。")), ("error", "")));
-        var result = J.Object(("scopeVersion", _scopeVersion), ("runtimeEnabled", _runtimeEnabled), ("leaseOwned", _authorized),
+        return J.Object(("scopeVersion", _scopeVersion), ("runtimeEnabled", _runtimeEnabled), ("leaseOwned", _authorized),
             ("message", _message), ("commands", J.Array(commands)), ("states", states), ("rareDiagnostics", rare), ("normalDiagnostics", normal),
             ("safetyBarriers", J.Array(barriers)), ("rejectedRecipeKeys", J.Array(_rejectedRecipes)),
             ("rareBusy", _pending.Values.Any(request => request.Action is "prepare-rare" or "complete-rare")),
             ("normalBusy", _pending.Values.Any(request => request.Action == "complete-normal")),
             ("inFlightCount", _pending.Count), ("resourceOverview", BuildResourceOverview()));
-        if (RareParticipationBlocked) result["rareGuestParticipation"] = Domain.Orders.RareGuestParticipationPolicy.Diagnostic();
-        return result;
     }
 
     /// <summary>
@@ -199,7 +190,7 @@ public sealed partial class AutomationCoordinator
             }
         }
 
-        if (!RareParticipationBlocked && J.Bool(preferences["autoRareOrderEnabled"]) && J.Bool(preferences["autoPrepStartCooking"]))
+        if (J.Bool(preferences["autoRareOrderEnabled"]) && J.Bool(preferences["autoPrepStartCooking"]))
         {
             var byKey = J.Objects(J.Obj(_input["recommendations"])["recommendations"])
                 .GroupBy(item => OrderKey("rare", J.Obj(item["order"])), StringComparer.Ordinal)

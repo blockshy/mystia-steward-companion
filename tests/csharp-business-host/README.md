@@ -10,11 +10,14 @@ dotnet build tests/csharp-business-host/CSharpBusinessHost.csproj -c Release --n
 dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll
 dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --ui-failure-transition
 dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --lease-expiry
+dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --ui-colors
 ```
 
 测试覆盖：无主设备/无租约、协议拒绝、后台读取不延长在线状态或租约、页面队列容量及公平轮转、收藏变化、排队后输入失效、目录不可用、特殊目标当前代次绑定、重复身份拒绝、候选缓存隔离及容量、停止时不等待主线程委托。
 
 `--ui-failure-transition` 使用真实后台循环和 UI 边界计数，验证缺少主设备、持续损坏输入及错误原因变化不会重复撤销目标或自行推进业务版本；经营代次变化仅重新撤销一次，输入恢复后会重新发布目标，再次发生故障仍正确撤销。它检查实际状态迁移，不以日志被隐藏作为通过条件。
+
+`--ui-colors` 链接真实游戏目标解析器、颜色类型和不可变目标快照，覆盖稀客/普客同时或分别开启、全部关闭、默认/自定义颜色、精确订单身份、五类功能标志、材料及缺失 ID。业务结果保留 `#RRGGBB`，游戏目标使用 `RRGGBB`；两个协议槽位均须拒绝带前缀、小写、错误长度、非十六进制或空白颜色。仅最终 Unity 发布使用记录替身，不加载游戏。
 
 `--serve` 提供离线浏览器 mock 使用的 JSONL 桥接。每行请求带 `id` 和 `operation`；响应为 `{id,ok,result}` 或 `{id,ok:false,error}`。操作包括：
 

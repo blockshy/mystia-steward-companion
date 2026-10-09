@@ -124,10 +124,9 @@ interface AutomationControlReleaseEntry {
 }
 
 function buildAutomationControlSignature(preferences: SharedCompanionPreferences): string {
-  const switches = [
+  return [
     preferences.automationEnabled,
     preferences.autoRareOrderEnabled,
-    preferences.rareGuestParticipationModuleEnabled,
     preferences.autoPrepTakeBeverage,
     preferences.autoPrepStartCooking,
     preferences.autoPrepCollectCooking,
@@ -138,8 +137,6 @@ function buildAutomationControlSignature(preferences: SharedCompanionPreferences
     preferences.autoNormalDeliverFood,
     preferences.autoNormalCompleteOrder,
   ].map((value) => (value ? '1' : '0')).join('');
-  // 名单修改与开关修改同样撤销旧租约，等待主设备配置落盘后再申请新的执行权。
-  return `${switches}|${preferences.managedRareGuestIds.join(',')}`;
 }
 
 interface AutomationBarrierAckEntry {
@@ -597,8 +594,6 @@ export function ModWorkbench() {
   const refreshBusiness = business.refresh;
   const runtimeSets = business.runtimeSets;
   const orderRecommendations = business.recommendations;
-  const rareParticipationMessage = business.isCurrent
-    ? (orderRecommendations.rareGuestParticipation ?? business.automation.rareGuestParticipation)?.message ?? '' : '';
   const orderRecommendationPresentation = useMemo(() => buildOrderRecommendationPresentation({
     orders: night?.orders ?? [],
     recommendations: orderRecommendations.recommendations,
@@ -632,7 +627,7 @@ export function ModWorkbench() {
       : automationLeaseError ? `自动化控制权\n${automationLeaseError}`
         : !automationLeaseOwned ? '自动化控制权\n当前窗口未持有控制权，仅查看服务端状态。'
           : automationRuntimePauseMessage ? `自动化\n${automationRuntimePauseMessage}` : '';
-  const autoPrepMessage = automationConnectionMessage || automationActionMessage || rareParticipationMessage || business.automation.message || business.error || '';
+  const autoPrepMessage = automationConnectionMessage || automationActionMessage || business.automation.message || business.error || '';
   const normalOrderMessage = automationConnectionMessage || automationActionMessage;
 
   useEffect(() => {
@@ -1121,7 +1116,6 @@ export function ModWorkbench() {
               favoriteError={favoriteError}
               autoPrepBusy={autoPrepBusy}
               autoPrepMessage={autoPrepMessage}
-              rareParticipationMessage={rareParticipationMessage}
               autoPrepPaused={autoPrepPaused}
               rareOrderDiagnostics={rareOrderDiagnostics}
               autoPrepPreferences={companionPreferences}

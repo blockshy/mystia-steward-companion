@@ -1564,7 +1564,7 @@ async function readJsonBody(request) {
 
 function registerMockDevice(request, body) {
   const identity = requireMockIdentity(request);
-  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 5 || !body.profile) {
+  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 1 || !body.profile) {
     throw mockHttpError(409, 'unsupported mock device protocol');
   }
   let device = mockDeviceAuthority.devices.get(identity.clientId);
@@ -1599,9 +1599,6 @@ function registerMockDevice(request, body) {
 }
 
 function updateMockDeviceProfile(request, body) {
-  if (body?.protocolVersion !== 1 || body?.profileSchemaVersion !== 5 || !body.profile) {
-    throw mockHttpError(409, 'unsupported mock device protocol');
-  }
   const current = requireMockDevice(request);
   requireMockCas(body);
   if (current.deviceId !== mockDeviceAuthority.primaryDeviceId) throw mockHttpError(403, 'only the primary mock device can update the active profile');
@@ -1708,7 +1705,7 @@ function buildMockDeviceAuthorityState(current) {
   return {
     ok: true,
     protocolVersion: 1,
-    profileSchemaVersion: 5,
+    profileSchemaVersion: 1,
     registryId: mockDeviceAuthority.registryId,
     authorityRevision: mockDeviceAuthority.authorityRevision,
     stateRevision: mockDeviceAuthority.stateRevision,

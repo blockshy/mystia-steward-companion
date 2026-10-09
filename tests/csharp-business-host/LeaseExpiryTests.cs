@@ -45,7 +45,7 @@ internal static class LeaseExpiryTests
             const string client = "11111111-1111-1111-1111-111111111111";
             var state = host.Authority.Register(client, "lease test", new CompanionDeviceRegisterRequest
             {
-                ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, Platform = "windows", AppVersion = "offline", Profile = profile,
+                ProtocolVersion = 1, ProfileSchemaVersion = 1, Platform = "windows", AppVersion = "offline", Profile = profile,
             }, DateTime.UtcNow);
             host.Publish(Snapshot(), Catalog());
             host.Start();

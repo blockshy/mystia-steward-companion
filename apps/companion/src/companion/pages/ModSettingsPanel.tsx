@@ -10,7 +10,6 @@ import { buildInventorySelectOptions, type InventorySortMode } from '@/companion
 import type { UpdateManager } from '@/companion/features/updates/useUpdateManager';
 import type { CompanionDeviceAuthorityController } from '@/companion/hooks/useCompanionDeviceAuthority';
 import { ModHelpPanel } from '@/companion/pages/ModHelpPanel';
-import { RareGuestParticipationSettings } from '@/companion/pages/settings/RareGuestParticipationSettings';
 import {
   DEFAULT_FONT_SCALE_PERCENT,
   DEFAULT_NORMAL_TARGET_HIGHLIGHT_COLOR,
@@ -1133,12 +1132,6 @@ export function ModSettingsPanel({
         </div>
 
         <div className={DENSE_TWO_COLUMN_GRID}>
-          <RareGuestParticipationSettings
-            preferences={preferences}
-            customers={data.rareCustomers}
-            disabled={sharedSettingsDisabled || deviceAuthority.busy === 'profile'}
-            onChange={onPreferenceChange}
-          />
           <ListPanel title="稀客自动化设置">
             <div className="space-y-4">
               <SwitchControl

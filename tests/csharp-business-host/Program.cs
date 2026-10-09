@@ -15,6 +15,7 @@ if (args.Contains("--serve", StringComparer.Ordinal)) { await JsonLineBridge.Run
 if (args.Contains("--load-stream", StringComparer.Ordinal)) { await LoadStreamTests.Run(Profile(), args.Contains("--client-poll", StringComparer.Ordinal) ? 750 : 10); return; }
 if (args.Contains("--lease-expiry", StringComparer.Ordinal)) { await LeaseExpiryTests.Run(Profile()); return; }
 if (args.Contains("--ui-failure-transition", StringComparer.Ordinal)) { await UiFailureTransitionTests.Run(Profile()); return; }
+if (args.Contains("--ui-colors", StringComparer.Ordinal)) { await UiTargetColorTests.Run(Profile()); return; }
 
 // 运行真实后台业务循环、真实设备/文件存储和真实领域代码，仅游戏副作用替换为受控委托。
 // 所有临时数据均位于专属临时目录，不接触真实游戏、用户配置、TCP端口或真实客户端。
@@ -61,7 +62,7 @@ try
     await Until(() => host.Status()["error"] != null, "无主设备必须暴露等待配置的错误。");
     Check(calls == 0 && !J.Bool(host.Status()["isCurrent"]), "未注册主设备时不能执行或把空输入发布为当前。");
     Check(!J.Bool(host.Status(999)["isCurrent"]) && !J.Bool(host.Status(999)["pending"]), "旧协议必须明确要求升级。");
-    var state = host.Authority.Register(client, "test", new CompanionDeviceRegisterRequest { ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, Platform = "windows", AppVersion = "test", Profile = Profile() }, DateTime.UtcNow);
+    var state = host.Authority.Register(client, "test", new CompanionDeviceRegisterRequest { ProtocolVersion = 1, ProfileSchemaVersion = 1, Platform = "windows", AppVersion = "test", Profile = Profile() }, DateTime.UtcNow);
     host.Invalidate();
     await Until(() => J.Bool(host.Status()["isCurrent"]), "注册后必须恢复当前结果。");
     Check(calls == 0, "主设备已注册但没有租约时仍不能调度。");
@@ -201,8 +202,5 @@ static JsonElement Profile()
     var keys = new[] { "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure", "totalCost", "profit", "beverageStock", "cookerAvailable" };
     p["recommendationSortProfile"] = new { preset = "balanced", objectives = keys.Select(key => new { key, enabled = true, weight = 50, direction = key is "negativeRisk" or "extraCount" or "resourcePressure" or "totalCost" ? "asc" : "desc" }).ToArray() };
     p["recommendationExclusions"] = new { excludedIngredientIds = Array.Empty<int>(), excludedBeverageIds = Array.Empty<int>() };
-    // 默认关闭新增的参与名单过滤，保持既有 v1 离线样本的推荐与调度范围。
-    p["rareGuestParticipationModuleEnabled"] = false;
-    p["managedRareGuestIds"] = Array.Empty<int>();
     return JsonSerializer.SerializeToElement(p);
 }

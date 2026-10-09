@@ -26,9 +26,6 @@ const MOUSE_PASSTHROUGH_STORAGE_KEY = `${STORAGE_PREFIX}-mouse-passthrough`;
 const GAMEPAD_NAVIGATION_STORAGE_KEY = `${STORAGE_PREFIX}-gamepad-navigation`;
 const AUTOMATION_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-automation-enabled`;
 const AUTO_RARE_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-rare-order-enabled`;
-// 复用历史客户端的键名，防止升级后把已保存的手动参与限制当作缺省配置覆盖。
-const RARE_GUEST_PARTICIPATION_MODULE_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-rare-guest-participation-module-enabled`;
-const MANAGED_RARE_GUEST_IDS_STORAGE_KEY = `${STORAGE_PREFIX}-managed-rare-guest-ids`;
 const AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-order-enabled`;
 const AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-take-beverage`;
 const AUTO_NORMAL_START_COOKING_STORAGE_KEY = `${STORAGE_PREFIX}-auto-normal-start-cooking`;
@@ -90,8 +87,6 @@ export const DEFAULT_NORMAL_AUTO_ORDERS_PER_TICK = 3;
 export const MIN_AUTO_ORDER_CONCURRENCY = 1;
 export const MAX_RARE_AUTO_ORDER_CONCURRENCY = 4;
 export const MAX_NORMAL_AUTO_ORDER_CONCURRENCY = 6;
-export const MAX_MANAGED_RARE_GUEST_IDS = 512;
-export const MAX_MANAGED_RARE_GUEST_ID = 2_147_483_647;
 export const DEFAULT_AUTO_STEP_RETRIES = 3;
 export const MIN_AUTO_STEP_RETRIES = 1;
 export const MAX_AUTO_STEP_RETRIES_LIMIT = 10;
@@ -127,8 +122,6 @@ export interface CompanionPreferences {
   gamepadNavigationEnabled: boolean;
   automationEnabled: boolean;
   autoRareOrderEnabled: boolean;
-  rareGuestParticipationModuleEnabled: boolean;
-  managedRareGuestIds: number[];
   autoNormalOrderEnabled: boolean;
   autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
@@ -178,8 +171,6 @@ export interface CompanionPreferences {
 export interface SharedCompanionPreferences {
   automationEnabled: boolean;
   autoRareOrderEnabled: boolean;
-  rareGuestParticipationModuleEnabled: boolean;
-  managedRareGuestIds: number[];
   autoNormalOrderEnabled: boolean;
   autoNormalTakeBeverage: boolean;
   autoNormalStartCooking: boolean;
@@ -220,7 +211,7 @@ export interface SharedCompanionPreferences {
   recommendationExclusions: RecommendationExclusions;
 }
 
-export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 5;
+export const SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION = 1;
 
 export function normalizeEditableQuantity(value: number) {
   if (!Number.isFinite(value)) return 0;
@@ -252,8 +243,6 @@ export function readStoredCompanionPreferences(): CompanionPreferences {
     gamepadNavigationEnabled: readStoredBoolean(GAMEPAD_NAVIGATION_STORAGE_KEY, true),
     automationEnabled: readStoredBoolean(AUTOMATION_ENABLED_STORAGE_KEY, false),
     autoRareOrderEnabled: readStoredBoolean(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, true),
-    rareGuestParticipationModuleEnabled: readStoredBoolean(RARE_GUEST_PARTICIPATION_MODULE_ENABLED_STORAGE_KEY, false),
-    managedRareGuestIds: readStoredManagedRareGuestIds(),
     autoNormalOrderEnabled: readStoredBoolean(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, false),
     autoNormalTakeBeverage: readStoredBoolean(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, false),
     autoNormalStartCooking: readStoredBoolean(AUTO_NORMAL_START_COOKING_STORAGE_KEY, false),
@@ -331,8 +320,6 @@ export function normalizeCompanionPreferences(
     gamepadNavigationEnabled: Boolean(value.gamepadNavigationEnabled),
     automationEnabled: Boolean(value.automationEnabled),
     autoRareOrderEnabled: value.autoRareOrderEnabled !== false,
-    rareGuestParticipationModuleEnabled: Boolean(value.rareGuestParticipationModuleEnabled),
-    managedRareGuestIds: normalizeManagedRareGuestIds(value.managedRareGuestIds),
     autoNormalOrderEnabled: Boolean(value.autoNormalOrderEnabled),
     autoNormalTakeBeverage: autoNormalCompleteOrder && Boolean(value.autoNormalTakeBeverage),
     autoNormalStartCooking: Boolean(value.autoNormalStartCooking),
@@ -374,7 +361,7 @@ export function normalizeCompanionPreferences(
     ),
     showDebugDetails: Boolean(value.showDebugDetails),
     serviceOrderSortMode: value.serviceOrderSortMode === 'guest' ? 'guest' : 'ordered',
-    recommendationSortProfile: normalizePreferenceSortProfile(value.recommendationSortProfile),
+    recommendationSortProfile: normalizeRecommendationSortProfile(value.recommendationSortProfile),
     recommendationBudgetPolicy: normalizeRecommendationBudgetPolicy(value.recommendationBudgetPolicy),
     recipeVariantLimitPerBase: normalizeRecipeVariantLimitPerBase(value.recipeVariantLimitPerBase),
     recommendationExclusions: normalizeRecommendationExclusions(value.recommendationExclusions),
@@ -388,8 +375,6 @@ export function readSharedCompanionPreferences(
   return {
     automationEnabled: normalized.automationEnabled,
     autoRareOrderEnabled: normalized.autoRareOrderEnabled,
-    rareGuestParticipationModuleEnabled: normalized.rareGuestParticipationModuleEnabled,
-    managedRareGuestIds: [...normalized.managedRareGuestIds],
     autoNormalOrderEnabled: normalized.autoNormalOrderEnabled,
     autoNormalTakeBeverage: normalized.autoNormalTakeBeverage,
     autoNormalStartCooking: normalized.autoNormalStartCooking,
@@ -435,28 +420,6 @@ export function normalizeSharedCompanionPreferences(
   value: Partial<SharedCompanionPreferences>,
 ): SharedCompanionPreferences {
   return readSharedCompanionPreferences(normalizeCompanionPreferences(value));
-}
-
-/**
- * 校验服务端返回的参与限制，随后才允许应用到本地配置或确认同步。
- * 网络值不能沿用 localStorage 的宽容归一化，否则损坏的名单可能被清空并扩大自动化范围。
- */
-export function readWireSharedCompanionPreferences(value: unknown): SharedCompanionPreferences {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('共享配置必须是对象。');
-  const profile = value as Partial<SharedCompanionPreferences>;
-  if (typeof profile.rareGuestParticipationModuleEnabled !== 'boolean') {
-    throw new Error('共享配置缺少有效的稀客手动参与模块开关。');
-  }
-  const ids = profile.managedRareGuestIds;
-  if (!Array.isArray(ids) || ids.length > MAX_MANAGED_RARE_GUEST_IDS) throw new Error('稀客调度名单格式或数量无效。');
-  let previous = -1;
-  for (const id of ids) {
-    if (!Number.isInteger(id) || id < 0 || id > MAX_MANAGED_RARE_GUEST_ID || id <= previous) {
-      throw new Error('稀客调度名单必须是严格递增且不重复的非负整数 ID。');
-    }
-    previous = id;
-  }
-  return normalizeSharedCompanionPreferences(profile);
 }
 
 export function applySharedCompanionPreferences(
@@ -548,8 +511,6 @@ export function persistCompanionPreferences(preferences: CompanionPreferences) {
   localStorage.setItem(GAMEPAD_NAVIGATION_STORAGE_KEY, normalized.gamepadNavigationEnabled ? '1' : '0');
   localStorage.setItem(AUTOMATION_ENABLED_STORAGE_KEY, normalized.automationEnabled ? '1' : '0');
   localStorage.setItem(AUTO_RARE_ORDER_ENABLED_STORAGE_KEY, normalized.autoRareOrderEnabled ? '1' : '0');
-  localStorage.setItem(RARE_GUEST_PARTICIPATION_MODULE_ENABLED_STORAGE_KEY, normalized.rareGuestParticipationModuleEnabled ? '1' : '0');
-  localStorage.setItem(MANAGED_RARE_GUEST_IDS_STORAGE_KEY, JSON.stringify(normalized.managedRareGuestIds));
   localStorage.setItem(AUTO_NORMAL_ORDER_ENABLED_STORAGE_KEY, normalized.autoNormalOrderEnabled ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_TAKE_BEVERAGE_STORAGE_KEY, normalized.autoNormalTakeBeverage ? '1' : '0');
   localStorage.setItem(AUTO_NORMAL_START_COOKING_STORAGE_KEY, normalized.autoNormalStartCooking ? '1' : '0');
@@ -670,41 +631,10 @@ function readStoredRecommendationSortProfile(): RecommendationSortProfile {
   if (!raw) return normalizeRecommendationSortProfile(null);
 
   try {
-    return normalizePreferenceSortProfile(JSON.parse(raw) as unknown);
+    return normalizeRecommendationSortProfile(JSON.parse(raw) as unknown);
   } catch {
     return normalizeRecommendationSortProfile(null);
   }
-}
-
-/** 历史 v4 的八项目标升级为九项时，新补的厨具目标保持关闭，不改变原排序意图。 */
-function normalizePreferenceSortProfile(value: unknown): RecommendationSortProfile {
-  const normalized = normalizeRecommendationSortProfile(value);
-  const candidate = value && typeof value === 'object' && !Array.isArray(value)
-    ? value as { objectives?: unknown } : null;
-  if (Array.isArray(candidate?.objectives) && candidate.objectives.length === 8) {
-    const keys = new Set(candidate.objectives.map((entry: unknown) => (
-      entry && typeof entry === 'object' && !Array.isArray(entry) ? (entry as { key?: unknown }).key : null
-    )));
-    if (keys.size === 8 && !keys.has('cookerAvailable')
-      && normalized.objectives.filter((entry) => entry.key !== 'cookerAvailable').every((entry) => keys.has(entry.key))) {
-      return { ...normalized, objectives: normalized.objectives.map((entry) => entry.key === 'cookerAvailable' ? { ...entry, enabled: false } : entry) };
-    }
-  }
-  return normalized;
-}
-
-function readStoredManagedRareGuestIds(): number[] {
-  const raw = localStorage.getItem(MANAGED_RARE_GUEST_IDS_STORAGE_KEY);
-  if (!raw) return [];
-  try { return normalizeManagedRareGuestIds(JSON.parse(raw) as unknown); } catch { return []; }
-}
-
-/** 本地编辑值按历史规则去重、排序并限制规模；服务端值须先经过严格读取，不能直接调用此宽容入口。 */
-export function normalizeManagedRareGuestIds(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.filter((id: unknown): id is number => typeof id === 'number'
-    && Number.isInteger(id) && id >= 0 && id <= MAX_MANAGED_RARE_GUEST_ID))]
-    .sort((left, right) => left - right).slice(0, MAX_MANAGED_RARE_GUEST_IDS);
 }
 
 function readStoredRecommendationBudgetPolicy(): RecommendationBudgetPolicy {

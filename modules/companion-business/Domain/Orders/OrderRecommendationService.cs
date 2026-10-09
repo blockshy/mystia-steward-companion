@@ -17,12 +17,6 @@ public static partial class OrderRecommendationService
     {
         cache ??= new OrderCandidateCache();
         var result = BuildRareRecommendations(payload, cache); var normal = OrderIdentityAndSorting.SortNormal(Objects(payload["normalOrders"])).ToArray();
-        if (RareGuestParticipationPolicy.IsBlocked(Obj(payload["preferences"])))
-        {
-            // 候选仍供手动查看；每行携带服务端决定的辅助阻断标记，避免下游另选主方案绕过历史配置。
-            result["rareGuestParticipation"] = RareGuestParticipationPolicy.Diagnostic();
-            foreach (var row in Objects(result["recommendations"])) row["rareGuestParticipation"] = RareGuestParticipationPolicy.Diagnostic();
-        }
         result["normalOrderDetailPlans"] = Bool(payload["includeNormalOrderDetails"]) ? Array(normal.Select(o => BuildNormalDetail(payload, o, cache))) : new JsonArray();
         result["normalExecutionTargets"] = Bool(payload["includeNormalExecutionTargets"]) ? Array(normal.Where(o => !Bool(o["hasEvaluated"])).Select(o =>
         { var selection = NormalTargetSelector.Select(NormalArgs(payload, o), cache); return Object(("orderKey", OrderIdentityAndSorting.NormalKey(o)), ("target", selection["target"]), ("message", selection["message"])); })) : new JsonArray();

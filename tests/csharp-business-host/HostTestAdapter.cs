@@ -2,12 +2,13 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Save;
 using J = MystiaStewardCompanion.Business.Domain.Recommendation.RecommendationJson;
 
 namespace MystiaStewardCompanion.LocalApi
 {
     /// <summary>
-    /// 仅替换非业务的边界：文件、权威、HTTP正文解析和整个Business partial直接链接生产源码；
+    /// 仅替换非业务的边界：文件、权威、HTTP正文、UI目标解析和值类型及整个Business partial直接链接生产源码；
     /// 不启动TCP监听，不加载Unity，不读取任何游戏文件。适配委托允许测试精确阻塞和观察副作用。
     /// </summary>
     internal sealed partial class LocalApiServer
@@ -67,7 +68,7 @@ namespace MystiaStewardCompanion.LocalApi
                     var state = _deviceAuthorityStore.ReadBusinessState(DateTime.UtcNow);
                     _deviceAuthorityStore.UpdatePrimaryProfile(client, new CompanionDeviceProfileUpdateRequest
                     {
-                        ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
+                        ProtocolVersion = 1, ProfileSchemaVersion = 1,
                         ExpectedAuthorityRevision = state.AuthorityRevision, ExpectedProfileRevision = state.ActiveProfileRevision,
                         Profile = JsonSerializer.SerializeToElement(profile),
                     }, DateTime.UtcNow);
@@ -104,9 +105,6 @@ namespace MystiaStewardCompanion.LocalApi
                 || _automationLease.AuthorityRevision != _deviceAuthorityStore.ReadAuthorityRevision())) _automationLease = null;
         }
         private static (string, string) ReadRequiredClientIdentity(string request) => (request, "test");
-        private static int ReadIntQuery(string query, string name, int fallback) => int.TryParse(ReadQuery(query, name), out var value) ? value : fallback;
-        private static string ReadQuery(string query, string name) => query.Split('&').Select(part => part.Split('=', 2))
-            .Where(parts => Uri.UnescapeDataString(parts[0]) == name).Select(parts => parts.Length == 2 ? Uri.UnescapeDataString(parts[1]) : "").FirstOrDefault() ?? "";
         private static string ToJson(object value) => JsonSerializer.Serialize(value, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         private static T ReadJsonRequest<T>(HttpRequestData data, params string[] fields) => JsonSerializer.Deserialize<T>(HttpRequestReader.ReadRequiredJsonBody(data), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
         private bool TryRequireAutomationLease(string request, out object error, out long epoch)
@@ -116,13 +114,11 @@ namespace MystiaStewardCompanion.LocalApi
         private static string BuildOrderActionJson(string query, Func<OrderPreparationRequest, OrderPreparationResult> action, long epoch, Func<bool>? current)
         {
             var request = new OrderPreparationRequest { AutomationEpoch = epoch, IsBusinessInputCurrent = current,
-                TraceId = ReadQuery(query, "traceId"), OrderKey = ReadQuery(query, "orderKey"),
+                TraceId = ReadStringQuery(query, "traceId"), OrderKey = ReadStringQuery(query, "orderKey"),
                 RecipeId = ReadIntQuery(query, "recipeId", -1), BeverageId = ReadIntQuery(query, "beverageId", -1) };
             return ToJson(action(request));
         }
-        private static RuntimeUiTargetSnapshot ReadUiPinningTarget(string query, int index) => new(ReadQuery(query, "target0Kind"), ReadQuery(query, "target0Revision"));
     }
-    internal sealed record RuntimeUiTargetSnapshot(string Kind, string Revision);
 }
 
 namespace MystiaStewardCompanion.Save
@@ -130,21 +126,22 @@ namespace MystiaStewardCompanion.Save
     /// <summary>只记录业务宿主提交的UI值，不创建游戏对象。</summary>
     internal static class RuntimeUiPinningService
     {
-        internal static IReadOnlyList<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot> Targets = Array.Empty<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot>();
+        internal static IReadOnlyList<RuntimeUiTargetSnapshot> Targets = Array.Empty<RuntimeUiTargetSnapshot>();
         private static int _publicationCount;
         private static int _withdrawalCount;
         internal static int PublicationCount => Volatile.Read(ref _publicationCount);
         internal static int WithdrawalCount => Volatile.Read(ref _withdrawalCount);
 
         /// <summary>统计真实宿主调用边界的次数，避免把仅压制日志误判为幂等撤销。</summary>
-        internal static void UpdateTargets(long generation, IReadOnlyList<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot> targets)
+        internal static void UpdateTargets(long generation, IReadOnlyList<RuntimeUiTargetSnapshot> targets)
         {
-            Targets = targets.ToArray();
+            // 目标集合本身也走生产不可变值类型，覆盖数量、种类唯一性与调色板组装校验。
+            Targets = new RuntimeUiTargetSetSnapshot(generation, generation, targets).Targets;
             Interlocked.Increment(ref _publicationCount);
         }
         internal static void ClearTargetsForAuthorityTransition(long generation, string reason)
         {
-            Targets = Array.Empty<MystiaStewardCompanion.LocalApi.RuntimeUiTargetSnapshot>();
+            Targets = Array.Empty<RuntimeUiTargetSnapshot>();
             Interlocked.Increment(ref _withdrawalCount);
         }
     }

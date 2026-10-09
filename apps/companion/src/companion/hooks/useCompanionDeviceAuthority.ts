@@ -11,7 +11,7 @@ import {
 } from '@/companion/api';
 import {
   SHARED_COMPANION_PREFERENCES_SCHEMA_VERSION,
-  readWireSharedCompanionPreferences,
+  normalizeSharedCompanionPreferences,
   serializeSharedCompanionPreferences,
   type SharedCompanionPreferences,
 } from '@/companion/preferences';
@@ -91,8 +91,8 @@ export function useCompanionDeviceAuthority({
   const commitState = useCallback((next: CompanionDeviceAuthorityState, generation: number): boolean => {
     if (generationRef.current !== generation) return false;
     validateAuthorityState(next);
-    const activeProfile = readWireSharedCompanionPreferences(next.activeProfile);
-    const currentDeviceProfile = readWireSharedCompanionPreferences(next.currentDeviceProfile);
+    const activeProfile = normalizeSharedCompanionPreferences(next.activeProfile);
+    const currentDeviceProfile = normalizeSharedCompanionPreferences(next.currentDeviceProfile);
     const normalizedState: CompanionDeviceAuthorityState = {
       ...next,
       activeProfile,
@@ -109,12 +109,8 @@ export function useCompanionDeviceAuthority({
     next: CompanionDeviceAuthorityState,
     generation: number,
   ): Promise<CompanionDeviceAuthorityState> => {
-    // 同步确认具有持久化语义；必须先拒绝旧协议或损坏的参与限制，不能确认后才发现配置无效。
-    validateAuthorityState(next);
-    readWireSharedCompanionPreferences(next.activeProfile);
-    const pendingProfile = readWireSharedCompanionPreferences(next.currentDeviceProfile);
     if (!next.pendingSyncId) return next;
-    applySharedPreferencesRef.current(pendingProfile);
+    applySharedPreferencesRef.current(normalizeSharedCompanionPreferences(next.currentDeviceProfile));
     const acknowledged = await acknowledgeCompanionDeviceSync(
       endpoint,
       apiToken,

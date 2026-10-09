@@ -23,10 +23,7 @@ public static class GameUiTargetService
     };
     public static JsonObject? BuildRare(JsonObject args)
     {
-        // 直接调用读取权威偏好；宿主复用已计算推荐时读取服务端逐行标记，两条入口均不得重建旧队列许可。
-        if (RareGuestParticipationPolicy.IsBlocked(Obj(args["preferences"]))) return null;
-        var rows = Objects(args["recommendations"]).Where(row => !Bool(Obj(row["rareGuestParticipation"])["gameUiBlocked"])).ToList();
-        var options = Obj(args["options"]); var data = Obj(args["data"]);
+        var rows = Objects(args["recommendations"]).ToList(); var options = Obj(args["options"]); var data = Obj(args["data"]);
         var ordered = OrderIdentityAndSorting.SortRare(rows.Select(x => Obj(x["order"])), Str(args["orderSortMode"]), options["specialBusiness"] ?? args["specialBusiness"]);
         var candidates = new List<(JsonObject Recommendation, JsonObject? Food, JsonObject? Beverage)>();
         foreach (var order in ordered)

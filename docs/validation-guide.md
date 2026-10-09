@@ -126,8 +126,6 @@ cargo check \
 
 `corepack pnpm audit:business` 聚合实际业务程序集引用的推荐/支持模块、完整订单/特殊经营和自动化差分，以及宿主、成套 DLL/manifest 和瘦客户端边界测试。`tests/reference/manifest.json` 固定旧 TS 提交及文件内容；生产代码不能导入该目录，服务不可用也不能回退。
 
-该入口还运行设备格式1–5迁移/备份/损坏拒绝、运行时参与许可和`--ui-failure-transition`持续故障回归。只读回放既有配置可使用`dotnet tests/local-api-storage/bin/Release/net6.0/LocalApiStorageSmoke.dll --replay-device-file <配置文件绝对路径>`；它仅把来源复制到测试临时目录，验证迁移、身份和设置保留，结束后核对来源未变，不启动或连接游戏。
-
 性能夹具是完全人工目录，不读取存档或启动游戏：
 
 ```bash

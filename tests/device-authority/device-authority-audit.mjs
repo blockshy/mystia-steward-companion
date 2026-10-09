@@ -24,7 +24,7 @@ try {
 
   const first = await postJson('/devices/register', windows, {
     protocolVersion: 1,
-    profileSchemaVersion: 5,
+    profileSchemaVersion: 1,
     platform: 'windows',
     appVersion: '1.2.0',
     profile: windowsProfile,
@@ -35,7 +35,7 @@ try {
 
   const second = await postJson('/devices/register', android, {
     protocolVersion: 1,
-    profileSchemaVersion: 5,
+    profileSchemaVersion: 1,
     platform: 'android',
     appVersion: '1.2.0',
     profile: androidProfile,
@@ -46,7 +46,7 @@ try {
 
   const forbiddenProfileWrite = await rawPost('/devices/profile', android, {
     protocolVersion: 1,
-    profileSchemaVersion: 5,
+    profileSchemaVersion: 1,
     expectedAuthorityRevision: second.authorityRevision,
     expectedProfileRevision: second.currentDeviceProfileRevision,
     profile: androidProfile,
@@ -68,7 +68,7 @@ try {
   });
   const updated = await postJson('/devices/profile', windows, {
     protocolVersion: 1,
-    profileSchemaVersion: 5,
+    profileSchemaVersion: 1,
     expectedAuthorityRevision: first.authorityRevision,
     expectedProfileRevision: first.currentDeviceProfileRevision,
     profile: updatedProfile,
@@ -203,8 +203,6 @@ function buildSharedProfile(overrides = {}) {
   const profile = {
     automationEnabled: false,
     autoRareOrderEnabled: true,
-    rareGuestParticipationModuleEnabled: false,
-    managedRareGuestIds: [],
     autoNormalOrderEnabled: false,
     autoNormalTakeBeverage: false,
     autoNormalStartCooking: false,
@@ -277,30 +275,22 @@ async function verifySharedProfileContract() {
     /export interface SharedCompanionPreferences \{(?<body>[\s\S]*?)\n\}/,
     'TypeScript shared profile interface',
   );
-  assert.match(csharpSource, /public const int ProfileSchemaVersion = 5;/);
-  assert.match(csharpSource, /private static JsonElement ValidateAndCloneProfile\(JsonElement profile\)\s*\{\s*return ValidateAndCloneProfile\(\s*profile,\s*ProfileFieldsV4,\s*ProfileBooleanFieldsV4,\s*ObjectiveKeysV1ToV3,\s*requireManagedRareGuestIds: true\);/,
-    '当前 schema5 必须实际使用保留参与字段的描述符和九项排序。');
   const booleanBody = requireBlock(
     csharpSource,
-    /ProfileBooleanFieldsV1 = new\(StringComparer\.Ordinal\)\s*\{(?<body>[\s\S]*?)\n\s*\};/,
+    /ProfileBooleanFields = new\(StringComparer\.Ordinal\)\s*\{(?<body>[\s\S]*?)\n\s*\};/,
     'C# shared boolean fields',
   );
   const additionalBody = requireBlock(
     csharpSource,
-    /ProfileBooleanFieldsV1\.Concat\(new\[\]\s*\{(?<body>[\s\S]*?)\n\s*\}\),/,
+    /ProfileBooleanFields\.Concat\(new\[\]\s*\{(?<body>[\s\S]*?)\n\s*\}\),/,
     'C# additional shared fields',
   );
   const typescriptFields = [...interfaceBody.matchAll(/^\s{2}(?<name>[A-Za-z][A-Za-z0-9]*):/gm)]
     .map((match) => match.groups.name)
     .sort();
-  // 当前描述符沿用历史 v1 的固定字段并前向增加两项；校验真正的增量声明，避免把迁移历史当作现协议。
-  const participationFields = [...csharpSource.matchAll(/ProfileFieldsV[23] = new\(\s*ProfileFieldsV[12]\.Concat\(new\[\] \{ "(?<name>[A-Za-z][A-Za-z0-9]*)" \}\)/g)]
-    .map((match) => match.groups.name);
-  assert.deepEqual(participationFields.sort(), ['managedRareGuestIds', 'rareGuestParticipationModuleEnabled']);
   const serverFields = [...booleanBody.matchAll(/"(?<name>[A-Za-z][A-Za-z0-9]*)"/g),
     ...additionalBody.matchAll(/"(?<name>[A-Za-z][A-Za-z0-9]*)"/g)]
     .map((match) => match.groups.name)
-    .concat(participationFields)
     .sort();
   assert.deepEqual(serverFields, typescriptFields, 'Frontend and Mod shared-profile field sets diverged.');
   assert.deepEqual(

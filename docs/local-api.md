@@ -101,6 +101,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 - `POST /business/automation/retry` 只接受 `{protocolVersion, kind, key}`；重试还需要当前主设备、精确权威 revision 和有效租约。实际动作由编排器根据最新事实重新决定。
 - 后台读取不会更新设备在线时间，也不会自动取得或续期租约；现有客户端心跳继续承担在线许可。
 - 同一经营代次的持续输入故障只撤销一次业务结果和 UI 目标；恢复发布后或经营代次变化后，新故障仍会重新撤销。错误原因变化仍记录诊断，不能用日志限流替代状态处理。
+- 游戏 UI 投影和共享偏好保留 `#RRGGBB` 颜色；宿主在适配边界转换为既有游戏目标协议的 `RRGGBB`，仍使用严格的大写十六进制解析器。
 - 候选缓存仅存完整值参数对应的纯计算结果；订单身份、代次、执行许可和副作用结果不缓存。输入变化会撤销旧帧，动作排队和主线程执行前再次核对版本。
 
 协议版本不匹配时明确提示成套升级；不存在客户端算法回退或两个自动化 writer。
@@ -108,10 +109,6 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 ## 设备配置权威
 
 `CompanionDeviceAuthorityStore` 是共享功能配置的唯一权威；窗口主题、字体、连接地址等本地 UI 偏好不进入该 profile。
-
-当前设备存储及共享配置格式为第5版，设备传输协议仍为1。加载第1–4版文件时，先按对应历史字段和原始 profile hash严格验证，再保留registry/device/primary身份、修订号、时间戳及待同步状态进行前向迁移。迁移前在同目录保存`companion-devices.json.schema-v<旧版本>-<原文件SHA256>.bak`；备份或校验失败不覆盖原文件。
-
-第五版同时保存main的九项排序与旧分支的`rareGuestParticipationModuleEnabled`、`managedRareGuestIds`。第四版的八项排序原样保留，补入的`cookerAvailable`设为禁用、权重0。名单是旧版逐单手动参与控制对象，不是自动执行白名单；本分支没有旧运行时队列，开关开启且名单非空时由C#暂停稀客自动化及辅助，返回`legacy-participation-queue-unavailable`诊断。普客和手动推荐继续可用；用户可以在设置主动关闭旧模块。
 
 - 第一个成功注册的设备成为初始主设备，不因离线自动转移。
 - 只有当前主设备能通过 `expectedAuthorityRevision + expectedProfileRevision` 更新生效 profile。

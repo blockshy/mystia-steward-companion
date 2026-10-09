@@ -11,6 +11,10 @@
   <ItemGroup>
     <ProjectReference Include="../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiServer.Business.cs" Link="Production/LocalApiServer.Business.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiServer.UiTargetParsing.cs" Link="Production/LocalApiServer.UiTargetParsing.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="Production/RuntimeUiTargetSet.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="Production/RuntimeTargetHighlightStyle.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs" Link="Production/RuntimeOrderTraceIdService.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/OrderPreparationModels.cs" Link="Production/OrderPreparationModels.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/HttpRequestReader.cs" Link="Production/HttpRequestReader.cs" />
     <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="Production/AtomicFile.cs" />

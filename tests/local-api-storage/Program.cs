@@ -9,12 +9,6 @@ var log = Logger.CreateLogSource("local-api-storage-smoke");
 
 try
 {
-    // 对用户提供的配置仅在测试临时目录中回放迁移，绝不写入实际游戏配置或调用游戏接口。
-    if (args.Length == 2 && args[0] == "--replay-device-file")
-    {
-        DeviceAuthorityMigrationTests.ReplayFile(args[1], root, log);
-        return 0;
-    }
     VerifyCorruptFavoriteIsPreserved(root, log);
     VerifyNullableFavoriteExtras(root, log);
     VerifyMutationJsonEscaping(root, log);
@@ -25,7 +19,6 @@ try
     VerifyFutureSchemasArePreserved(root, log);
     VerifyCompanionDeviceAuthority(root, log);
     VerifyCorruptDeviceAuthorityIsPreserved(root, log);
-    DeviceAuthorityMigrationTests.Run(root, log, BuildSharedProfile(false, 2));
     Console.WriteLine("PASS: local API file stores and companion device configuration authority passed storage, CAS and corruption checks.");
     return 0;
 }
@@ -79,7 +72,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
             new CompanionDeviceProfileUpdateRequest
             {
                 ProtocolVersion = 1,
-                ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
+                ProfileSchemaVersion = 1,
                 ExpectedAuthorityRevision = secondary.AuthorityRevision,
                 ExpectedProfileRevision = secondary.CurrentDeviceProfileRevision,
                 Profile = secondaryProfile,
@@ -92,7 +85,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
         new CompanionDeviceProfileUpdateRequest
         {
             ProtocolVersion = 1,
-            ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
+            ProfileSchemaVersion = 1,
             ExpectedAuthorityRevision = secondary.AuthorityRevision,
             ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
             Profile = updatedProfile,
@@ -107,7 +100,7 @@ static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
             new CompanionDeviceProfileUpdateRequest
             {
                 ProtocolVersion = 1,
-                ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
+                ProfileSchemaVersion = 1,
                 ExpectedAuthorityRevision = secondary.AuthorityRevision,
                 ExpectedProfileRevision = primary.CurrentDeviceProfileRevision,
                 Profile = primaryProfile,
@@ -215,7 +208,7 @@ static CompanionDeviceRegisterRequest RegisterRequest(string platform, JsonEleme
     return new CompanionDeviceRegisterRequest
     {
         ProtocolVersion = 1,
-        ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
+        ProfileSchemaVersion = 1,
         Platform = platform,
         AppVersion = "1.2.0",
         Profile = profile,
@@ -238,9 +231,6 @@ static JsonElement BuildSharedProfile(bool automationEnabled, int rareConcurrenc
         "rareOrderHighlightEnabled", "normalOrderHighlightEnabled",
     };
     var profile = booleanFields.ToDictionary(field => field, _ => (object)false, StringComparer.Ordinal);
-    // 新注册设备不默认启用旧分支手动参与队列，保持原main的自动参与行为。
-    profile["rareGuestParticipationModuleEnabled"] = false;
-    profile["managedRareGuestIds"] = Array.Empty<int>();
     profile["automationEnabled"] = automationEnabled;
     profile["autoRareOrderEnabled"] = true;
     profile["filterMissingCookers"] = true;

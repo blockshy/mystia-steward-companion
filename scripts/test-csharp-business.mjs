@@ -39,6 +39,8 @@ for (const [directory, name, smoke] of projects) {
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--lease-expiry']);
 // 持续故障只撤销一次真实UI边界；恢复后再次故障仍须撤销，不能靠隐藏日志通过。
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--ui-failure-transition']);
+// 真实游戏目标解析器覆盖 CSS #RRGGBB 到协议 RRGGBB 的转换，禁止用宽松解析替身遗漏边界。
+run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--ui-colors']);
 for (const directory of ['csharp-recommendations', 'csharp-business-orders', 'csharp-automation']) {
   run(process.execPath, [`tests/${directory}/differential.mjs`]);
 }

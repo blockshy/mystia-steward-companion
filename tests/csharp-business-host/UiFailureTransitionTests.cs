@@ -54,7 +54,7 @@ internal static class UiFailureTransitionTests
             settings["normalGameUiPinningEnabled"] = true;
             host.Authority.Register("11111111-1111-1111-1111-111111111111", "ui recovery", new CompanionDeviceRegisterRequest
             {
-                ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion,
+                ProtocolVersion = 1, ProfileSchemaVersion = 1,
                 Platform = "windows", AppVersion = "offline", Profile = JsonSerializer.SerializeToElement(settings),
             }, DateTime.UtcNow);
             host.Publish(snapshot, catalog);
