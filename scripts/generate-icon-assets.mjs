@@ -44,7 +44,8 @@ const icnsChunkOrder = [
   'ic13',
   'ic14',
 ];
-const androidForegroundScale = 0.65;
+// 探针标志覆盖了原画布的大部分范围；缩放后保持与原有启动图标相同的圆形安全区。
+const androidForegroundScale = 0.38;
 const androidForegroundMaxRadius = 104;
 
 const desktopFiles = [
@@ -309,8 +310,16 @@ function validateSourceSvg(svg) {
   if (!viewBox || width <= 0 || width !== height) {
     throw new Error('icon-source.svg must have a positive square viewBox');
   }
-  if (/<(?:image|text|script|foreignObject|filter)\b|\b(?:href|xlink:href)=|\burl\s*\(/i.test(svg)) {
-    throw new Error('icon-source.svg must be a self-contained vector without images, fonts, scripts, or filters');
+  // 允许原样嵌入探针 PNG，但仍禁止外部资源、字体、脚本与滤镜。
+  // 检查所有链接，而不是仅信任 <image> 标签，避免生成结果依赖机器上的其他文件或网络。
+  const embeddedImages = [...svg.matchAll(/\b(?:href|xlink:href)=["']([^"']*)["']/gi)];
+  if (/<(?:text|script|foreignObject|filter)\b|\burl\s*\(/i.test(svg)
+    || embeddedImages.some(([, value]) => !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value))) {
+    throw new Error('icon-source.svg must be self-contained and may only embed PNG image data');
+  }
+  for (const [, value] of embeddedImages) {
+    // 复用 PNG 结构校验，及时拒绝损坏或冒充 PNG 的输入，之后再交给统一渲染器处理。
+    readPngInfo(Buffer.from(value.slice('data:image/png;base64,'.length), 'base64'), 'embedded probe icon');
   }
   const backgroundColor = root[0].match(/\bdata-icon-background=["'](#[0-9a-f]{6})["']/i)?.[1];
   if (!backgroundColor) {

@@ -746,9 +746,9 @@ mod windows_updater_ui {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-        GetMessageW, GetWindowLongPtrW, LoadCursorW, MoveWindow, PostMessageW, PostQuitMessage,
+        GetMessageW, GetWindowLongPtrW, LoadCursorW, LoadIconW, MoveWindow, PostMessageW, PostQuitMessage,
         RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-        TranslateMessage, BS_PUSHBUTTON, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, MSG,
+        TranslateMessage, BS_PUSHBUTTON, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, IDI_APPLICATION, MSG,
         NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
         WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_SETFONT, WM_SIZE, WNDCLASSW,
         WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
@@ -814,13 +814,20 @@ mod windows_updater_ui {
             if instance.is_null() {
                 return Err("get updater module handle failed".to_string());
             }
+            // tauri-build 将统一的 icons/icon.ico 以资源 ID 32512 嵌入两个 Windows 可执行文件。
+            // IDI_APPLICATION 的数值同为 32512；必须传入当前模块实例，才能读取更新器自己的
+            // 程序图标，而不是系统默认图标。LoadIconW 返回共享资源句柄，不应调用 DestroyIcon。
+            let window_icon = LoadIconW(instance as HINSTANCE, IDI_APPLICATION);
+            if window_icon.is_null() {
+                return Err("load updater window icon failed".to_string());
+            }
             let class = WNDCLASSW {
                 style: 0,
                 lpfnWndProc: Some(window_proc),
                 cbClsExtra: 0,
                 cbWndExtra: 0,
                 hInstance: instance as HINSTANCE,
-                hIcon: ptr::null_mut(),
+                hIcon: window_icon,
                 hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
                 hbrBackground: (COLOR_WINDOW + 1) as usize as HBRUSH,
                 lpszMenuName: ptr::null(),

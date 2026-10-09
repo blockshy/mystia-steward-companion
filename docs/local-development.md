@@ -61,6 +61,14 @@ Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.
 
 新包必须成套包含主 Mod、Contracts、Business 三个 DLL、Windows 客户端、updater 和组件摘要，不能只替换主 DLL。详细完整性与回退规则见[更新系统](update-system.md)。
 
+### 程序图标
+
+统一图标源为 `apps/companion/src-tauri/icon-source.svg`，其中内嵌 `migration/flutter` 提交
+`0f8090f774296898a508af2b38b1ceaf13994eb8` 的 Flutter 探针原始 PNG，保持透明背景且不依赖测试目录。
+修改后运行 `corepack pnpm icons:generate`，再运行 `corepack pnpm icons:check` 验证所有衍生产物。
+生成范围包括 Windows 多尺寸 ICO、托盘、favicon、Android 普通/圆形/自适应图标及现有 Apple 图标素材；
+Android 资源会同步到实际工程目录，自适应前景保留圆形安全区。独立 Windows updater 也使用同一 ICO 的嵌入资源。
+
 ## BepInEx 构建引用
 
 `mods/bepinex/References/` 中的真实 DLL 不提交到公开仓库。引用的来源、文件集合、大小和 SHA-256 由
