@@ -420,7 +420,9 @@ function buildAndroidForegroundSvg(source) {
 
 function buildAndroidLegacySvg(source, round) {
   const canvasSize = 24;
-  const margin = round ? 1 : 2;
+  // 探针标志本身接近画布边缘，圆形旧版启动器需要额外留白，防止裁掉上、下斜角。
+  // 方形资源仍保留原有边距，圆形资源则将完整标志缩入圆形遮罩内部。
+  const margin = round ? 4 : 2;
   const innerSize = canvasSize - margin * 2;
   const scaleX = innerSize / source.width;
   const scaleY = innerSize / source.height;
