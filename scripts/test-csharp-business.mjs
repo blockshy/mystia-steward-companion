@@ -43,6 +43,8 @@ run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--ui-colors']);
 // 持续观察更新可以保留同作用域的只读结果，但不得把旧结果标为当前或恢复旧动作许可。
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--display-continuity']);
+// 白天只读推荐不依赖夜间目标发布；真实生命周期/发布门禁仍拒绝非Active副作用及排队后切场。
+run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--daytime-ui-lifecycle']);
 for (const directory of ['csharp-recommendations', 'csharp-business-orders', 'csharp-automation']) {
   run(process.execPath, [`tests/${directory}/differential.mjs`]);
 }

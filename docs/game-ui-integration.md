@@ -26,6 +26,15 @@
 客户端只编辑共享功能开关、颜色等设置，并通过 `/business/status` 的 `gameUiTargets` 查看投影；
 旧的 `POST /ui-pinning/targets` 客户端入口拒绝写入。业务线程只处理托管值，Unity 绑定仍由主线程处理。
 
+目标发布只允许快照声明 `Active`，且实时托管生命周期仍为同一经营代次的 `Active`。白天、`Inactive`、
+`Closing`、`Destroyed` 或代次不匹配时，宿主返回空 UI 槽位并继续只读推荐，不调用夜间目标发布接口。
+空目标也是一次发布，不能用 `UpdateTargets(empty)` 绕过生命周期要求；旧目标由既有经营边界负责清理，
+后台旧帧不得另行撤销下一场经营的目标。自动化准入及排队后许可同样复核实时经营状态。
+
+`RuntimeUiTargetSessionGuard` 保存原有的严格发布校验，生产服务与离线宿主共用该判断。计算后发生切场竞争时，
+发布仍会被拒绝并取消本轮未提交动作；下一轮按非经营状态继续只读推荐。仍处于同代 `Active` 的真实异常必须报告，
+不能通过吞掉错误或放宽目标校验恢复页面。
+
 一个 target set 最多包含一个稀客目标和一个普客目标，并按稀客、普客的稳定顺序发布。每个目标必须携带：
 
 - `kind`、目标色和内容修订。
@@ -104,6 +113,7 @@ Hook。料理页生命周期由 open/close 登记和每帧指针验证处理。�
 ## 维护入口
 
 - 目标模型：`mods/bepinex/src/Save/RuntimeUiTargetSet.cs`
+- 发布生命周期校验：`mods/bepinex/src/Save/RuntimeUiTargetSessionGuard.cs`
 - 总协调器：`mods/bepinex/src/Save/RuntimeUiPinningService.cs`
 - 列表刷新：`mods/bepinex/src/Save/RuntimeUiListSurfaceRefresh.cs`
 - 列表高亮：`mods/bepinex/src/Save/RuntimePinnedListHighlightService.cs`
@@ -125,6 +135,11 @@ corepack pnpm audit:ui-pinning
 
 此项验证不启动真实游戏。它覆盖前端不再发布目标、稀客/普客开关独立生效、颜色变化不更换业务身份；
 游戏原生 UI、IL2CPP wrapper 与实际渲染行为仍需独立实机证据。
+
+白天推荐与日夜切换另由 `tests/csharp-business-host` 的 `--daytime-ui-lifecycle` 模式验证，已纳入
+`corepack pnpm audit:business`。浏览器用例为 `tests/service-order-presentation/business-daytime-playwright.mjs`，
+需显式设置 `MOCK_ENABLE_SCENE_CONTROL=1` 启动仓库 mock，并通过 `MYSTIA_API_URL` / `MYSTIA_APP_URL`
+指定模拟 API 与前端预览。用例不拦截业务响应，稀客/普客结果来自真实 C# 宿主；模拟生命周期不等同于实机验收。
 
 后端各表面：
 

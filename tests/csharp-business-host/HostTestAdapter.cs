@@ -129,12 +129,25 @@ namespace MystiaStewardCompanion.Save
         internal static IReadOnlyList<RuntimeUiTargetSnapshot> Targets = Array.Empty<RuntimeUiTargetSnapshot>();
         private static int _publicationCount;
         private static int _withdrawalCount;
+        private static int _rejectionCount;
         internal static int PublicationCount => Volatile.Read(ref _publicationCount);
         internal static int WithdrawalCount => Volatile.Read(ref _withdrawalCount);
+        internal static int RejectionCount => Volatile.Read(ref _rejectionCount);
+        internal static Action? BeforePublicationForTest;
+        internal static Exception? PublicationFailureForTest;
 
         /// <summary>统计真实宿主调用边界的次数，避免把仅压制日志误判为幂等撤销。</summary>
         internal static void UpdateTargets(long generation, IReadOnlyList<RuntimeUiTargetSnapshot> targets)
         {
+            // 复用生产发布锁内外的真实会话校验；测试委托只在两次校验之间制造确定的切场竞争。
+            try
+            {
+                RuntimeUiTargetSessionGuard.Validate(generation, RuntimeNightBusinessLifecycle.Snapshot);
+                BeforePublicationForTest?.Invoke();
+                RuntimeUiTargetSessionGuard.Validate(generation, RuntimeNightBusinessLifecycle.Snapshot);
+            }
+            catch (InvalidOperationException) { Interlocked.Increment(ref _rejectionCount); throw; }
+            if (PublicationFailureForTest is { } failure) throw failure;
             // 目标集合本身也走生产不可变值类型，覆盖数量、种类唯一性与调色板组装校验。
             Targets = new RuntimeUiTargetSetSnapshot(generation, generation, targets).Targets;
             Interlocked.Increment(ref _publicationCount);
@@ -147,9 +160,48 @@ namespace MystiaStewardCompanion.Save
     }
     internal static class RuntimeNightBusinessLifecycle
     {
-        private static long _generation = 1;
-        internal static long Generation => Interlocked.Read(ref _generation);
-        /// <summary>只供离线测试模拟经营代次切换，不读取或调用真实游戏。</summary>
-        internal static void SetGenerationForTest(long generation) => Interlocked.Exchange(ref _generation, generation);
+        private static NightBusinessLifecycleTracker _tracker = CreateActiveTracker();
+        internal static NightBusinessLifecycleSnapshot Snapshot => Volatile.Read(ref _tracker).Snapshot;
+        internal static long Generation => Snapshot.Generation;
+        private static NightBusinessLifecycleTracker CreateActiveTracker()
+        {
+            var tracker = new NightBusinessLifecycleTracker();
+            tracker.TryActivate("offline initial active", DateTime.UtcNow, Environment.CurrentManagedThreadId, out _);
+            return tracker;
+        }
+
+        /// <summary>离线边界只驱动生产状态机；清理记录目标模拟真实生命周期已经撤销的目标，绝不创建权威屏障。</summary>
+        internal static void ResetForTest() { Volatile.Write(ref _tracker, new NightBusinessLifecycleTracker()); RuntimeUiPinningService.Targets = Array.Empty<RuntimeUiTargetSnapshot>(); }
+        internal static void ActivateForTest() => _tracker.TryActivate("offline active", DateTime.UtcNow, Environment.CurrentManagedThreadId, out _);
+        internal static void CloseForTest()
+        {
+            _tracker.TryBeginClosing("offline closing", DateTime.UtcNow, Environment.CurrentManagedThreadId, out _);
+            RuntimeUiPinningService.Targets = Array.Empty<RuntimeUiTargetSnapshot>();
+        }
+        internal static void DestroyForTest()
+        {
+            _tracker.TryMarkDestroyed("offline destroyed", DateTime.UtcNow, Environment.CurrentManagedThreadId, out _);
+            RuntimeUiPinningService.Targets = Array.Empty<RuntimeUiTargetSnapshot>();
+        }
+        internal static void SetGenerationForTest(long generation) => SynchronizeForBridge(generation, "Active");
+
+        /// <summary>仅 JSONL mock 的可信 publish 可同步生命周期；普通 Publish 不同步，以便覆盖快照落后于真实切场的竞争。</summary>
+        internal static void SynchronizeForBridge(long generation, string phase)
+        {
+            if (generation < 0 || generation > 1000 || !Enum.TryParse<NightBusinessLifecyclePhase>(phase, out var parsed)
+                || !Enum.IsDefined(typeof(NightBusinessLifecyclePhase), parsed) || parsed.ToString() != phase
+                || (parsed == NightBusinessLifecyclePhase.Inactive && generation != 0))
+                throw new ArgumentException("离线生命周期输入无效。");
+            if (Snapshot.Generation > generation || (parsed == NightBusinessLifecyclePhase.Inactive && Snapshot.Phase != parsed)) ResetForTest();
+            while (Snapshot.Generation < generation)
+            {
+                if (Snapshot.Phase is NightBusinessLifecyclePhase.Active or NightBusinessLifecyclePhase.Closing) DestroyForTest();
+                ActivateForTest();
+            }
+            if (parsed == NightBusinessLifecyclePhase.Closing) CloseForTest();
+            else if (parsed == NightBusinessLifecyclePhase.Destroyed) DestroyForTest();
+            else if (parsed == NightBusinessLifecyclePhase.Active && Snapshot.Phase != parsed)
+                throw new ArgumentException("离线重开营业必须推进代次。");
+        }
     }
 }

@@ -260,6 +260,19 @@ internal sealed partial class LocalApiServer
         && frame.Version == Interlocked.Read(ref _businessInputVersion)
         && frame.Authority.AuthorityRevision == _deviceAuthorityStore.ReadAuthorityRevision();
 
+    /// <summary>
+    /// 夜间副作用必须同时属于已采集的 Active 快照和当前真实 Active 代次。白天仍可使用当前业务帧
+    /// 计算只读推荐，因此本判断独立于 IsBusinessFrameCurrent；缺失、未知或非精确阶段不能猜测为营业中。
+    /// 生命周期快照是不可变托管值，排队许可复核可直接读取，不获取主线程/权威/租约锁。
+    /// </summary>
+    private static bool IsBusinessNightRuntimeCurrent(BusinessFrame frame)
+    {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        var generation = (long)J.Num(frame.Snapshot["nightBusinessGeneration"]);
+        return string.Equals(J.Str(frame.Snapshot["nightBusinessLifecyclePhase"]), "Active", StringComparison.Ordinal)
+            && generation > 0 && lifecycle.IsActive && lifecycle.Generation == generation;
+    }
+
     private JsonObject BuildBusinessAutomationAuthority(BusinessFrame frame)
     {
         lock (_authorityTransitionLock)
@@ -267,7 +280,7 @@ internal sealed partial class LocalApiServer
         {
             var now = DateTime.UtcNow;
             PruneExpiredAutomationLease(now);
-            var allowed = IsBusinessFrameCurrent(frame)
+            var allowed = IsBusinessFrameCurrent(frame) && IsBusinessNightRuntimeCurrent(frame)
                 && J.Str(frame.Data["source"]) == "runtime" && frame.SnapshotSignature.Length > 0
                 && _deviceAuthorityStore.TryAuthorizePrimary(frame.Authority.PrimaryDeviceId,
                     frame.Authority.AuthorityRevision, now, out _, recordActivity: false);
@@ -303,7 +316,7 @@ internal sealed partial class LocalApiServer
         var leaseExpiresAtUnixMs = (long)J.Num(authority["leaseExpiresAtUnixMs"]);
         // 共用原有请求解析与游戏适配委托；epoch 和输入许可由宿主注入，客户端无法自行提供。
         var response = BuildOrderActionJson(ToBusinessQuery(J.Obj(command["payload"])), handler,
-            (long)J.Num(authority["automationEpoch"]), () => IsBusinessFrameCurrent(frame)
+            (long)J.Num(authority["automationEpoch"]), () => IsBusinessFrameCurrent(frame) && IsBusinessNightRuntimeCurrent(frame)
                 && DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() < leaseExpiresAtUnixMs);
         _businessCoordinator.Complete(requestId, JsonNode.Parse(response)!.AsObject(), BusinessNow);
     }
@@ -311,7 +324,9 @@ internal sealed partial class LocalApiServer
     private JsonObject PublishBusinessGameUi(BusinessFrame frame, JsonObject result)
     {
         var slots = J.Object(("rare", null), ("normal", null));
-        if (J.Num(frame.Snapshot["nightBusinessGeneration"]) <= 0) return slots;
+        // Closing/Destroyed 会由既有生命周期边界撤销游戏目标；此处既不提交空集合，也不反复 Clear。
+        // 只读经营结果和稀客/普客页面不依赖夜间 UI 发布，白天保留上一营业代次也应正常计算。
+        if (!IsBusinessNightRuntimeCurrent(frame)) return slots;
         var targets = new List<RuntimeUiTargetSnapshot>();
         var online = frame.Authority.Devices.Any(device => device.IsPrimary && device.Online);
         if (online && J.Bool(frame.Snapshot["nightBusinessAutomationAllowed"]))
@@ -352,12 +367,13 @@ internal sealed partial class LocalApiServer
         }
         lock (_authorityTransitionLock)
         {
-            if (IsBusinessFrameCurrent(frame))
-            {
-                RuntimeUiPinningService.UpdateTargets((long)J.Num(frame.Snapshot["nightBusinessGeneration"]), targets);
-                // 即使后续构造状态或提交命令失败，本轮已发布的目标也必须再次撤销。
-                _businessUiUnavailableGeneration = null;
-            }
+            // 构造目标期间可能切场；旧帧不得发布到下一代。真正发布内部仍保留更靠近提交的严格门禁，
+            // 若校验之后再切场，本轮按原错误路径失败关闭；下一轮跳过非 Active 发布后恢复只读结果。
+            if (!IsBusinessFrameCurrent(frame) || !IsBusinessNightRuntimeCurrent(frame))
+                return J.Object(("rare", null), ("normal", null));
+            RuntimeUiPinningService.UpdateTargets((long)J.Num(frame.Snapshot["nightBusinessGeneration"]), targets);
+            // 即使后续构造状态或提交命令失败，本轮已发布的目标也必须再次撤销。
+            _businessUiUnavailableGeneration = null;
         }
         return slots;
     }

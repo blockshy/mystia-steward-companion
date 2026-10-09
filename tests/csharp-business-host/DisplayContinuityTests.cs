@@ -39,7 +39,7 @@ internal static class DisplayContinuityTests
             { ProtocolVersion = 1, ProfileSchemaVersion = 1, Platform = "windows", AppVersion = "offline", Profile = profile }, DateTime.UtcNow);
             var snapshot = LeaseExpiryTests.Snapshot();
             snapshot["automationSessionId"] = "display-session";
-            snapshot["nightBusinessLifecyclePhase"] = "active";
+            snapshot["nightBusinessLifecyclePhase"] = "Active";
             snapshot["activeSceneName"] = "offline-night";
             snapshot["runtimeLoaded"] = true;
             snapshot["runtimeDaySceneGeneration"] = 1;

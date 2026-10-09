@@ -13,6 +13,8 @@
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiServer.Business.cs" Link="Production/LocalApiServer.Business.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiServer.UiTargetParsing.cs" Link="Production/LocalApiServer.UiTargetParsing.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="Production/RuntimeUiTargetSet.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/NightBusinessLifecycleTracker.cs" Link="Production/NightBusinessLifecycleTracker.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSessionGuard.cs" Link="Production/RuntimeUiTargetSessionGuard.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="Production/RuntimeTargetHighlightStyle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs" Link="Production/RuntimeOrderTraceIdService.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/OrderPreparationModels.cs" Link="Production/OrderPreparationModels.cs" />

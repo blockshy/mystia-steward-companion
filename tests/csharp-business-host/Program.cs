@@ -17,6 +17,7 @@ if (args.Contains("--lease-expiry", StringComparer.Ordinal)) { await LeaseExpiry
 if (args.Contains("--ui-failure-transition", StringComparer.Ordinal)) { await UiFailureTransitionTests.Run(Profile()); return; }
 if (args.Contains("--ui-colors", StringComparer.Ordinal)) { await UiTargetColorTests.Run(Profile()); return; }
 if (args.Contains("--display-continuity", StringComparer.Ordinal)) { await DisplayContinuityTests.Run(Profile()); return; }
+if (args.Contains("--daytime-ui-lifecycle", StringComparer.Ordinal)) { await DaytimeUiLifecycleTests.Run(Profile(), args.Contains("--expect-before-fix", StringComparer.Ordinal)); return; }
 
 // 运行真实后台业务循环、真实设备/文件存储和真实领域代码，仅游戏副作用替换为受控委托。
 // 所有临时数据均位于专属临时目录，不接触真实游戏、用户配置、TCP端口或真实客户端。
@@ -56,7 +57,7 @@ try
       ""beverages"":[{""id"":21,""name"":""测试酒水"",""tags"":[""水果"",""直饮""],""level"":3,""price"":10}],
       ""rareCustomers"":[{""id"":3,""name"":""测试稀客"",""positiveTags"":[""素"",""鲜""],""negativeTags"":[],""beverageTags"":[""水果"",""直饮""],""places"":[""妖怪兽道""]}],
       ""normalCustomers"":[{""id"":3,""name"":""测试普客"",""positiveTags"":[""素"",""鲜""],""beverageTags"":[""水果""],""places"":[""妖怪兽道""]}]}" );
-    var snapshot = Parse(@"{""automationSessionId"":""test-session"",""nightBusinessGeneration"":1,""nightBusinessAutomationAllowed"":true,""nightBusiness"":{""orders"":[],""activeRareGuests"":[]},""specialBusiness"":null,""automationEvents"":[],""automationCookingJobs"":[],
+    var snapshot = Parse(@"{""automationSessionId"":""test-session"",""nightBusinessGeneration"":1,""nightBusinessLifecyclePhase"":""Active"",""nightBusinessAutomationAllowed"":true,""nightBusiness"":{""orders"":[],""activeRareGuests"":[]},""specialBusiness"":null,""automationEvents"":[],""automationCookingJobs"":[],
       ""normalBusiness"":{""orders"":[{""traceId"":""N-1"",""orderKey"":""ptr:123"",""orderLifecycleSequence"":1,""deskCode"":0,""guestId"":3,""runtimeGuestId"":3,""guestName"":""测试普客"",""foodId"":101,""beverageId"":21,""foodName"":""测试料理"",""beverageName"":""测试酒水"",""hasServedFood"":false,""hasServedBeverage"":false,""hasEvaluated"":false,""readyToEvaluate"":false,""canAutomate"":true}]},
       ""recommendationState"":{""availableRecipeIds"":[101],""availableIngredientIds"":[1],""availableBeverageIds"":[21],""ownedIngredientQty"":{""1"":20},""ownedBeverageQty"":{""21"":20},""placedCookerSnapshotComplete"":true,""placedCookerControllerCount"":1,""placedCookerEmptyControllerCount"":0,""placedCookerLockedControllerCount"":0,""placedCookerReadFailureCount"":0,""placedCookerTypeIds"":[1],""placedCookers"":[{""controllerIndex"":0,""controllerIdentity"":""0x10"",""gridPosition"":{""x"":0,""y"":0,""z"":0},""name"":""煮锅"",""typeIds"":[1],""typeNames"":[""煮锅""],""automationAvailable"":true,""couldOpen"":true,""challengeLocked"":false}]}}" );
     host.Publish(snapshot, catalog); host.Start();

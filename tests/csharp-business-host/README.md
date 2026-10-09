@@ -1,6 +1,6 @@
 # C# 业务宿主离线验证
 
-本项目直接链接生产 `LocalApiServer.Business.cs`、设备权威存储、收藏/自定义配方存储、HTTP 正文解析和业务类库。游戏适配委托与 UI 提交替换为受控纯托管边界，不启动游戏或 TCP 服务，也不读取真实配置。它验证的是业务宿主线程与值协议；实际 Unity 反射、游戏行为和网络监听仍需各自验证。
+本项目直接链接生产 `LocalApiServer.Business.cs`、设备权威存储、收藏/自定义配方存储、HTTP 正文解析、夜间生命周期状态机、UI 发布会话门禁和业务类库。游戏适配委托与最终 UI 提交替换为受控纯托管边界，不启动游戏或 TCP 服务，也不读取真实配置。它验证的是业务宿主线程与值协议；实际 Unity 反射、游戏行为和网络监听仍需各自验证。
 
 从仓库根目录运行：
 
@@ -12,6 +12,7 @@ dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --ui
 dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --lease-expiry
 dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --ui-colors
 dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --display-continuity
+dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --daytime-ui-lifecycle
 ```
 
 测试覆盖：无主设备/无租约、协议拒绝、后台读取不延长在线状态或租约、页面队列容量及公平轮转、收藏变化、排队后输入失效、目录不可用、特殊目标当前代次绑定、重复身份拒绝、候选缓存隔离及容量、停止时不等待主线程委托。
@@ -22,10 +23,12 @@ dotnet tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll --di
 
 `--display-continuity` 在动作替身阻塞时每250毫秒发布观察更新，验证页面先于动作发布、经营稀客与页面保留上次成功结果、原来源签名不变且仍为非当前。会话、场景、生命周期、目录、配置、特殊经营语义或查询意图变化必须立即清空旧展示；保留展示不能恢复旧命令执行许可。该模式验证只读展示连续性，不代表旧推荐仍满足最新库存或订单状态。
 
+`--daytime-ui-lifecycle` 使用生产 `NightBusinessLifecycleTracker` 与 `RuntimeUiTargetSessionGuard`，覆盖从未营业的白天、Closing、Destroyed、下一代营业、缺失/未知阶段、快照落后及发布中切场。非营业期稀客/普客查询必须完成，不能提交空夜间目标或反复创建撤销屏障；真实 Active 发布失败仍报错并禁止动作，排队动作在没有新快照时也须因关闭营业而失去许可。附加 `--expect-before-fix` 仅用于旧实现的失败复现，正常验证不使用该参数。
+
 `--serve` 提供离线浏览器 mock 使用的 JSONL 桥接。每行请求带 `id` 和 `operation`；响应为 `{id,ok,result}` 或 `{id,ok:false,error}`。操作包括：
 
 - `initialize`：`clientId`、完整共享 `profile`，建立测试主设备并启动后台业务循环。
-- `publish`：`snapshot`、原始运行时 `catalog`，可附 `profile`、`favorites`、`customRecipes`；快照签名采用 `snapshot.snapshotSignature`。
+- `publish`：`snapshot`、原始运行时 `catalog`，可附 `profile`、`favorites`、`customRecipes`；快照签名采用 `snapshot.snapshotSignature`。可信 mock 必须明确提供 `nightBusinessGeneration` 与精确 `nightBusinessLifecyclePhase`，桥接据此驱动真实托管生命周期；实际目标入口仍执行与生产相同的严格门禁。
 - `status`：`protocolVersion`，获取真实后台状态。
 - `query`：`clientId`、`intent`，提交页面查询并读取结果。
 - `heartbeat`：只刷新测试主设备在线时间，不延长自动化租约。

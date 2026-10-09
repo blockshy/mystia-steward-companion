@@ -45,6 +45,10 @@ internal static class JsonLineBridge
                             result = J.Object(("authorityRevision", authority.AuthorityRevision)); break;
                         case "publish":
                             if (!started) throw new InvalidOperationException("桥接尚未初始化。");
+                            // 此输入由本地mock生成，不接受浏览器业务查询覆盖；驱动真实托管生命周期以验证严格发布门禁。
+                            var trustedSnapshot = J.Obj(input["snapshot"]);
+                            MystiaStewardCompanion.Save.RuntimeNightBusinessLifecycle.SynchronizeForBridge(
+                                (long)J.Num(trustedSnapshot["nightBusinessGeneration"]), J.Str(trustedSnapshot["nightBusinessLifecyclePhase"]));
                             host.Import(input, client); result = J.Object(("inputVersion", host.InputVersion.ToString())); break;
                         case "status": result = host.Status((int)J.Num(input["protocolVersion"], 1)); break;
                         case "query": result = host.Query(J.Str(input["clientId"], client), J.Obj(input["intent"])); break;

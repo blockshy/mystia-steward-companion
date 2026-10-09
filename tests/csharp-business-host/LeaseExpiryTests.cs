@@ -110,6 +110,7 @@ internal static class LeaseExpiryTests
 
     /// <summary>固定的一笔普客订单与精确厨具槽位；测试开始后始终不再发布快照。</summary>
     internal static JsonObject Snapshot() => J.Object(("automationSessionId", "lease-expiry"), ("nightBusinessGeneration", 1),
+        ("nightBusinessLifecyclePhase", "Active"),
         ("nightBusinessAutomationAllowed", true), ("nightBusiness", J.Object(("orders", new JsonArray()), ("activeRareGuests", new JsonArray()))),
         ("specialBusiness", null), ("automationEvents", new JsonArray()), ("automationCookingJobs", new JsonArray()),
         ("normalBusiness", J.Object(("orders", new JsonArray(J.Object(("traceId", "N-lease"), ("orderKey", "ptr:lease"),

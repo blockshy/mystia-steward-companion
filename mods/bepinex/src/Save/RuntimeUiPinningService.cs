@@ -625,11 +625,8 @@ internal static class RuntimeUiPinningService
 
     private static void ValidateSession(long sessionGeneration)
     {
-        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        if (lifecycle.IsActive && sessionGeneration > 0 && sessionGeneration == lifecycle.Generation) return;
-
-        throw new InvalidOperationException(
-            $"Night-business UI target rejected: requested generation={sessionGeneration}, current generation={lifecycle.Generation}, phase={lifecycle.Phase}.");
+        // 与离线宿主共享完全相同的纯值校验；调用位置仍保留发布锁内外两次复核。
+        RuntimeUiTargetSessionGuard.Validate(sessionGeneration, RuntimeNightBusinessLifecycle.Snapshot);
     }
 
     private static string DescribeTargetSet(RuntimeUiTargetSetSnapshot targetSet)

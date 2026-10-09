@@ -59,6 +59,12 @@ const businessHost = new MockBusinessHost();
 const host = process.env.MOCK_API_HOST || DEFAULT_HOST;
 const port = Number(process.env.MOCK_API_PORT || DEFAULT_PORT);
 const automationSessionId = process.env.MOCK_AUTOMATION_SESSION_ID?.trim() || 'mock-automation-session';
+// 生命周期场景控制仅供显式启用的离线测试使用；默认 mock 不暴露此入口，生产 API 没有该路由。
+const sceneControlEnabled = process.env.MOCK_ENABLE_SCENE_CONTROL === '1';
+let mockBusinessScene = 'night-active';
+let mockBusinessGeneration = 1;
+let mockDaySceneGeneration = 1;
+let mockDayMap = '妖怪兽道';
 const mockOrderFirstSeenAt = Object.freeze({
   rarePrimary: nowIso(-240),
   rareSecondary: nowIso(-120),
@@ -357,6 +363,20 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === 'POST') {
     try {
+      if (path === '/__mock/scene' && sceneControlEnabled) {
+        const body = await readJsonBody(request);
+        if (!['day-destroyed', 'night-active'].includes(body.scene)
+          || (body.dayMap !== undefined && !['妖怪兽道', '人间之里'].includes(body.dayMap))) {
+          throw mockHttpError(400, 'unsupported offline lifecycle scene');
+        }
+        const nextMap = body.dayMap ?? mockDayMap;
+        if (body.scene !== mockBusinessScene && body.scene === 'night-active') mockBusinessGeneration += 1;
+        if (body.scene !== mockBusinessScene || nextMap !== mockDayMap) mockDaySceneGeneration += 1;
+        mockBusinessScene = body.scene;
+        mockDayMap = nextMap;
+        sendJson(response, 200, { ok: true, scene: mockBusinessScene, generation: mockBusinessGeneration });
+        return;
+      }
       if (path === '/business/query') {
         requireMockDevice(request);
         const intent = await readJsonBody(request);
@@ -725,19 +745,19 @@ async function requestMockBusiness(operation, payload) {
 function buildSnapshot() {
   const snapshot = {
     pluginVersion: '1.0.5-mock',
-    nightBusinessGeneration: 1,
+    nightBusinessGeneration: mockBusinessGeneration,
     nightBusinessLifecyclePhase: 'Active',
-    runtimeNightBusinessLifecycleStatus: 'mock active generation=1',
+    runtimeNightBusinessLifecycleStatus: `mock active generation=${mockBusinessGeneration}`,
     nightBusinessAutomationAllowed: true,
     nightBusinessAutomationBlockReason: '',
-    runtimeNightBusinessAutomationStatus: 'mock automation allowed generation=1',
+    runtimeNightBusinessAutomationStatus: `mock automation allowed generation=${mockBusinessGeneration}`,
     automationSessionId,
     capturedAtUtc: nowIso(),
     activeSceneName: 'NightScene.MockBusiness',
     activeDayMapLabel: '妖怪兽道',
     activeDayMapName: '妖怪兽道',
     runtimeLoaded: true,
-    runtimeDaySceneGeneration: 1,
+    runtimeDaySceneGeneration: mockDaySceneGeneration,
     runtimeDaySceneReady: true,
     missionGeneration: 1,
     status: 'mock runtime snapshot',
@@ -908,6 +928,26 @@ function buildSnapshot() {
       recommendations: 4,
     },
   };
+  if (mockBusinessScene === 'day-destroyed') {
+    // 将真实输入交给 C# 宿主，绝不改写业务响应或关闭测试生命周期校验器。
+    snapshot.nightBusinessLifecyclePhase = 'Destroyed';
+    snapshot.runtimeNightBusinessLifecycleStatus = `mock destroyed generation=${mockBusinessGeneration}`;
+    snapshot.nightBusinessAutomationAllowed = false;
+    snapshot.nightBusinessAutomationBlockReason = 'mock day scene';
+    snapshot.runtimeNightBusinessAutomationStatus = 'mock day scene: no night automation';
+    snapshot.activeSceneName = 'DayScene.Mock';
+    snapshot.activeDayMapLabel = mockDayMap;
+    snapshot.activeDayMapName = mockDayMap;
+    snapshot.runtimeUiPinningStatus = 'mock day scene: no night UI target';
+    snapshot.nightBusiness = null;
+    snapshot.normalBusiness = null;
+    snapshot.automationEvents = [];
+    snapshot.automationCookingJobs = [];
+  } else {
+    for (const order of snapshot.nightBusiness.orders) {
+      if (order.missionRecipePriority) order.missionRecipePriority.businessGeneration = mockBusinessGeneration;
+    }
+  }
   snapshot.snapshotSignature = buildSnapshotSignature(snapshot);
   return snapshot;
 }
@@ -916,6 +956,10 @@ function buildSnapshotSignature(snapshot) {
   return [
     snapshot.pluginVersion,
     snapshot.activeSceneName,
+    snapshot.nightBusinessGeneration,
+    snapshot.nightBusinessLifecyclePhase,
+    snapshot.runtimeDaySceneGeneration,
+    snapshot.activeDayMapName,
     snapshot.runtimeLoaded ? '1' : '0',
     snapshot.status,
     snapshot.runtimeDataSignature,
