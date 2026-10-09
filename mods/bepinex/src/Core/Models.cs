@@ -174,6 +174,11 @@ public sealed class NightBusinessContext
     public string? Place { get; init; }
     public string? PlaceLabel { get; init; }
     public List<NightBusinessGuest> ActiveRareGuests { get; init; } = new();
+    /// <summary>
+    /// 当前名单是否已完整读取。只有已核实的控制器集合及其中对象都成功分类才为 true；
+    /// false 时 ActiveRareGuests 仍可包含已确认的部分名单，空列表不能解释为没有稀客。
+    /// </summary>
+    public bool ActiveRareGuestsReadComplete { get; init; }
     public List<NightBusinessOrder> Orders { get; init; } = new();
     public string Source { get; init; } = "";
     public string? Error { get; init; }

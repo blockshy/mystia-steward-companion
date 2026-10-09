@@ -1,3 +1,5 @@
+extern alias RuntimeCore;
+
 using System.Reflection;
 using System.Reflection.Emit;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
@@ -12,6 +14,7 @@ try
     AssertRuntimeCoreMappingProjection();
     AssertRuntimeStorageStateProjection();
     AssertConcreteCollectionReader();
+    RareGuestReaderChecks.Run();
     AssertDaySceneReadinessState();
     AssertNativePointerIdentity();
 
@@ -293,6 +296,16 @@ static void AssertBepInEx783CollectionMetadata()
         typeof(bool),
         RequireMethod(listType, "get_Item", new[] { typeof(int) }).ReturnType,
         "List indexer no longer returns its exact element type.");
+
+    // 只读取真实 BepInEx 783 类型签名，不创建 wrapper、不调用 IL2CPP 原生运行时。
+    var setType = typeof(RuntimeCore::Il2CppSystem.Collections.Generic.HashSet<Il2CppSystem.Object>);
+    AssertEqual(typeof(int), RequireProperty(setType, "Count").PropertyType, "HashSet Count is not Int32.");
+    var setEnumerator = RequireMethod(setType, "GetEnumerator", Type.EmptyTypes).ReturnType;
+    AssertEqual("Il2CppSystem.Collections.Generic.HashSet`1+Enumerator",
+        setEnumerator.GetGenericTypeDefinition().FullName, "HashSet concrete enumerator changed.");
+    AssertEqual(typeof(bool), RequireMethod(setEnumerator, "MoveNext", Type.EmptyTypes).ReturnType, "HashSet MoveNext changed.");
+    AssertEqual(typeof(void), RequireMethod(setEnumerator, "Dispose", Type.EmptyTypes).ReturnType, "HashSet Dispose changed.");
+    AssertEqual(typeof(Il2CppSystem.Object), RequireProperty(setEnumerator, "Current").PropertyType, "HashSet Current changed.");
 
     AssertArrayMetadata(
         typeof(Il2CppReferenceArray<Il2CppSystem.Object>),
@@ -600,6 +613,10 @@ static void AssertConcreteCollectionReader()
         "A concrete HashSet count was rejected.");
     AssertEqual(RuntimeCollectionReadFailure.None, hashSetFailure, "A concrete HashSet reported a failure.");
     AssertEqual(2, hashSetCount, "A concrete HashSet count changed.");
+    AssertTrue(RuntimeConcreteCollectionReader.TryReadHashSet(hashSet, out var setValues, out var setFailure),
+        "A concrete HashSet enumeration was rejected.");
+    AssertEqual(RuntimeCollectionReadFailure.None, setFailure, "HashSet enumeration reported failure.");
+    AssertTrue(setValues.Cast<FakeReference>().ToHashSet().SetEquals(hashSet), "HashSet enumeration lost values.");
     AssertFalse(
         RuntimeConcreteCollectionReader.TryReadHashSetCount(
             new SortedSet<int>(),

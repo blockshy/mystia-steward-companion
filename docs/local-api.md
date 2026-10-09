@@ -98,6 +98,9 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 - `GET /business/status?protocolVersion=1` 返回 `isCurrent`、`pending`、`error`、`inputVersion`、`sourceSnapshotSignature`、推荐、运行时集合、游戏 UI 目标和自动化诊断。客户端不能把旧结果或错误状态解释为可执行结果。
 - `POST /business/query` body 必须含 `protocolVersion: 1` 和 `kind: normal|rare`，可附 `selectedPlace`、`customerId`、`foodTag`、`beverageTag`。文本最长 100 字符，稀客 ID 必须为非负整数。只传筛选意图；目录、库存、偏好和收藏均由宿主读取，客户端不能上传业务快照。
 - 页面查询按设备与种类合并，最多 16 个槽位，每周期按序处理一个；结果必须重新通过输入版本检查，过期结果不会作为当前结果返回。
+- 页面计算先于可能等待 Unity 主线程并触发新快照的自动化动作，避免每轮动作都使页面原帧失效而永久没有结果。
+- `sourceContext` 标识推荐展示所属的游戏实例、场景代次、生命周期、目录、特殊经营目标及设备权威配置。同一上下文内可返回最后成功的展示值，并保持其原始 `sourceSnapshotSignature`；它仍可能是 `isCurrent: false`，不能据此执行动作或发布游戏辅助。上下文变化立即清除旧展示。
+- 客户端的 `/snapshot`、业务状态和页面查询是独立轮询，不能以全量快照签名相等作为展示条件。客户端只核对来源上下文和查询意图；切换连接或场景后立即清空，稀客订单还须逐笔匹配精确身份。
 - `POST /business/automation/retry` 只接受 `{protocolVersion, kind, key}`；重试还需要当前主设备、精确权威 revision 和有效租约。实际动作由编排器根据最新事实重新决定。
 - 后台读取不会更新设备在线时间，也不会自动取得或续期租约；现有客户端心跳继续承担在线许可。
 - 同一经营代次的持续输入故障只撤销一次业务结果和 UI 目标；恢复发布后或经营代次变化后，新故障仍会重新撤销。错误原因变化仍记录诊断，不能用日志限流替代状态处理。

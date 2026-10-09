@@ -155,6 +155,8 @@ export interface NightBusinessContext {
   place: string | null;
   placeLabel: string | null;
   activeRareGuests: NightBusinessGuest[];
+  /** 仅完整读取并验证在场集合时为 true；缺失或 false 不能解释成确认没有稀客。 */
+  activeRareGuestsReadComplete?: boolean;
   orders: NightBusinessOrder[];
   source: string;
   error: string | null;

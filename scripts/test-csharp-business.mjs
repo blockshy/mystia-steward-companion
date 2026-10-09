@@ -41,8 +41,12 @@ run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--ui-failure-transition']);
 // 真实游戏目标解析器覆盖 CSS #RRGGBB 到协议 RRGGBB 的转换，禁止用宽松解析替身遗漏边界。
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--ui-colors']);
+// 持续观察更新可以保留同作用域的只读结果，但不得把旧结果标为当前或恢复旧动作许可。
+run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--display-continuity']);
 for (const directory of ['csharp-recommendations', 'csharp-business-orders', 'csharp-automation']) {
   run(process.execPath, [`tests/${directory}/differential.mjs`]);
 }
 run(process.execPath, ['tests/csharp-recommendations/client-boundary-audit.mjs']);
+// 前端只做相同的来源字段投影；持续观察不能清屏，真实场景与配置边界必须清屏。
+run(process.execPath, ['tests/service-order-presentation/business-display-context.mjs']);
 console.log('PASS: C# 业务离线门禁完成；这不代表 Unity/IL2CPP 或真实游戏测试通过。');

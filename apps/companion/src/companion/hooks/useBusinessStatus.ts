@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { readLocalApiJson, writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import type { OrderRecommendationResult } from '@/companion/business-types';
+import { businessSourceContextKey, type BusinessSourceContext } from '@/companion/business-display-context';
 import type {
   AutomationResourceOverview, AutomationSafetyBarrierDiagnostic, NormalAutoOrderDiagnostic,
   RareAutoOrderDiagnostic, RuntimeSets, GameUiTargetSlots,
@@ -37,6 +38,7 @@ interface BusinessStatusWire {
   protocolVersion: number;
   inputVersion?: string;
   sourceSnapshotSignature?: string;
+  sourceContext?: BusinessSourceContext;
   authorityRevision?: number;
   isCurrent: boolean;
   pending: boolean;
@@ -59,8 +61,15 @@ export interface BusinessStatus extends Omit<BusinessStatusWire, 'recommendation
  * 串行轮询服务端缓存，不创建 Worker，也不上传客户端计算结果。
  * 响应必须属于当前连接及快照；断线、版本不符和旧响应均明确标记为不可执行/非当前。
  */
-export function useBusinessStatus(endpoint: string, apiToken: string, snapshotSignature: string, enabled = true): BusinessStatus {
-  const [state, setState] = useState<BusinessStatusWire | null>(null);
+export function useBusinessStatus(endpoint: string, apiToken: string, snapshotSignature: string,
+  sourceContext: BusinessSourceContext | null, enabled = true): BusinessStatus {
+  const contextKey = businessSourceContextKey(sourceContext);
+  // 状态同时绑定连接与展示边界，render 阶段即可拒绝上一连接；无需等 effect 才清屏。
+  const requestKey = JSON.stringify([endpoint, apiToken, enabled, contextKey]);
+  const [stored, setStored] = useState<{ requestKey: string; state: BusinessStatusWire; display: BusinessStatusWire | null } | null>(null);
+  const accepted = stored?.requestKey === requestKey ? stored : null;
+  const state = accepted?.state;
+  const display = accepted?.display;
   const refreshRef = useRef<() => void>(() => undefined);
   const refresh = useCallback(() => refreshRef.current(), []);
   useEffect(() => {
@@ -68,7 +77,7 @@ export function useBusinessStatus(endpoint: string, apiToken: string, snapshotSi
     let active = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abort: AbortController | undefined;
-    queueMicrotask(() => { if (!disposed) setState(null); });
+    queueMicrotask(() => { if (!disposed) setStored(null); });
     async function poll() {
       if (disposed || active || !enabled) return;
       clearTimeout(timer);
@@ -81,12 +90,19 @@ export function useBusinessStatus(endpoint: string, apiToken: string, snapshotSi
         const next = await readLocalApiJson<BusinessStatusWire>(endpoint, apiToken,
           `/business/status?protocolVersion=${BUSINESS_PROTOCOL_VERSION}`, { signal: requestAbort.signal, tauriTimeoutMs: 5000 });
         if (next.protocolVersion !== BUSINESS_PROTOCOL_VERSION) throw new Error('Mod 业务协议不兼容，请更新成套 Mod 和客户端。');
-        if (!disposed) setState(next);
+        if (!disposed) setStored(previous => {
+          const sameContext = Boolean(contextKey) && businessSourceContextKey(next.sourceContext) === contextKey;
+          return { requestKey, state: next,
+            // 后台重算期间仍可展示同上下文最后成功投影；不同来源立即清空，不能授予 current/动作权限。
+            display: sameContext ? !next.error && next.recommendations ? next
+              : previous?.requestKey === requestKey ? previous.display : null : null };
+        });
       } catch (error) {
-        if (!disposed) setState({ protocolVersion: BUSINESS_PROTOCOL_VERSION, isCurrent: false, pending: false,
+        if (!disposed) setStored(previous => ({ requestKey, display: previous?.requestKey === requestKey ? previous.display : null,
+          state: { protocolVersion: BUSINESS_PROTOCOL_VERSION, isCurrent: false, pending: false,
           // 传输层可能将 AbortError 翻译为连接错误；以本次请求的中止状态保留明确超时原因。
           error: requestAbort.signal.aborted ? 'C# 业务状态读取超时，请检查连接。'
-            : error instanceof Error ? error.message : String(error) });
+            : error instanceof Error ? error.message : String(error) } }));
       } finally {
         clearTimeout(requestTimer);
         if (abort === requestAbort) abort = undefined;
@@ -97,18 +113,21 @@ export function useBusinessStatus(endpoint: string, apiToken: string, snapshotSi
     refreshRef.current = () => { void poll(); };
     void poll();
     return () => { disposed = true; abort?.abort(); clearTimeout(timer); refreshRef.current = () => undefined; };
-  }, [endpoint, apiToken, enabled]);
+  }, [endpoint, apiToken, enabled, contextKey, requestKey]);
   const current = enabled && state?.isCurrent === true && Boolean(snapshotSignature)
-    && state.sourceSnapshotSignature === snapshotSignature;
+    && state.sourceSnapshotSignature === snapshotSignature && Boolean(contextKey)
+    && businessSourceContextKey(state.sourceContext) === contextKey;
   return {
     protocolVersion: BUSINESS_PROTOCOL_VERSION,
     ...state,
     isCurrent: current,
-    pending: enabled && !state?.error && !current,
+    // 展示等待状态遵循服务端计算状态；独立 /snapshot 轮询的时间差不代表需要重新计算。
+    pending: enabled && !state?.error && (!display || state?.isCurrent !== true || state.pending),
     error: state?.error ?? null,
-    recommendations: state?.recommendations ?? EMPTY_BUSINESS_RECOMMENDATIONS,
+    sourceContext: display?.sourceContext,
+    recommendations: enabled ? display?.recommendations ?? EMPTY_BUSINESS_RECOMMENDATIONS : EMPTY_BUSINESS_RECOMMENDATIONS,
     automation: state?.automation ?? EMPTY_AUTOMATION,
-    runtimeSets: decodeRuntimeSets(state?.runtimeSets),
+    runtimeSets: enabled ? decodeRuntimeSets(display?.runtimeSets) : null,
     gameUiTargets: current ? state?.gameUiTargets ?? { rare: null, normal: null } : { rare: null, normal: null },
     refresh,
   };

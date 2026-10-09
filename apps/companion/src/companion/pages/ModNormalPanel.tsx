@@ -12,6 +12,7 @@ import { getNormalCustomersByPlace } from '@/recommendation-engine';
 export function ModNormalPanel({
   runtime,
   runtimeSets,
+  businessError,
   selectedPlace,
   detectedPlace,
   data,
@@ -21,6 +22,7 @@ export function ModNormalPanel({
 }: {
   runtime: RecommendationStateSnapshot | null;
   runtimeSets: RuntimeSets | null;
+  businessError: string | null;
   selectedPlace: PlaceName | null;
   detectedPlace: PlaceName | null;
   data: RecommendationDataSet;
@@ -55,7 +57,10 @@ export function ModNormalPanel({
   const beverageEmptyText = pageRecommendations.error
     || (pageRecommendations.pending && beverages.length === 0 ? '推荐计算中' : '暂无可推荐酒水');
 
-  if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
+  if (!runtime) return <RuntimeUnavailable />;
+  // 首次请求尚未建立展示缓存时，也必须报告业务读取错误，不能伪装成游戏运行时未就绪。
+  if (!runtimeSets) return businessError
+    ? <EmptyState text={`业务数据读取失败：${businessError}`} /> : <RuntimeUnavailable />;
 
   return (
     <div className="space-y-4">
@@ -67,6 +72,13 @@ export function ModNormalPanel({
       />
 
       {!selectedPlace && <EmptyState text="请选择地区后查看普客推荐" />}
+
+      {normalResult && (pageRecommendations.pending || pageRecommendations.error) && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {pageRecommendations.error ? `推荐更新失败：${pageRecommendations.error}；当前显示上次结果。`
+            : '推荐更新中，当前显示上次结果。'}
+        </p>
+      )}
 
       {selectedPlace && (
         <div className={DENSE_TWO_COLUMN_GRID}>

@@ -360,7 +360,7 @@ const server = http.createServer(async (request, response) => {
       if (path === '/business/query') {
         requireMockDevice(request);
         const intent = await readJsonBody(request);
-        sendJson(response, 200, await businessHost.request('query', { clientId: 'mock-business-primary', intent }, buildBusinessInput()));
+        sendJson(response, 200, await requestMockBusiness('query', { clientId: 'mock-business-primary', intent }));
         return;
       }
       if (path === '/devices/register') {
@@ -609,7 +609,7 @@ const server = http.createServer(async (request, response) => {
   try {
     if (path === '/business/status') {
       requireMockDevice(request);
-      sendJson(response, 200, await businessHost.request('status', { protocolVersion: Number(requestUrl.searchParams.get('protocolVersion')) }, buildBusinessInput()));
+      sendJson(response, 200, await requestMockBusiness('status', { protocolVersion: Number(requestUrl.searchParams.get('protocolVersion')) }));
       return;
     }
     if (path === '/health') {
@@ -708,6 +708,20 @@ function buildBusinessInput() {
     favorites: structuredClone(favoriteData), customRecipes: structuredClone(customRecipeData) };
 }
 
+/**
+ * 浏览器设备与 source-link 宿主使用独立的测试设备仓。将只读展示来源映射回浏览器 fixture 的
+ * 权威身份；推荐正文、快照上下文、严格 current 和任何执行许可都不在这里生成或更改。
+ */
+async function requestMockBusiness(operation, payload) {
+  const input = buildBusinessInput();
+  const primary = mockDeviceAuthority.devices.get(mockDeviceAuthority.primaryDeviceId);
+  const authority = { registryId: mockDeviceAuthority.registryId, authorityRevision: mockDeviceAuthority.authorityRevision,
+    activeProfileRevision: primary.profileRevision, activeProfileHash: primary.profileHash };
+  const result = await businessHost.request(operation, payload, input);
+  if (result.sourceContext) result.sourceContext.authority = authority;
+  return result;
+}
+
 function buildSnapshot() {
   const snapshot = {
     pluginVersion: '1.0.5-mock',
@@ -756,6 +770,7 @@ function buildSnapshot() {
       famousShopEnabled: true,
     },
     nightBusiness: {
+      activeRareGuestsReadComplete: true,
       place: '妖怪兽道',
       placeLabel: '妖怪兽道',
       activeRareGuests: [

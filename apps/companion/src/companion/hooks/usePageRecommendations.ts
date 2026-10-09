@@ -3,6 +3,7 @@ import { useBusinessConnection } from '@/companion/business-connection';
 import { writeLocalApiJsonWithTimeout } from '@/companion/local-api';
 import { BUSINESS_PROTOCOL_VERSION } from '@/companion/hooks/useBusinessStatus';
 import type { PageRecommendationPayload, PageRecommendationResult } from '@/companion/business-types';
+import { businessSourceContextKey, type BusinessSourceContext } from '@/companion/business-display-context';
 
 interface PageRecommendationState {
   result: PageRecommendationResult | null;
@@ -13,6 +14,7 @@ interface PageRecommendationState {
 interface PageResponse extends PageRecommendationState {
   protocolVersion: number;
   sourceSnapshotSignature: string;
+  sourceContext?: BusinessSourceContext;
 }
 
 /**
@@ -20,12 +22,14 @@ interface PageResponse extends PageRecommendationState {
  * 串行轮询有界查询缓存，旧连接、旧选择和旧快照的结果不会被标记为当前推荐。
  */
 export function usePageRecommendations(payload: PageRecommendationPayload | null): PageRecommendationState {
-  const { endpoint, apiToken, snapshotSignature, enabled } = useBusinessConnection();
+  const { endpoint, apiToken, snapshotSignature, sourceContext, enabled } = useBusinessConnection();
+  const contextKey = businessSourceContextKey(sourceContext);
   const intent = payload == null ? '' : JSON.stringify(payload.kind === 'normal'
     ? { protocolVersion: BUSINESS_PROTOCOL_VERSION, kind: 'normal', selectedPlace: payload.selectedPlace }
     : { protocolVersion: BUSINESS_PROTOCOL_VERSION, kind: 'rare', customerId: payload.selectedCustomer.id,
       foodTag: payload.foodTag, beverageTag: payload.beverageTag });
-  const [state, setState] = useState<{ intent: string; response: PageResponse } | null>(null);
+  const requestKey = JSON.stringify([endpoint, apiToken, enabled, contextKey, intent]);
+  const [state, setState] = useState<{ requestKey: string; response: PageResponse; display: PageRecommendationResult | null } | null>(null);
   useEffect(() => {
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -37,20 +41,29 @@ export function usePageRecommendations(payload: PageRecommendationPayload | null
         const response = await writeLocalApiJsonWithTimeout<PageResponse>(endpoint, apiToken, '/business/query', 5000,
           { signal: abort.signal, body: JSON.parse(intent) as unknown });
         if (response.protocolVersion !== BUSINESS_PROTOCOL_VERSION) throw new Error('Mod 业务协议不兼容，请更新成套 Mod 和客户端。');
-        if (!disposed) setState({ intent, response });
+        if (!disposed) setState(previous => {
+          const sameContext = Boolean(contextKey) && businessSourceContextKey(response.sourceContext) === contextKey;
+          return { requestKey, response,
+            // 服务端 pending 的空响应不能擦掉同一查询的已完成显示；返回不同上下文则立即清空。
+            display: sameContext ? response.result ?? (previous?.requestKey === requestKey ? previous.display : null) : null };
+        });
       } catch (error) {
-        if (!disposed) setState({ intent, response: { protocolVersion: BUSINESS_PROTOCOL_VERSION, result: null,
-          isCurrent: false, pending: false, sourceSnapshotSignature: '', error: error instanceof Error ? error.message : String(error) } });
+        if (!disposed) setState(previous => ({ requestKey,
+          display: previous?.requestKey === requestKey ? previous.display : null,
+          response: { protocolVersion: BUSINESS_PROTOCOL_VERSION, result: null,
+            isCurrent: false, pending: false, sourceSnapshotSignature: '', error: error instanceof Error ? error.message : String(error) } }));
       } finally {
         if (!disposed && enabled) timer = setTimeout(() => { void poll(); }, 750);
       }
     }
     void poll();
     return () => { disposed = true; abort.abort(); clearTimeout(timer); };
-  }, [endpoint, apiToken, enabled, intent]);
+  }, [endpoint, apiToken, enabled, intent, contextKey, requestKey]);
   if (!intent || !enabled) return { result: null, pending: false, isCurrent: false, error: null };
-  const response = state?.intent === intent ? state.response : null;
-  const current = response?.isCurrent === true && response.sourceSnapshotSignature === snapshotSignature;
-  return { result: current ? response.result : null, isCurrent: current,
-    pending: !current && !response?.error, error: response?.error ?? null };
+  const accepted = state?.requestKey === requestKey ? state : null;
+  const response = accepted?.response;
+  const current = response?.isCurrent === true && response.sourceSnapshotSignature === snapshotSignature
+    && Boolean(contextKey) && businessSourceContextKey(response.sourceContext) === contextKey;
+  return { result: accepted?.display ?? null, isCurrent: current,
+    pending: !response?.error && (!accepted?.display || response?.isCurrent !== true || response.pending), error: response?.error ?? null };
 }

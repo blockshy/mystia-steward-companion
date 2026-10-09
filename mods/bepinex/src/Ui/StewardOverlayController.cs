@@ -1130,6 +1130,9 @@ internal sealed class StewardOverlayController
         {
             var normalCount = snapshot.NormalBusiness?.Orders.Count ?? -1;
             var rareCount = snapshot.NightBusiness?.Orders.Count ?? -1;
+            // 在场稀客与有效订单来自不同采集链；分别记录数量和源状态，避免仅凭订单正常
+            // 就把客人列表读取失败误判为空场景。这里只扩展已有聚合诊断，不触发额外游戏读取。
+            var rareGuestCount = snapshot.NightBusiness?.ActiveRareGuests.Count ?? -1;
             var specialBusiness = snapshot.SpecialBusiness;
             var specialActive = specialBusiness?.Active == true;
             var diagnosticSignature = string.Join(
@@ -1146,6 +1149,10 @@ internal sealed class StewardOverlayController
                 snapshot.RuntimeDataStatus,
                 normalCount,
                 rareCount,
+                rareGuestCount,
+                snapshot.NightBusiness?.ActiveRareGuestsReadComplete,
+                snapshot.NightBusiness?.Source ?? "",
+                snapshot.NightBusiness?.Error ?? "",
                 specialActive,
                 specialBusiness?.ChallengeType ?? "",
                 specialBusiness?.Phase ?? "",
@@ -1174,6 +1181,10 @@ internal sealed class StewardOverlayController
                     $"runtimeDataSource: {snapshot.RuntimeDataSource}",
                     $"runtimeDataStatus: {snapshot.RuntimeDataStatus}",
                     $"nightOrders: {rareCount}",
+                    $"nightGuests: {rareGuestCount}",
+                    $"nightGuestsReadComplete: {snapshot.NightBusiness?.ActiveRareGuestsReadComplete == true}",
+                    $"nightSource: {snapshot.NightBusiness?.Source ?? ""}",
+                    $"nightError: {snapshot.NightBusiness?.Error ?? ""}",
                     $"normalOrders: {normalCount}",
                     $"specialActive: {specialActive}",
                     $"special: {specialBusiness?.ChallengeType ?? ""} {specialBusiness?.Phase ?? ""}",
@@ -1465,6 +1476,8 @@ internal sealed class StewardOverlayController
         AppendValue(builder, context.PlaceLabel);
         AppendValue(builder, context.Source);
         AppendValue(builder, context.Error);
+        // 完整性变化同样属于可见状态；即使名单未变，也必须让客户端收到“未知/完整”的切换。
+        AppendValue(builder, context.ActiveRareGuestsReadComplete);
         foreach (var guest in context.ActiveRareGuests
                      .OrderBy(guest => guest.DeskCode)
                      .ThenBy(guest => guest.GuestId ?? -1)

@@ -545,7 +545,9 @@ export function ModServicePanel({
         <div className="space-y-4">
           <div className={DENSE_TWO_COLUMN_GRID}>
             <ListPanel title="当前稀客" contentClassName="min-h-[9rem]">
-              {activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
+              {night?.activeRareGuestsReadComplete !== true
+                ? <EmptyRow text="稀客名单读取不完整，请查看读取详情" />
+                : activeGuests.length === 0 && <EmptyRow text="暂无稀客" />}
               {activeGuests.map((guest) => {
                 const fund = formatGuestFund(guest);
                 return (
@@ -633,6 +635,7 @@ export function ModServicePanel({
           <ListPanel title="经营诊断">
             <div className={DENSE_TWO_COLUMN_GRID}>
               <InfoLine label="扫描状态" value={night?.source || '暂无'} />
+              {night?.error && <InfoLine label="稀客读取详情" value={night.error} />}
               <InfoLine label="性能耗时" value={formatPerformanceMs(performanceMs)} mono />
               <InfoLine label="前端推荐耗时" value={formatPerformanceMs(orderRecommendationPerformanceMs)} mono />
               <InfoLine label="界面置顶" value={uiPinningStatus || '暂无'} />

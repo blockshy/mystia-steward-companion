@@ -25,9 +25,9 @@ interface BuildOrderRecommendationPresentationOptions {
 }
 
 /**
- * 将 Worker 的最后一次成功结果投影到当前订单快照。
+ * 将 C# 宿主同一展示上下文中的最后成功结果投影到当前订单快照。
  *
- * 该结果只供展示。自动化、置顶和高亮必须继续消费 Worker 的原始 current 结果。
+ * 该结果只供展示；逐笔身份必须唯一匹配。自动化、置顶和高亮继续由服务端严格版本校验。
  */
 export function buildOrderRecommendationPresentation({
   orders,

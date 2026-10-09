@@ -1,5 +1,6 @@
 import { BusinessConnectionProvider } from '@/companion/BusinessContext';
 import { retryBusinessAutomation, useBusinessStatus } from '@/companion/hooks/useBusinessStatus';
+import { buildBusinessSourceContext, businessSourceContextKey } from '@/companion/business-display-context';
 import { buildNightBusinessOrderKey } from '@/companion/domain/automation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useGamepadNavigation } from '@/companion/use-gamepad-navigation';
@@ -590,7 +591,10 @@ export function ModWorkbench() {
   const visibleTabs = companionPreferences.showDebugDetails ? MOD_TABS : BASIC_MOD_TABS;
   const includeNormalOrderDetails = tab === 'service' && serviceView === 'recommendations' && serviceRecommendationTab === 'normal';
   const snapshotSignature = snapshot?.snapshotSignature ?? '';
-  const business = useBusinessStatus(normalizedEndpoint, apiToken, snapshotSignature, companionConnected);
+  const businessSourceContext = useMemo(() => buildBusinessSourceContext(snapshot, companionDeviceAuthority.state),
+    [snapshot, companionDeviceAuthority.state]);
+  const businessDisplayContextKey = businessSourceContextKey(businessSourceContext);
+  const business = useBusinessStatus(normalizedEndpoint, apiToken, snapshotSignature, businessSourceContext, companionConnected);
   const refreshBusiness = business.refresh;
   const runtimeSets = business.runtimeSets;
   const orderRecommendations = business.recommendations;
@@ -599,12 +603,14 @@ export function ModWorkbench() {
     recommendations: orderRecommendations.recommendations,
     recommendationIssues: orderRecommendations.recommendationIssues,
     pending: business.pending,
-    isCurrent: business.isCurrent,
-    resultContextSignature: business.sourceSnapshotSignature ?? '',
-    currentContextSignature: snapshotSignature,
+    // 此投影只用于显示；游戏动作和目标仍读取服务端严格 current，不能使用保留的旧结果。
+    isCurrent: !business.pending && !business.error,
+    resultContextSignature: businessSourceContextKey(business.sourceContext),
+    currentContextSignature: businessDisplayContextKey,
     error: business.error,
-    retainedAfterError: Boolean(business.error && orderRecommendations.recommendations.length),
-  }), [business.error, business.isCurrent, business.pending, business.sourceSnapshotSignature, night?.orders, orderRecommendations, snapshotSignature]);
+    retainedAfterError: Boolean(business.error
+      && (orderRecommendations.recommendations.length || orderRecommendations.recommendationIssues.length)),
+  }), [business.error, business.pending, business.sourceContext, businessDisplayContextKey, night?.orders, orderRecommendations]);
   const visibleOrderRecommendations = orderRecommendationPresentation.recommendations;
   const visibleOrderRecommendationIssues = orderRecommendationPresentation.recommendationIssues;
   const visibleOrderRecommendationPendingOrders = business.error ? [] : orderRecommendationPresentation.pendingOrders;
@@ -864,7 +870,7 @@ export function ModWorkbench() {
 
   if (serviceFocusMode) {
     return (
-      <BusinessConnectionProvider endpoint={normalizedEndpoint} apiToken={apiToken} snapshotSignature={snapshotSignature} enabled={companionConnected}>
+      <BusinessConnectionProvider endpoint={normalizedEndpoint} apiToken={apiToken} snapshotSignature={snapshotSignature} sourceContext={businessSourceContext} enabled={companionConnected}>
       <ServiceFocusPage
         recommendations={visibleOrderRecommendations}
         recommendationIssues={visibleOrderRecommendationIssues}
@@ -895,7 +901,7 @@ export function ModWorkbench() {
   }
 
   return (
-    <BusinessConnectionProvider endpoint={normalizedEndpoint} apiToken={apiToken} snapshotSignature={snapshotSignature} enabled={companionConnected}>
+    <BusinessConnectionProvider endpoint={normalizedEndpoint} apiToken={apiToken} snapshotSignature={snapshotSignature} sourceContext={businessSourceContext} enabled={companionConnected}>
     <div className="space-y-3" data-companion-surface="workbench">
       <WorkbenchHeader
         endpointDraft={endpointDraft}
@@ -997,6 +1003,7 @@ export function ModWorkbench() {
                   <ModNormalPanel
                     runtime={runtime}
                     runtimeSets={runtimeSets}
+                    businessError={business.error}
                     selectedPlace={selectedPlace}
                     detectedPlace={detectedPlace}
                     data={recommendationData}
@@ -1012,6 +1019,7 @@ export function ModWorkbench() {
                   <ModRarePanel
                     runtime={runtime}
                     runtimeSets={runtimeSets}
+                    businessError={business.error}
                     selectedPlace={selectedPlace}
                     detectedPlace={detectedPlace}
                     data={recommendationData}

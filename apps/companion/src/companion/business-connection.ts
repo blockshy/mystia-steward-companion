@@ -1,10 +1,12 @@
 import { createContext, useContext } from 'react';
+import type { BusinessSourceContext } from '@/companion/business-display-context';
 
 /** 业务页面的最小连接信息；不能夹带可覆盖服务端库存、目录或策略的数据。 */
 export interface BusinessConnection {
   endpoint: string;
   apiToken: string;
   snapshotSignature: string;
+  sourceContext: BusinessSourceContext | null;
   enabled: boolean;
 }
 

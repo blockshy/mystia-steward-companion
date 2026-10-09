@@ -16,6 +16,7 @@ if (args.Contains("--load-stream", StringComparer.Ordinal)) { await LoadStreamTe
 if (args.Contains("--lease-expiry", StringComparer.Ordinal)) { await LeaseExpiryTests.Run(Profile()); return; }
 if (args.Contains("--ui-failure-transition", StringComparer.Ordinal)) { await UiFailureTransitionTests.Run(Profile()); return; }
 if (args.Contains("--ui-colors", StringComparer.Ordinal)) { await UiTargetColorTests.Run(Profile()); return; }
+if (args.Contains("--display-continuity", StringComparer.Ordinal)) { await DisplayContinuityTests.Run(Profile()); return; }
 
 // 运行真实后台业务循环、真实设备/文件存储和真实领域代码，仅游戏副作用替换为受控委托。
 // 所有临时数据均位于专属临时目录，不接触真实游戏、用户配置、TCP端口或真实客户端。

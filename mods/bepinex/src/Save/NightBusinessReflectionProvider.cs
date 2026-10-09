@@ -19,7 +19,8 @@ internal sealed class NightBusinessReflectionProvider
     private static readonly (string MemberName, string Source)[] ManagerControllerSources =
     {
         ("AllPresentedGuestGroupController", "Presented"),
-        ("AllGuestInDeskController", "Desk"),
+        // Native get_AllGuestInDeskController 仅返回 AllGuestsControllersInDesk.Values。
+        // 直接读取下面的具体字典，避免把 IL2CPP IEnumerable 当作有整数索引的集合。
         ("AllGuestsControllersInDesk", "DeskMap"),
         ("CanPlayerRepellGuest", "Repellable"),
         ("ManualDesksDic", "ManualDesk"),
@@ -31,6 +32,7 @@ internal sealed class NightBusinessReflectionProvider
     private readonly bool _diagnosticsEnabled;
     private readonly string _sceneName;
     private List<NightBusinessCandidateDiagnostic>? _candidateDiagnostics;
+    private readonly HashSet<string> _guestReadFailures = new(StringComparer.Ordinal);
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
 
     public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
@@ -52,6 +54,7 @@ internal sealed class NightBusinessReflectionProvider
     public NightBusinessContext LoadContext()
     {
         _performanceMs.Clear();
+        _guestReadFailures.Clear();
         var guests = new List<NightBusinessGuest>();
         var orders = new List<NightBusinessOrder>();
         var reflectionOrders = new List<NightBusinessOrder>();
@@ -84,20 +87,20 @@ internal sealed class NightBusinessReflectionProvider
         var runtimeCaptureReady = SpecialOrderRuntimeCapture.IsBusinessReady;
         sourceStats.Add(runtimeCaptureReady ? "OrderReadMode=RuntimeCapture" : "OrderReadMode=Unavailable");
 
-        try
+        // 服务面板只用于既有订单诊断，名单只来自真正的控制器集合，不能由订单补造。
+        if (_diagnosticsEnabled)
         {
-            var servePanelContexts = Measure("rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
-            sourceStats.Add($"ServePanel={servePanelContexts.Count}");
-            guests.AddRange(Measure("rare.servePanel.guests", () => ReadServePanelRareGuests(servePanelContexts).ToList()));
-            if (_diagnosticsEnabled)
+            try
             {
+                var servePanelContexts = Measure("rare.servePanel.contexts", () => ReadServePanelContexts().ToList());
+                sourceStats.Add($"ServePanel={servePanelContexts.Count}");
                 reflectionOrders.AddRange(Measure("rare.servePanel.orders", () => ReadServePanelOrders(servePanelContexts).ToList()));
             }
-        }
-        catch (Exception ex)
-        {
-            sourceStats.Add("ServePanel=err");
-            errors.Add($"serve panel: {ex.Message}");
+            catch (Exception ex)
+            {
+                sourceStats.Add("ServePanel=err");
+                errors.Add($"serve panel: {ex.Message}");
+            }
         }
 
         if (_diagnosticsEnabled)
@@ -141,7 +144,7 @@ internal sealed class NightBusinessReflectionProvider
             catch (Exception ex)
             {
                 sourceStats.Add($"{source.Source}=err");
-                errors.Add($"{source.Source}: {ex.Message}");
+                _guestReadFailures.Add($"{source.Source}: collection unavailable ({ex.Message})");
             }
         }
 
@@ -154,9 +157,12 @@ internal sealed class NightBusinessReflectionProvider
         catch (Exception ex)
         {
             sourceStats.Add("Queue=err");
-            errors.Add($"Queue: {ex.Message}");
+            _guestReadFailures.Add($"Queue: collection unavailable ({ex.Message})");
         }
 
+        // 部分来源仍可提供已确认客人；不完整状态与原因单独发布，不能以空数组表示无人。
+        errors.AddRange(_guestReadFailures);
+        sourceStats.Add($"ActiveRareGuestsReadComplete={_guestReadFailures.Count == 0}");
         var activeGuests = Measure("deduplicate.guests", () => DeduplicateGuests(guests));
         var rawLiveOrders = reflectionOrders.ToList();
         var acceptedRuntimeOrders = new List<NightBusinessOrder>();
@@ -209,6 +215,7 @@ internal sealed class NightBusinessReflectionProvider
             Place = place,
             PlaceLabel = placeLabel,
             ActiveRareGuests = activeGuests,
+            ActiveRareGuestsReadComplete = _guestReadFailures.Count == 0,
             Orders = activeOrders,
             Source = $"Night scene live orders; {managerStatus}; {queueStatus}; {string.Join("; ", sourceStats)}; guests={activeGuests.Count}; orders={activeOrders.Count}",
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
@@ -363,16 +370,6 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
-    private IEnumerable<NightBusinessGuest> ReadServePanelRareGuests(IEnumerable<(object? Order, object? Controller)> contexts)
-    {
-        foreach (var context in contexts)
-        {
-            var guest = ReadRareGuest(context.Controller, "ServePanel")
-                ?? ReadRareGuestFromOrder(context.Order, context.Controller, "ServePanel");
-            if (guest != null) yield return guest;
-        }
-    }
-
     private IEnumerable<NightBusinessOrder> ReadServePanelOrders(IEnumerable<(object? Order, object? Controller)> contexts)
     {
         foreach (var context in contexts)
@@ -382,28 +379,23 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
-    private IEnumerable<object?> ReadManagerControllers(string memberName)
+    private IReadOnlyList<object?> ReadManagerControllers(string memberName)
     {
         var manager = FindGuestsManager();
-        if (manager == null) yield break;
-
-        foreach (var item in EnumerateObjects(GetMemberValue(manager, memberName)))
-        {
-            var controller = NormalizeKeyValueValue(item);
-            if (controller != null) yield return controller;
-        }
+        if (manager == null) throw new InvalidOperationException("GuestsManager unavailable");
+        return RuntimeRareGuestReader.ReadControllers(GetMemberValue(manager, memberName),
+            memberName == "AllPresentedGuestGroupController"
+                ? RuntimeGuestControllerCollection.PresentedSet
+                : RuntimeGuestControllerCollection.DeskDictionary);
     }
 
-    private IEnumerable<object?> ReadQueuedControllers()
+    private IReadOnlyList<object?> ReadQueuedControllers()
     {
         var guestGroupControllerType = FindType(GuestGroupControllerTypeName);
-        if (guestGroupControllerType == null) yield break;
-
-        foreach (var item in EnumerateObjects(GetStaticMemberValue(guestGroupControllerType, "QueuedGuestControllers")))
-        {
-            var controller = NormalizeKeyValueValue(item);
-            if (controller != null) yield return controller;
-        }
+        if (guestGroupControllerType == null) throw new InvalidOperationException("GuestGroupController type unavailable");
+        return RuntimeRareGuestReader.ReadControllers(
+            GetStaticMemberValue(guestGroupControllerType, "QueuedGuestControllers"),
+            RuntimeGuestControllerCollection.QueueList);
     }
 
     private IEnumerable<NightBusinessGuest> ReadRareGuests(IEnumerable<object?> controllers, string source)
@@ -417,28 +409,21 @@ internal sealed class NightBusinessReflectionProvider
 
     private NightBusinessGuest? ReadRareGuest(object? controller, string source)
     {
-        if (controller == null)
+        var kind = RuntimeRareGuestReader.Resolve(controller, out var readableController, out var guest, out var reason);
+        // 枚举分类不能向编译器表达两个 out 对象的非空关系；同时显式守住实际读取边界。
+        if (kind != RuntimeRareGuestKind.Special || guest == null || readableController == null)
         {
-            RecordCandidate("GuestController", source, accepted: false, "controller is null", null);
+            if (kind != RuntimeRareGuestKind.Normal) _guestReadFailures.Add($"{source}: {reason}");
+            RecordCandidate("GuestController", source, accepted: false, reason, () => DescribeControllerCandidate(controller));
             return null;
         }
 
-        var specialGuest = GetMemberValue(controller, "SpecialGuest");
-        var orderingGuest = GetMemberValue(controller, "OrderingGuest");
-        var guest = specialGuest ?? orderingGuest;
-        if (guest == null)
-        {
-            RecordCandidate("GuestController", source, accepted: false, "SpecialGuest and OrderingGuest are null", () => DescribeControllerCandidate(controller));
-            return null;
-        }
-
+        controller = readableController;
         var guestId = ReadGuestId(guest);
-        var identity = specialGuest != null
-            ? ResolveRareCustomerIdentity(guest)
-            : ResolveOrderingGuestRareCustomerIdentity(orderingGuest, AllowOrderingGuestIdResolution(source));
-        if (specialGuest == null && identity == null && !IsSpecialGuestObject(orderingGuest))
+        var identity = ResolveRareCustomerIdentity(guest);
+        if (!guestId.HasValue && identity == null)
         {
-            RecordCandidate("GuestController", source, accepted: false, "OrderingGuest is not an explicit rare guest", () => DescribeControllerCandidate(controller));
+            _guestReadFailures.Add($"{source}: confirmed special guest identity unavailable");
             return null;
         }
 
@@ -455,52 +440,6 @@ internal sealed class NightBusinessReflectionProvider
             WillPayMoney = ReadNullableBoolMember(controller, "WillPayMoney"),
         };
         RecordCandidate("GuestController", source, accepted: true, "accepted rare guest", () => DescribeControllerCandidate(controller));
-        return result;
-    }
-
-    private NightBusinessGuest? ReadRareGuestFromOrder(object? order, object? controller, string source)
-    {
-        if (order == null) return null;
-
-        var resolution = RuntimeOrderTypeResolver.Resolve(order);
-        if (!resolution.Resolved
-            || resolution.Kind != RuntimeOrderKind.Special
-            || resolution.ReadableOrder == null)
-        {
-            return null;
-        }
-
-        var readableOrder = resolution.ReadableOrder;
-        var specialGuest = GetMemberValue(readableOrder, "SpecialGuests") ?? GetMemberValue(controller, "SpecialGuest");
-        var orderingGuest = GetMemberValue(controller, "OrderingGuest");
-        if (specialGuest == null
-            && (IsSpecialGuestObject(orderingGuest)
-                || ResolveOrderingGuestRareCustomerIdentity(orderingGuest, allowIdOnly: true) != null))
-        {
-            specialGuest = orderingGuest;
-        }
-
-        if (specialGuest == null)
-        {
-            RecordCandidate("GuestFromOrder", source, accepted: false, "SpecialGuests missing on order and controller", () => DescribeOrderCandidate(order, controller));
-            return null;
-        }
-
-        var guestId = ReadGuestId(specialGuest);
-        var identity = ResolveRareCustomerIdentity(specialGuest);
-        var result = new NightBusinessGuest
-        {
-            DeskCode = ToInt(GetMemberValue(readableOrder, "DeskCode") ?? GetMemberValue(controller, "DeskCode")),
-            GuestId = identity?.Id ?? guestId,
-            GuestName = identity?.Name ?? ReadGuestName(specialGuest, guestId),
-            Source = source,
-            Fund = ReadNullableIntMember(controller, "GetFund"),
-            BaseFundCarry = ReadNullableIntMember(controller, "BaseFundCarry"),
-            MaxFundCarry = ReadNullableIntMember(controller, "MaxFundCarry"),
-            ExtraFundByBuff = ReadNullableIntMember(controller, "ExtraFundByBuff"),
-            WillPayMoney = ReadNullableBoolMember(controller, "WillPayMoney"),
-        };
-        RecordCandidate("GuestFromOrder", source, accepted: true, "accepted rare guest from order", () => DescribeOrderCandidate(order, controller));
         return result;
     }
 
@@ -1047,11 +986,6 @@ internal sealed class NightBusinessReflectionProvider
         }
 
         return null;
-    }
-
-    private static bool AllowOrderingGuestIdResolution(string source)
-    {
-        return string.Equals(source, "ManualDesk", StringComparison.Ordinal);
     }
 
     private static bool IsSpecialGuestObject(object? guest)

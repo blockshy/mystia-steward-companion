@@ -29,6 +29,7 @@ import type { PlaceName } from '@/lib/catalog-types';
 export function ModRarePanel({
   runtime,
   runtimeSets,
+  businessError,
   selectedPlace,
   detectedPlace,
   data,
@@ -51,6 +52,7 @@ export function ModRarePanel({
 }: {
   runtime: RecommendationStateSnapshot | null;
   runtimeSets: RuntimeSets | null;
+  businessError: string | null;
   selectedPlace: PlaceName | null;
   detectedPlace: PlaceName | null;
   data: RecommendationDataSet;
@@ -159,7 +161,10 @@ export function ModRarePanel({
     customRecipes,
   );
 
-  if (!runtime || !runtimeSets) return <RuntimeUnavailable />;
+  if (!runtime) return <RuntimeUnavailable />;
+  // 没有上次成功结果时仍保留真实错误原因，避免一直显示“等待游戏运行时数据”。
+  if (!runtimeSets) return businessError
+    ? <EmptyState text={`业务数据读取失败：${businessError}`} /> : <RuntimeUnavailable />;
 
   return (
     <div className="space-y-4">
@@ -173,6 +178,13 @@ export function ModRarePanel({
       {!selectedPlace && <EmptyState text="请选择地区后查看稀客推荐" />}
 
       {selectedPlace && customers.length === 0 && <EmptyState text="该地区没有稀客" />}
+
+      {rareResult && (pageRecommendations.pending || pageRecommendations.error) && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {pageRecommendations.error ? `推荐更新失败：${pageRecommendations.error}；当前显示上次结果。`
+            : '推荐更新中，当前显示上次结果。'}
+        </p>
+      )}
 
       {selectedPlace && selectedCustomer && (
         <>

@@ -26,6 +26,8 @@ internal sealed partial class LocalApiServer
     private readonly Dictionary<string, PageQuery> _businessPageQueries = new(StringComparer.Ordinal);
     private long _businessInputVersion = 1;
     private BusinessFrame? _businessFrame;
+    // 最近一次成功展示的来源独立保留；错误会撤销执行帧，但同作用域的只读结果仍可解释错误前状态。
+    private BusinessFrame? _businessResultFrame;
     private JsonObject? _businessResult;
     private string? _businessError;
     // 由唯一业务循环维护：同一经营代次的持续异常只进入一次不可用状态。
@@ -41,7 +43,8 @@ internal sealed partial class LocalApiServer
     /// <summary>帧内 JSON 仅由后台线程读取；发布后不修改，响应与领域调用均复制值树。</summary>
     private sealed record BusinessFrame(long Version, string SnapshotSignature, string SnapshotJson, string CatalogJson,
         string FavoritesJson, string CustomRecipesJson, CompanionDeviceAuthorityStateDto Authority,
-        JsonObject Snapshot, JsonObject Data, JsonObject Preferences, JsonObject Favorites, JsonObject CustomRecipes);
+        JsonObject Snapshot, JsonObject Data, JsonObject Preferences, JsonObject Favorites, JsonObject CustomRecipes,
+        JsonObject SourceContext);
 
     private sealed class PageQuery
     {
@@ -51,6 +54,9 @@ internal sealed partial class LocalApiServer
         public long Version { get; set; }
         public JsonObject? Result { get; set; }
         public string? Error { get; set; }
+        public JsonObject? SourceContext { get; set; }
+        public string SourceSnapshotSignature { get; set; } = "";
+        public string SourceCatalogJson { get; set; } = "";
     }
 
     private static long BusinessNow => Environment.TickCount64;
@@ -115,9 +121,11 @@ internal sealed partial class LocalApiServer
                     if (IsBusinessFrameCurrent(frame))
                     {
                         _businessFrame = frame;
+                        _businessResultFrame = frame;
                         _businessResult = J.Object(("protocolVersion", BusinessProtocol.Version),
                             ("inputVersion", frame.Version.ToString(CultureInfo.InvariantCulture)),
                             ("sourceSnapshotSignature", frame.SnapshotSignature),
+                            ("sourceContext", frame.SourceContext),
                             ("authorityRevision", frame.Authority.AuthorityRevision),
                             ("runtimeSets", Cookers.BuildRuntimeSets(frame.Snapshot["recommendationState"], frame.Data)),
                             ("gameUiTargets", gameUiTargets),
@@ -127,8 +135,10 @@ internal sealed partial class LocalApiServer
                     }
                 }
 
-                foreach (var command in J.Objects(automation["commands"])) ExecuteBusinessCommand(frame, command);
+                // 先发布只读页面结果。游戏动作会等待主线程并触发新快照，若将页面排在动作之后，
+                // 自动化持续推进时每次都可能因原帧失效而跳过页面，导致页面永久没有成功结果。
                 ExecuteOnePageQuery(frame);
+                foreach (var command in J.Objects(automation["commands"])) ExecuteBusinessCommand(frame, command);
             }
             catch (OperationCanceledException) when (_businessStop.IsCancellationRequested) { break; }
             catch (Exception exception)
@@ -203,10 +213,45 @@ internal sealed partial class LocalApiServer
                 _businessCatalog = RuntimeDataNormalizer.Build(JsonNode.Parse(catalogJson));
                 _businessCatalogJson = catalogJson;
             }
+            var snapshot = JsonNode.Parse(snapshotJson)!.AsObject();
             return new BusinessFrame(version, signature, snapshotJson, catalogJson, favoritesJson, customJson, authority,
-                JsonNode.Parse(snapshotJson)!.AsObject(), _businessCatalog,
+                snapshot, _businessCatalog,
                 JsonNode.Parse(authority.ActiveProfile.GetRawText())!.AsObject(),
-                JsonNode.Parse(favoritesJson)!.AsObject(), JsonNode.Parse(customJson)!.AsObject());
+                JsonNode.Parse(favoritesJson)!.AsObject(), JsonNode.Parse(customJson)!.AsObject(),
+                BuildBusinessSourceContext(snapshot, authority));
+        }
+    }
+
+    private static JsonObject BuildBusinessSourceContext(JsonObject snapshot, CompanionDeviceAuthorityStateDto authority)
+        => BusinessDisplayContext.Build(snapshot, authority.RegistryId, authority.AuthorityRevision,
+            authority.ActiveProfileRevision, authority.ActiveProfileHash);
+
+    /// <summary>
+    /// HTTP 返回旧展示前复核最新场景、目录和权威配置，避免等待后台下一轮才清除跨作用域内容。
+    /// 此读取不触碰 Unity、不续租、不刷新在线心跳，也不影响执行使用的完整帧版本门禁。
+    /// </summary>
+    private JsonObject? ReadBusinessSourceContext(string expectedCatalogJson)
+    {
+        try
+        {
+            lock (_authorityTransitionLock)
+            {
+                var authority = _deviceAuthorityStore.ReadBusinessState(DateTime.UtcNow);
+                string snapshotJson;
+                lock (_snapshotLock)
+                {
+                    // 目录可能先于对应快照签名发布；直接比较原始目录值，不能短暂继承旧目录结果。
+                    if (!string.Equals(_runtimeDataJson, expectedCatalogJson, StringComparison.Ordinal)) return null;
+                    snapshotJson = _snapshotJson;
+                }
+                return BuildBusinessSourceContext(JsonNode.Parse(snapshotJson)!.AsObject(), authority);
+            }
+        }
+        catch (Exception exception) when (exception is System.Text.Json.JsonException
+            or InvalidOperationException or CompanionDeviceAuthorityException)
+        {
+            // 真实错误仍由业务循环记录并返回；不能为显示旧结果猜测损坏或尚未建立的来源作用域。
+            return null;
         }
     }
 
@@ -324,13 +369,14 @@ internal sealed partial class LocalApiServer
         lock (_businessLock)
         {
             // 发布结果和帧只整体替换，发布后不再修改。锁内仅获取一致引用，不让HTTP深复制与序列化阻塞新帧发布。
-            published = _businessResult; frame = _businessFrame; error = _businessError;
+            published = _businessResult; frame = _businessResultFrame; error = _businessError;
         }
-        var result = J.Obj(J.Clone(published));
-        var current = frame != null && IsBusinessFrameCurrent(frame) && error == null;
+        var sameContext = frame != null && BusinessDisplayContext.Matches(frame.SourceContext, ReadBusinessSourceContext(frame.CatalogJson));
+        var result = sameContext ? J.Obj(J.Clone(published)) : new JsonObject();
+        var current = sameContext && frame != null && IsBusinessFrameCurrent(frame) && error == null;
         result["protocolVersion"] = BusinessProtocol.Version; result["isCurrent"] = current;
         result["pending"] = !current && error == null; result["error"] = error;
-        result["automation"] = _businessCoordinator.Snapshot();
+        result["automation"] = sameContext ? _businessCoordinator.Snapshot() : null;
         return result.ToJsonString();
     }
 
@@ -343,7 +389,8 @@ internal sealed partial class LocalApiServer
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.Text.Json.JsonException)
         { throw new CompanionDeviceAuthorityException(400, exception.Message); }
         var json = intent.ToJsonString(); var key = clientId + ":" + J.Str(intent["kind"]);
-        JsonObject? result; BusinessFrame? frame; long version; string? queryError; string? businessError;
+        JsonObject? result; JsonObject? sourceContext; string sourceSignature; string sourceCatalogJson;
+        BusinessFrame? frame; long version; string? queryError; string? businessError;
         lock (_businessLock)
         {
             if (!_businessPageQueries.TryGetValue(key, out var query) || query.IntentJson != json)
@@ -355,14 +402,19 @@ internal sealed partial class LocalApiServer
             }
             // 页面投影与经营结果一样是发布后只读值；仅查询注册与引用快照需要互斥，JSON复制在锁外完成。
             result = query.Result; version = query.Version; queryError = query.Error;
+            sourceContext = query.SourceContext; sourceSignature = query.SourceSnapshotSignature;
+            sourceCatalogJson = query.SourceCatalogJson;
             frame = _businessFrame; businessError = _businessError;
         }
-        var current = result != null && version == Interlocked.Read(ref _businessInputVersion)
+        var sameContext = BusinessDisplayContext.Matches(sourceContext, ReadBusinessSourceContext(sourceCatalogJson));
+        var current = sameContext && result != null && version == Interlocked.Read(ref _businessInputVersion)
             && frame != null && IsBusinessFrameCurrent(frame);
         return J.Object(("protocolVersion", BusinessProtocol.Version), ("isCurrent", current),
             ("pending", !current && queryError == null && businessError == null), ("error", queryError ?? businessError),
-            ("result", current ? result : null), ("inputVersion", version.ToString(CultureInfo.InvariantCulture)),
-            ("sourceSnapshotSignature", current ? frame!.SnapshotSignature : "")).ToJsonString();
+            // 非当前结果只可用于展示，并保留自身签名；绝不伪装成最新帧或把展示作用域当成执行许可。
+            ("result", sameContext ? result : null), ("inputVersion", version.ToString(CultureInfo.InvariantCulture)),
+            ("sourceContext", sameContext ? sourceContext : null),
+            ("sourceSnapshotSignature", sameContext ? sourceSignature : "")).ToJsonString();
     }
 
     private void ExecuteOnePageQuery(BusinessFrame frame)
@@ -379,6 +431,8 @@ internal sealed partial class LocalApiServer
         {
             if (!IsBusinessFrameCurrent(frame) || !_businessPageQueries.TryGetValue(query.Key, out var current) || !ReferenceEquals(query, current)) return;
             query.Result = result; query.Error = error; query.Version = frame.Version; query.Sequence = ++_businessQuerySequence;
+            query.SourceContext = frame.SourceContext; query.SourceSnapshotSignature = frame.SnapshotSignature;
+            query.SourceCatalogJson = frame.CatalogJson;
         }
     }
 

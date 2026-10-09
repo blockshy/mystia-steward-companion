@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestReader.cs" Link="RuntimeRareGuestReader.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCoreMappingProjection.cs" Link="RuntimeCoreMappingProjection.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeDaySceneReadinessState.cs" Link="RuntimeDaySceneReadinessState.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />
@@ -21,6 +22,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Reference Include="Il2CppSystem.Core">
+      <HintPath>$(ReferenceDir)/Il2CppSystem.Core.dll</HintPath>
+      <Private>true</Private>
+      <!-- 使用别名隔离真实 783 元数据与故障注入集合；测试不会创建真实原生对象。 -->
+      <Aliases>RuntimeCore</Aliases>
+    </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath>
       <Private>true</Private>
