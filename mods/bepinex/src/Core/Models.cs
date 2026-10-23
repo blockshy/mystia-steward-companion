@@ -85,10 +85,17 @@ public sealed class PlacedCookerInfo
     public List<int> TypeIds { get; init; } = new();
     public List<string> TypeNames { get; init; } = new();
     public string Name { get; init; } = "";
+    // 实例编号与标准厨具类型分开；真实游戏说明只供显示，不能参与能力推断。
+    public int? CookerId { get; init; }
+    public string DisplayName { get; init; } = "";
+    public string Effect { get; init; } = "";
+    public string MetadataStatus { get; init; } = "";
     public bool ChallengeLocked { get; init; }
     public bool CouldOpen { get; init; }
     public bool AutomationAvailable { get; init; }
     public string AutomationAvailability { get; init; } = "";
+    // 来自同次Phase/Result/ChosenRecipe快照的稳定原因码，客户端只负责中文显示。
+    public string UnavailableReason { get; init; } = "";
     public string AutomationAvailabilityDiagnostic { get; init; } = "";
     public string Source { get; init; } = "";
 }

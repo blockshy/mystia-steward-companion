@@ -8,6 +8,8 @@ import '../ui/entity_image.dart';
 import '../ui/page_activity.dart';
 import '../ui/steward_opacity.dart';
 import '../ui/steward_style.dart';
+import 'service_context_content.dart';
+import 'current_cooker_row.dart';
 
 /// 经营统计集中展示现场数量、自动化状态及待确认事项，不参与预约、推荐和执行准入。
 /// 订单数取实时现场投影而非可能滞后的方案数组；厨具拟分配与现场状态分区展示，
@@ -158,10 +160,11 @@ class ServiceStatisticsPage extends StatelessWidget {
               const Text('暂无当前厨具记录。', style: StewardText.body),
             if (cookers.isNotEmpty) ...[
               const SizedBox(height: StewardDensity.supportingGap),
-              _CookerCards(cookers),
+              CurrentCookerList(cookers),
             ],
             _CookerReadDiagnostics(runtime: runtime, cookers: cookers),
           ]),
+          ServiceContextContent(model),
           Section('自动化拟分配', [
             const Text('计划不等于实际占用；多功能厨具不跨类型累加。', style: StewardText.caption),
             const SizedBox(height: StewardDensity.detailGroupGap),
@@ -388,130 +391,6 @@ class _Metric extends StatelessWidget {
       ],
     ),
   );
-}
-
-/// 宽正文并排两张当前厨具卡，窄正文保持单列。断点按缩放后的文字容量计算，
-/// 不使用固定行高，因此150%字号和长名称不会挤压状态或把状态推到卡片之外。
-class _CookerCards extends StatelessWidget {
-  const _CookerCards(this.cookers);
-  final List<DataMap> cookers;
-  @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) {
-      final columns =
-          constraints.maxWidth >= MediaQuery.textScalerOf(context).scale(520)
-          ? 2
-          : 1;
-      final width =
-          (constraints.maxWidth - (columns - 1) * StewardDensity.toolbarGap) /
-          columns;
-      return Wrap(
-        spacing: StewardDensity.toolbarGap,
-        runSpacing: StewardDensity.toolbarGap,
-        children: [
-          for (var index = 0; index < cookers.length; index++)
-            SizedBox(
-              width: width,
-              child: _CookerState(
-                cookers[index],
-                key: ValueKey('service-cooker-$index'),
-              ),
-            ),
-        ],
-      );
-    },
-  );
-}
-
-/// 使用精确的标准typeIds显示图片；现场controllerIndex不具备图像编号语义。
-/// 未知、重复或超出1..5的类型整组回退，仍保留原名称和宿主诊断。
-class _CookerState extends StatelessWidget {
-  const _CookerState(this.cooker, {super.key});
-  final DataMap cooker;
-  @override
-  Widget build(BuildContext context) {
-    final raw = cooker['typeIds'];
-    final ids =
-        raw is List &&
-            raw.isNotEmpty &&
-            raw.every((value) => value is int && value >= 1 && value <= 5) &&
-            raw.toSet().length == raw.length
-        ? raw.cast<int>()
-        : const <int>[];
-    final status = switch (cooker['automationAvailability']) {
-      'StrictIdle' => '空闲可用',
-      'ExtractedResidual' => '取餐后可用',
-      'Unavailable' => '暂不可用',
-      _ => '状态未知',
-    };
-    final available =
-        cooker['automationAvailability'] == 'StrictIdle' ||
-        cooker['automationAvailability'] == 'ExtractedResidual';
-    final tone = available
-        ? context.theme.colors.primary
-        : context.theme.colors.mutedForeground;
-    return Container(
-      padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        color: context.stewardPaint.surface(tone, alpha: .045),
-        border: Border.all(
-          color: context.stewardPaint.foreground(tone, alpha: .2),
-        ),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: Semantics(
-        container: true,
-        explicitChildNodes: true,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // 图片和名称占满首行；状态另有固定阅读顺序，不靠两端大空白区分字段。
-            // 多功能类型图片只取精确typeIds，Wrap允许多图换行，不按实例编号猜图。
-            Wrap(
-              spacing: 6,
-              runSpacing: StewardDensity.supportingGap,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                for (final id in ids.isEmpty ? <int?>[null] : ids)
-                  EntityImage(
-                    kind: EntityImageKind.cooker,
-                    id: id,
-                    size: StewardImageSize.tag,
-                    fallback: FLucideIcons.cookingPot,
-                  ),
-                Text(label(cooker['name']), style: StewardText.value),
-              ],
-            ),
-            const SizedBox(height: StewardDensity.supportingGap),
-            StewardBaselineRow(
-              children: [
-                StewardFirstLineCenter(
-                  textStyle: StewardText.caption,
-                  referenceText: status,
-                  child: ExcludeSemantics(
-                    child: Icon(
-                      available
-                          ? FLucideIcons.circleCheck
-                          : FLucideIcons.circleHelp,
-                      size: MediaQuery.textScalerOf(context).scale(14),
-                      color: tone,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    status,
-                    style: StewardText.caption.copyWith(color: tone),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
 }
 
 /// 每类拟分配先显示厨具身份，再以三等分计数呈现普客/稀客计划与可用锅位。

@@ -34,7 +34,13 @@ RequireContains(
     "rawLanguage.GetType() != shape.LanguageBaseType",
     "private static readonly object ShapeRoot = new()",
     "GetDefinitionShape()",
-    "TryGetLanguageShape()");
+    "TryGetLanguageShape()",
+    "TryReadConditionDescription(condition)",
+    "bool includeConditionDescriptions = false",
+    "includeConditionDescriptions ? TryReadConditionDescription(condition) : \"\"",
+    "Enum.ToObject(statusType, 2)",
+    "method.Name == \"GetText\"",
+    "finished.GetRawConstantValue()");
 
 RequireAbsent(
     source,

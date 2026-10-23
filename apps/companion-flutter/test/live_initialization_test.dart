@@ -851,6 +851,7 @@ void main() {
           'mystia-steward-companion-mission-list-module-enabled': '1',
           'rare-guest-invitation-module-enabled': '0',
           'service-focus-compact': '1',
+          'theme-mode': 'system',
         },
       }),
     );
@@ -863,6 +864,7 @@ void main() {
     expect(model.localPreferences['missionListModuleEnabled'], isTrue);
     expect(model.localPreferences['rareGuestInvitationModuleEnabled'], isFalse);
     expect(model.localPreferences.containsKey('focusMode'), isFalse);
+    expect(model.themeMode, 'system');
     expect(model.profile['automationEnabled'], isFalse);
     expect(await file.exists(), isTrue);
   });

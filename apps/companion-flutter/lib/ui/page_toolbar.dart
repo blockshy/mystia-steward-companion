@@ -3,6 +3,32 @@ import 'dart:math' as math;
 import 'package:flutter/widgets.dart';
 
 import 'components.dart';
+import 'steward_style.dart';
+
+/// 页面查询条件的标准首行。与结果搜索栏统一为顶部不加间距、底部8逻辑像素，
+/// 避免同一工作区切换页签时分别使用 ToolRow/自定义 Padding 导致控件上下跳动。
+///
+/// children 可使用 Flexible/Expanded 分配窄屏空间；本组件只在项目之间加入间距，
+/// 不根据视口宽度切换布局，不压缩控件高度或字体。长内容应由可搜索选择器处理。
+/// 通用弹窗按钮组和允许换行的批量操作继续使用 ToolRow，不混用页面筛选的留白规则。
+class PageFilterRow extends StatelessWidget {
+  const PageFilterRow({required this.children, super.key});
+
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: StewardDensity.toolbarGap),
+    child: Row(
+      children: [
+        for (final (index, child) in children.indexed) ...[
+          if (index > 0) const SizedBox(width: StewardDensity.toolbarGap),
+          child,
+        ],
+      ],
+    ),
+  );
+}
 
 /// 页面内的紧凑搜索工具栏。只组合相关的结果页签、名称搜索和少量紧凑操作，
 /// 不把搜索强塞进模块主导航。navigation 应提供自身可横向滚动的页签组件，
@@ -20,6 +46,7 @@ class PageToolbar extends StatelessWidget {
     this.navigation,
     this.actions = const [],
     this.searchKey,
+    this.maxSearchWidth = 152,
     super.key,
   });
 
@@ -31,13 +58,17 @@ class PageToolbar extends StatelessWidget {
   final List<Widget> actions;
   final Key? searchKey;
 
+  /// 个别多来源工作区可收紧搜索上限，给同排页签让出空间；默认值保持既有页面密度。
+  /// 这只是上限，实际宽度仍服从原有窄屏比例和页签横滚规则，不缩放字体或命中区。
+  final double maxSearchWidth;
+
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
+    padding: const EdgeInsets.only(bottom: StewardDensity.toolbarGap),
     child: LayoutBuilder(
       builder: (context, constraints) {
         final width = math.min(
-          152.0,
+          maxSearchWidth,
           constraints.maxWidth * (navigation == null ? .68 : .46),
         );
         final search = SizedBox(
@@ -55,13 +86,16 @@ class PageToolbar extends StatelessWidget {
           children: [
             if (navigation != null) ...[
               Expanded(child: navigation!),
-              const SizedBox(width: 8),
+              const SizedBox(width: StewardDensity.toolbarGap),
               search,
             ] else
               // 帮助目录等没有对应页签时，搜索靠左；Flexible 允许极窄容器在
               // 保留操作的同时收紧输入宽度，不使用无限宽或屏幕宽度猜测正文尺寸。
               Flexible(child: search),
-            for (final action in actions) ...[const SizedBox(width: 8), action],
+            for (final action in actions) ...[
+              const SizedBox(width: StewardDensity.toolbarGap),
+              action,
+            ],
           ],
         );
       },

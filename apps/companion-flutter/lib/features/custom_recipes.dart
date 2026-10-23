@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:forui/forui.dart';
@@ -26,6 +28,8 @@ class CustomRecipesPanel extends StatefulWidget {
 class _CustomRecipesPanelState extends State<CustomRecipesPanel> {
   final search = TextEditingController();
   bool _savingSettings = false;
+  bool _savingBatch = false;
+  bool _writingBatch = false;
   String _settingsFailure = '';
   Object? _settingsFailureConnection;
   WorkbenchModel get model => widget.model;
@@ -38,7 +42,11 @@ class _CustomRecipesPanelState extends State<CustomRecipesPanel> {
       (source['modeRevision'] as int) >= 0 &&
       source['enabled'] is bool;
   bool get editable =>
-      ready && widget.active && model.canEdit && !_savingSettings;
+      ready &&
+      widget.active &&
+      model.canEdit &&
+      !_savingSettings &&
+      !_savingBatch;
   Map<String, String> get revision => {
     'expectedModeRevision': '${source['modeRevision']}',
   };
@@ -94,6 +102,8 @@ class _CustomRecipesPanelState extends State<CustomRecipesPanel> {
   PageActivity? get _activity {
     if (!widget.active) return null;
     if (!model.connected) return const PageActivity(message: '连接后读取自定义配方');
+    if (_writingBatch)
+      return const PageActivity(message: '正在更新配方…', busy: true);
     if (_savingSettings)
       return const PageActivity(message: '正在保存配方设置…', busy: true);
     if (_settingsFailure.isNotEmpty &&
@@ -142,6 +152,131 @@ class _CustomRecipesPanelState extends State<CustomRecipesPanel> {
         ),
       ),
     );
+  }
+
+  /// 批量操作严格限定当前模式；搜索只筛选浏览，不改变“当前模式全部”的作用域。
+  /// 每个菜单最多四项，避免在紧凑工具栏重新铺开八个按钮。已全部达成的动作不出现。
+  Widget _batchActions({DataMap? group}) {
+    final boundary = _settingsBoundary;
+    final groupField = mode == 'food' ? 'foodId' : 'customerId';
+    final groupId = group == null
+        ? null
+        : records(group['entries']).firstOrNull?[groupField];
+    final entries = _batchEntries(groupId);
+    final actions = <String, String>{
+      if (entries.any((row) => row['enabled'] != true)) 'enable': '全部启用',
+      if (entries.any((row) => row['enabled'] == true)) 'disable': '全部停用',
+      if (entries.any((row) => row['pinToTop'] != true)) 'pin': '全部置顶',
+      if (entries.any((row) => row['pinToTop'] == true)) 'unpin': '取消全部置顶',
+    };
+    final stamp = _batchStamp(entries);
+    return SizedBox(
+      width: stewardSelectWidth,
+      child: StewardSelect<String>(
+        key: ValueKey(
+          group == null ? 'custom-batch-all' : 'custom-batch-${group['id']}',
+        ),
+        label: group == null ? '当前模式批量操作' : '本组批量操作',
+        hint: group == null ? '批量操作' : '本组操作',
+        showLabel: false,
+        value: null,
+        items: actions,
+        popoverWidth: 232,
+        wrapItems: true,
+        enabled:
+            editable && entries.isNotEmpty && (group == null || groupId is int),
+        boundary: (boundary, stamp),
+        onChanged: (action) => _applyBatchFlags(
+          action,
+          groupId: groupId,
+          expectedBoundary: boundary,
+          expectedStamp: stamp,
+        ),
+      ),
+    );
+  }
+
+  List<DataMap> _batchEntries(Object? groupId) => records(source['recipes'])
+      .where(
+        (row) =>
+            row['mode'] == mode &&
+            (groupId == null ||
+                row[mode == 'food' ? 'foodId' : 'customerId'] == groupId),
+      )
+      .toList();
+
+  /// 确认期间记录新增/删除/编辑也必须使确认失效，不只检查模式修订。稳定按 ID
+  /// 排序后记录完整保存值，普通轮询换 Map 对象不会撤销内容相同的用户确认。
+  String _batchStamp(List<DataMap> entries) => jsonEncode(
+    [...entries]
+      ..sort((a, b) => label(a['id'], '').compareTo(label(b['id'], ''))),
+  );
+
+  Future<void> _applyBatchFlags(
+    String action, {
+    required Object? groupId,
+    required Object expectedBoundary,
+    required String expectedStamp,
+  }) async {
+    if (!editable ||
+        expectedBoundary != _settingsBoundary ||
+        expectedStamp != _batchStamp(_batchEntries(groupId)))
+      return;
+    final flags = switch (action) {
+      'enable' => {'enabled': 'true'},
+      'disable' => {'enabled': 'false'},
+      'pin' => {'pinToTop': 'true'},
+      'unpin' => {'pinToTop': 'false'},
+      _ => <String, String>{},
+    };
+    if (flags.isEmpty) return;
+    final entries = _batchEntries(groupId);
+    if (entries.isEmpty) return;
+    final query = {
+      ...mutationBoundary,
+      ...flags,
+      'scope': groupId == null
+          ? 'all'
+          : mode == 'food'
+          ? 'recipe'
+          : 'customer',
+      if (groupId != null)
+        (mode == 'food' ? 'foodId' : 'customerId'): '$groupId',
+    };
+    final actionText = const {
+      'enable': '启用',
+      'disable': '停用',
+      'pin': '置顶',
+      'unpin': '取消置顶',
+    }[action]!;
+    setState(() {
+      _savingBatch = true;
+      _settingsFailure = '';
+    });
+    try {
+      if (!await confirmCurrentAction(
+        context,
+        model,
+        '批量$actionText配方',
+        '将${groupId == null ? '当前模式全部' : '本组'} ${entries.length} 个绑定$actionText。'
+            '${groupId == null ? '包含搜索未显示的绑定；其他模式不受影响。' : '其他分组不受影响。'}',
+      ))
+        return;
+      if (!mounted ||
+          !widget.active ||
+          !model.canEdit ||
+          expectedBoundary != _settingsBoundary ||
+          expectedStamp != _batchStamp(_batchEntries(groupId)))
+        return;
+      setState(() => _writingBatch = true);
+      await model.mutate('/custom-recipes/update-flags', query: query);
+    } finally {
+      if (mounted)
+        setState(() {
+          _savingBatch = false;
+          _writingBatch = false;
+        });
+    }
   }
 
   @override
@@ -281,6 +416,8 @@ class _CustomRecipesPanelState extends State<CustomRecipesPanel> {
                           ),
                         ),
                         const SizedBox(width: 8),
+                        _batchActions(),
+                        const SizedBox(width: 8),
                         FSwitch(
                           key: const ValueKey('custom-enabled'),
                           value: source['enabled'] == true,
@@ -346,25 +483,25 @@ class _CustomRecipesPanelState extends State<CustomRecipesPanel> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Expanded(child: _groupHeading(group, details: true)),
-            StewardButton(
-              mode == 'food' ? '绑定稀客' : '添加料理',
-              onPressed: editable
-                  ? () => _edit(
-                      seed: {
-                        for (final key
-                            in mode == 'food'
-                                ? ['foodId', 'recipeId', 'recipeName']
-                                : ['customerId', 'customerName'])
-                          key: entries.first[key],
-                      },
-                    )
-                  : null,
-            ),
-          ],
-        ),
+        _groupHeading(group, details: true),
+        const SizedBox(height: 8),
+        ToolRow([
+          StewardButton(
+            mode == 'food' ? '绑定稀客' : '添加料理',
+            onPressed: editable
+                ? () => _edit(
+                    seed: {
+                      for (final key
+                          in mode == 'food'
+                              ? ['foodId', 'recipeId', 'recipeName']
+                              : ['customerId', 'customerName'])
+                        key: entries.first[key],
+                    },
+                  )
+                : null,
+          ),
+          _batchActions(group: group),
+        ]),
         const SizedBox(height: 8),
         for (var index = 0; index < entries.length; index++)
           _binding(

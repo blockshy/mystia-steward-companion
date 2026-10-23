@@ -38,7 +38,11 @@ class _ToolsModel extends FixtureModel {
             'status': 'fulfilled',
             'conditionCount': 3,
             'completedConditionCount': null,
-            'conditionStates': [true, false, null],
+            'conditions': [
+              {'description': '与合成角色交谈', 'completed': true},
+              {'description': '交付三份合成料理', 'completed': false},
+              {'description': '完成合成事件', 'completed': null},
+            ],
           },
         ],
       },
@@ -244,21 +248,38 @@ void main() {
       testWidgets('任务及邀请外层信息完整 $width/$scale，直接操作且无二层详情', (tester) async {
         final model = _ToolsModel();
         await open(tester, model, width: width, scale: scale);
+        // 单层状态筛选同时决定所需来源；此用例只查看可完成条目的字段。
+        await tap(
+          tester,
+          find.descendant(
+            of: find.byKey(const ValueKey('mission-status-filter')),
+            matching: find.text('可完成'),
+          ),
+        );
         expect(find.byType(DenseListDetail), findsNothing);
         expect(find.byType(SemanticTag), findsNothing);
         expect(find.byType(OrderTag), findsNothing);
-        expect(find.text('可完成'), findsOneWidget);
+        expect(find.text('可完成'), findsNWidgets(2));
         expect(find.text('条件进度'), findsOneWidget);
         expect(find.text('未知 / 3'), findsOneWidget);
-        expect(find.text('条件 1：已完成'), findsOneWidget);
-        expect(find.text('条件 2：未完成'), findsOneWidget);
-        expect(find.text('条件 3：未知'), findsOneWidget);
+        expect(find.text('与合成角色交谈'), findsOneWidget);
+        expect(find.text('交付三份合成料理'), findsOneWidget);
+        expect(find.text('完成合成事件'), findsOneWidget);
+        expect(find.text('已完成'), findsOneWidget);
+        expect(find.text('未完成'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byType(MissionItemContent),
+            matching: find.text('待确认'),
+          ),
+          findsOneWidget,
+        );
         expect(find.text('角色'), findsOneWidget);
         expect(find.text('合成角色'), findsOneWidget);
         expect(find.text('接取人'), findsOneWidget);
         expect(find.text('synthetic-receiver'), findsOneWidget);
         expect(find.text('合成神社 · 合成竹林'), findsOneWidget);
-        await tap(tester, find.text('可接取任务'));
+        await tap(tester, find.text('可接取'));
         expect(find.text('满足条件触发'), findsOneWidget);
         expect(find.text('羁绊检查点'), findsOneWidget);
         expect(find.text('演出后'), findsOneWidget);

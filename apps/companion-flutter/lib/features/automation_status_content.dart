@@ -68,6 +68,7 @@ class AutomationStatusContent extends StatelessWidget {
     this.headerInParent = false,
     this.model,
     this.onRetry,
+    this.onReset,
     super.key,
   });
   final DataMap item;
@@ -77,6 +78,7 @@ class AutomationStatusContent extends StatelessWidget {
   /// 只读取当前目录和已校验的资源依赖；不触发查询、不选择方案、不访问文件或网络。
   final WorkbenchModel? model;
   final VoidCallback? onRetry;
+  final VoidCallback? onReset;
 
   @override
   Widget build(BuildContext context) {
@@ -151,7 +153,12 @@ class AutomationStatusContent extends StatelessWidget {
                 warning: true,
               ),
             const SizedBox(height: 8),
-            ToolRow([StewardButton('重试暂停订单', onPressed: onRetry)]),
+            ToolRow([
+              StewardButton('重试暂停订单', onPressed: onRetry),
+              StewardButton('重置规划状态', onPressed: onReset),
+            ]),
+            if (label(item['resetBlockReason'], '').isNotEmpty)
+              AutomationDetailItem('重置限制', label(item['resetBlockReason'])),
           ]),
           if (food != null || beverage != null)
             Section('处理目标', [

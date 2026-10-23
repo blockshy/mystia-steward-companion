@@ -73,21 +73,130 @@ class _IsolatedPlatformHost extends PlatformHostApi {
 class _RealHttp extends HttpOverrides {
   final requests = <String, int>{};
   final failedReads = <String>{};
+  final heldReplies = <String, _HeldHttpReply>{};
+
+  /// 只对精确方法/路径的下一笔真实响应加闸；请求仍先到达隔离 Mod router。
+  /// 不保存请求头、查询或凭据，也不改变其它生产 HTTP 的传输行为。
+  _HeldHttpReply holdNext(
+    String method,
+    String path, {
+    DataMap? replacement,
+    bool failAfterRelease = false,
+  }) {
+    final key = '$method $path';
+    if (heldReplies.containsKey(key)) throw StateError('该路径已有待领取回复闸门。');
+    return heldReplies[key] = _HeldHttpReply(
+      replacement: replacement,
+      failAfterRelease: failAfterRelease,
+    );
+  }
+
   @override
   HttpClient createHttpClient(SecurityContext? context) => _CountedHttpClient(
     super.createHttpClient(context),
     requests,
     failedReads,
+    heldReplies,
   );
+}
+
+/// 等待真实宿主发送完整响应后才通知测试切换会话，避免把“请求尚未发出”误当迟到。
+/// 宿主更新服务明确 disabled，不访问更新源；仅成功分支使用带标记的合成响应覆盖，
+/// 用于验证客户端过期结果边界，不声称覆盖真实下载、GitHub 或安装行为。
+class _HeldHttpReply {
+  _HeldHttpReply({this.replacement, this.failAfterRelease = false});
+  final DataMap? replacement;
+  final bool failAfterRelease;
+  final arrived = Completer<void>(), released = Completer<void>();
+  DataMap? originalBody;
+
+  void release() {
+    if (!released.isCompleted) released.complete();
+  }
+
+  Future<HttpClientResponse> wait(HttpClientResponse response) async {
+    final bytes = await response.fold<List<int>>(
+      <int>[],
+      (buffer, chunk) => buffer..addAll(chunk),
+    );
+    originalBody = jsonMap(jsonDecode(utf8.decode(bytes)));
+    arrived.complete();
+    await released.future;
+    if (failAfterRelease) throw const SocketException('合成迟到更新传输异常');
+    return _BufferedHttpReply(
+      response,
+      replacement == null ? bytes : utf8.encode(jsonEncode(replacement)),
+    );
+  }
+}
+
+/// 已收完整的真实响应重新提供一次字节流；仅可控成功分支替换正文，HTTP 元数据保留。
+class _BufferedHttpReply extends Stream<List<int>>
+    implements HttpClientResponse {
+  _BufferedHttpReply(this.inner, this.bytes);
+  final HttpClientResponse inner;
+  final List<int> bytes;
+  @override
+  int get statusCode => inner.statusCode;
+  @override
+  int get contentLength => bytes.length;
+  @override
+  bool get isRedirect => inner.isRedirect;
+  @override
+  HttpHeaders get headers => inner.headers;
+  @override
+  StreamSubscription<List<int>> listen(
+    void Function(List<int>)? onData, {
+    Function? onError,
+    void Function()? onDone,
+    bool? cancelOnError,
+  }) => Stream<List<int>>.value(bytes).listen(
+    onData,
+    onError: onError,
+    onDone: onDone,
+    cancelOnError: cancelOnError,
+  );
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+/// 只包装生产传输实际使用的请求成员；所有认证、正文、发送与取消继续委托真实请求。
+class _HeldHttpRequest implements HttpClientRequest {
+  _HeldHttpRequest(this.inner, this.reply);
+  final HttpClientRequest inner;
+  final _HeldHttpReply reply;
+  @override
+  set followRedirects(bool value) => inner.followRedirects = value;
+  @override
+  set persistentConnection(bool value) => inner.persistentConnection = value;
+  @override
+  set contentLength(int value) => inner.contentLength = value;
+  @override
+  HttpHeaders get headers => inner.headers;
+  @override
+  void add(List<int> data) => inner.add(data);
+  @override
+  void abort([Object? exception, StackTrace? stackTrace]) =>
+      inner.abort(exception, stackTrace);
+  @override
+  Future<HttpClientResponse> close() async => reply.wait(await inner.close());
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 /// 只计方法和不带参数的路径，其余请求仍由真实 Dart HTTP 客户端发送。
 /// 不能记录 headers/body/URL query，避免把连接 Token 或用户配置混入测试证据。
 class _CountedHttpClient implements HttpClient {
-  _CountedHttpClient(this.inner, this.requests, this.failedReads);
+  _CountedHttpClient(
+    this.inner,
+    this.requests,
+    this.failedReads,
+    this.heldReplies,
+  );
   final HttpClient inner;
   final Map<String, int> requests;
   final Set<String> failedReads;
+  final Map<String, _HeldHttpReply> heldReplies;
   @override
   set findProxy(String Function(Uri)? value) => inner.findProxy = value;
   @override
@@ -104,7 +213,11 @@ class _CountedHttpClient implements HttpClient {
     // 只拒绝测试明确指定的 GET；管理写入仍到达真实宿主且不被自动重试。
     if (method == 'GET' && failedReads.contains(url.path))
       throw const SocketException('合成只读连接中断');
-    return inner.openUrl(method, url);
+    final reply = heldReplies.remove('$method ${url.path}');
+    final request = inner.openUrl(method, url);
+    return reply == null
+        ? request
+        : request.then((value) => _HeldHttpRequest(value, reply));
   }
 
   @override
@@ -286,6 +399,288 @@ void main() {
         expect(model.canExecute, isFalse);
         expect(native.secrets['client-id'], isNot('p0-old-device-00000001'));
         final id = model.authority['currentDeviceId'];
+        // 生产改名必须命中真实登记存储，启动参数只限制连接编辑，不能限制自身改名。
+        final originalEndpoint = model.endpoint;
+        await model.renameDevice('离线验证设备');
+        expect(model.error, isEmpty);
+        expect(model.clientLabel, '离线验证设备');
+        expect(
+          jsonObjects(model.authority['devices'])
+              .singleWhere((item) => item['deviceId'] == id)['label'],
+          '离线验证设备',
+        );
+        expect(
+          jsonMap(jsonDecode(await native.file.readAsString()))['deviceLabel'],
+          '离线验证设备',
+        );
+        expect(model.endpoint, originalEndpoint);
+        expect(model.canEditConnection, isFalse);
+        // 页面激活只撤销资源；真实壳层在旧页失活完成后才注册新读取。先扣住旧收藏
+        // GET，再模拟切页并立即重读同一路径，验证旧代次单飞不能吞掉新订阅的首读。
+        // 这里只使用隔离宿主的真实收藏端点；marker 是传输层注入的迟到回执标记。
+        model.activatePage(3);
+        await model.readResource('/missions/tracked');
+        final oldFavorites = http.holdNext(
+          'GET',
+          '/favorites',
+          replacement: {
+            'recipes': <DataMap>[],
+            'beverages': <DataMap>[],
+            'testMarker': 'discarded-old-subscription',
+          },
+        );
+        final oldFavoritesRead = model.readResource('/favorites');
+        await oldFavorites.arrived.future.timeout(const Duration(seconds: 5));
+        final beforeActivation = http.requests['GET /favorites'] ?? 0;
+        model.activatePage(1);
+        expect(
+          http.requests['GET /favorites'],
+          beforeActivation,
+          reason: '新页面必须等旧页失活后统一注册，activatePage 不得抢先发起读取',
+        );
+        await model
+            .readResource('/favorites')
+            .timeout(const Duration(seconds: 5));
+        expect(http.requests['GET /favorites'], greaterThan(beforeActivation));
+        expect(model.resources['/favorites'], isNotNull);
+        oldFavorites.release();
+        await oldFavoritesRead;
+        expect(
+          model.resources['/favorites']!['testMarker'],
+          isNull,
+          reason: '旧订阅的迟到结果不能覆盖新页，也不能恢复旧轮询',
+        );
+        final beforePoll = http.requests['GET /favorites'] ?? 0;
+        await Future<void>.delayed(const Duration(milliseconds: 5200));
+        expect(
+          http.requests['GET /favorites'],
+          greaterThan(beforePoll),
+          reason: '首读完成后当前收藏订阅仍须保留，继续由生产五秒轮询更新',
+        );
+        // 更新状态读取不能撤销当前页面订阅；切页也不能丢弃全局更新状态。
+        model.activatePage(1);
+        await model.readResource('/updates/status');
+        expect(model.resources['/updates/status'], isNotEmpty);
+        model.activatePage(3);
+        expect(model.resources['/updates/status'], isNotEmpty);
+
+        // 同一个 HTTP 地址和设备不断开，仅通过宿主 stdin 替换游戏进程身份。
+        // 旧回复已完整到达传输层才切换，验证生产组合根不能把迟到结果归入新进程。
+        final updateModel = model;
+        final updateConnection = updateModel.connectionVersion;
+        Future<void> changeUpdateSession(String stage) async {
+          host.stdin.writeln('confirmation-$stage');
+          await host.stdin.flush();
+          expect(
+            await lines.moveNext().timeout(const Duration(seconds: 3)),
+            isTrue,
+          );
+          final acknowledged = jsonMap(jsonDecode(lines.current));
+          expect(acknowledged['kind'], 'confirmation-scope');
+          expect(acknowledged['session'], 'confirmation-process-$stage');
+          // refresh 可以与已有快照读取单飞；至多再读一次便应取得宿主已确认的新快照。
+          for (var attempt = 0; attempt < 3; attempt++) {
+            await updateModel.refresh();
+            if (updateModel.snapshot['automationSessionId'] ==
+                acknowledged['session']) {
+              break;
+            }
+          }
+          expect(
+            updateModel.snapshot['automationSessionId'],
+            acknowledged['session'],
+          );
+          expect(updateModel.connectionVersion, updateConnection);
+          expect(updateModel.endpoint, originalEndpoint);
+          expect(updateModel.connected, isTrue, reason: updateModel.error);
+        }
+
+        // 同连接换游戏进程不会增加页面订阅代次。旧收藏请求即使此后失败，也不能污染
+        // 新会话的资源或全局错误；成功同样检查 Map 身份，不能因两次正文相同漏掉回归。
+        for (final fail in [false, true]) {
+          await changeUpdateSession('before');
+          final heldFavorite = http.holdNext(
+            'GET',
+            '/favorites',
+            failAfterRelease: fail,
+          );
+          final pendingFavorite = updateModel.readResource('/favorites');
+          late final DataMap freshFavorite;
+          late final String freshFavoriteError;
+          try {
+            await heldFavorite.arrived.future.timeout(
+              const Duration(seconds: 3),
+            );
+            await changeUpdateSession('after');
+            await updateModel
+                .readResource('/favorites')
+                .timeout(const Duration(seconds: 3));
+            freshFavorite = updateModel.resources['/favorites']!;
+            freshFavoriteError = updateModel.error;
+          } finally {
+            heldFavorite.release();
+            await pendingFavorite;
+          }
+          expect(updateModel.resources['/favorites'], same(freshFavorite));
+          expect(
+            updateModel.error,
+            freshFavoriteError,
+            reason: '${fail ? '失败' : '成功'}旧回执不能归入同地址的新游戏进程',
+          );
+        }
+
+        // 短暂断线后恢复到相同 session/day/night，仍须撤销旧在途 GET 的单飞身份。
+        // 这里只令隔离 HTTP 快照读取失败，不重建模型或连接，也不靠切页改变订阅代次。
+        final beforeDisconnect = (
+          updateModel.connectionVersion,
+          updateModel.snapshot['automationSessionId'],
+          updateModel.snapshot['runtimeDaySceneGeneration'],
+          updateModel.snapshot['nightBusinessGeneration'],
+        );
+        final disconnectedFavorite = http.holdNext(
+          'GET',
+          '/favorites',
+          failAfterRelease: true,
+        );
+        final pendingDisconnectedFavorite = updateModel.readResource(
+          '/favorites',
+        );
+        late final DataMap recoveredFavorites;
+        late final String recoveredError;
+        try {
+          await disconnectedFavorite.arrived.future.timeout(
+            const Duration(seconds: 3),
+          );
+          http.failedReads.add('/snapshot');
+          for (
+            var attempt = 0;
+            attempt < 3 && updateModel.connected;
+            attempt++
+          ) {
+            await updateModel.refresh();
+          }
+          expect(updateModel.connected, isFalse);
+          http.failedReads.remove('/snapshot');
+          for (
+            var attempt = 0;
+            attempt < 3 && !updateModel.connected;
+            attempt++
+          ) {
+            await updateModel.refresh();
+          }
+          expect(updateModel.connected, isTrue, reason: updateModel.error);
+          expect((
+            updateModel.connectionVersion,
+            updateModel.snapshot['automationSessionId'],
+            updateModel.snapshot['runtimeDaySceneGeneration'],
+            updateModel.snapshot['nightBusinessGeneration'],
+          ), beforeDisconnect);
+          final callsBeforeRecovery = http.requests['GET /favorites'] ?? 0;
+          await updateModel
+              .readResource('/favorites')
+              .timeout(const Duration(seconds: 3));
+          expect(
+            http.requests['GET /favorites'],
+            greaterThan(callsBeforeRecovery),
+          );
+          recoveredFavorites = updateModel.resources['/favorites']!;
+          recoveredError = updateModel.error;
+        } finally {
+          http.failedReads.remove('/snapshot');
+          disconnectedFavorite.release();
+          await pendingDisconnectedFavorite;
+        }
+        expect(updateModel.resources['/favorites'], same(recoveredFavorites));
+        expect(updateModel.error, recoveredError);
+
+        // 更新状态协议使用 POST，但此端点只读。真实回复正文不替换：用 Map 身份证明
+        // 后取得的新会话状态没有被内容恰好相同的旧状态覆盖，避免仅比文本漏掉回归。
+        await changeUpdateSession('before');
+        await updateModel.readResource('/updates/status');
+        final heldRead = http.holdNext('POST', '/updates/status');
+        final pendingRead = updateModel.readResource('/updates/status');
+        late final DataMap freshReadStatus;
+        late final String freshReadNotice, freshReadError;
+        late final List<int> freshReadOperations;
+        try {
+          await heldRead.arrived.future.timeout(const Duration(seconds: 3));
+          await changeUpdateSession('after');
+          await updateModel.readResource('/updates/status');
+          freshReadStatus = updateModel.resources['/updates/status']!;
+          freshReadNotice = updateModel.notice;
+          freshReadError = updateModel.error;
+          freshReadOperations = updateModel.recentOperations
+              .map((entry) => entry.id)
+              .toList();
+        } finally {
+          heldRead.release();
+          await pendingRead;
+        }
+        expect(updateModel.resources['/updates/status'], same(freshReadStatus));
+        expect(updateModel.notice, freshReadNotice);
+        expect(updateModel.error, freshReadError);
+        expect(
+          updateModel.recentOperations.map((entry) => entry.id).toList(),
+          freshReadOperations,
+        );
+
+        // 更新服务在宿主中 Enabled=false/AutoCheck=false，真实 /updates/check 只返回
+        // “已关闭”而不访问网络。额外成功正文仅为客户端时序夹具；另外保留真实拒绝与
+        // 接收后传输异常两条失败路径，三者都不得向新会话写状态、notice 或操作记录。
+        for (final outcome in ['success', 'rejected', 'transport-failure']) {
+          await changeUpdateSession('before');
+          await updateModel.readResource('/updates/status');
+          final callsBefore = http.requests['POST /updates/check'] ?? 0;
+          final heldWrite = http.holdNext(
+            'POST',
+            '/updates/check',
+            replacement: outcome == 'success'
+                ? {
+                    'ok': true,
+                    'state': 'available',
+                    'currentVersion': 'synthetic-before',
+                    'latestVersion': 'synthetic-late-response',
+                    'hasUpdate': true,
+                    'error': null,
+                  }
+                : null,
+            failAfterRelease: outcome == 'transport-failure',
+          );
+          final pendingWrite = updateModel.mutate('/updates/check');
+          late final DataMap freshStatus;
+          late final String freshNotice, freshError;
+          late final List<int> freshOperations;
+          try {
+            await heldWrite.arrived.future.timeout(const Duration(seconds: 3));
+            expect(heldWrite.originalBody?['state'], 'disabled');
+            expect(heldWrite.originalBody?['error'], contains('自动更新已关闭'));
+            await changeUpdateSession('after');
+            await updateModel.readResource('/updates/status');
+            freshStatus = updateModel.resources['/updates/status']!;
+            freshNotice = updateModel.notice;
+            freshError = updateModel.error;
+            freshOperations = updateModel.recentOperations
+                .map((entry) => entry.id)
+                .toList();
+          } finally {
+            heldWrite.release();
+            await pendingWrite;
+          }
+          expect(
+            updateModel.resources['/updates/status'],
+            same(freshStatus),
+            reason: '$outcome 的旧状态不能覆盖新游戏进程。',
+          );
+          expect(updateModel.notice, freshNotice, reason: outcome);
+          expect(updateModel.error, freshError, reason: outcome);
+          expect(
+            updateModel.recentOperations.map((entry) => entry.id).toList(),
+            freshOperations,
+            reason: '$outcome 的过期操作不能记作新会话成功或失败。',
+          );
+          expect(http.requests['POST /updates/check'], callsBefore + 1);
+        }
+
         await model.mutate('/devices/sync', body: {'deviceId': id});
         expect(model.authority['pendingSyncId'], isNull, reason: model.error);
         final stored = jsonMap(jsonDecode(await native.file.readAsString()));

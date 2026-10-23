@@ -5,15 +5,29 @@ import '../app/workbench_model.dart';
 import '../ui/components.dart';
 import '../ui/page_activity.dart';
 import '../ui/steward_style.dart';
+import '../ui/steward_select.dart';
+import '../ui/setting_control_row.dart';
 import 'help_browser.dart';
 import 'profile_controls.dart';
 import 'settings_management.dart';
+import 'update_content.dart';
+import 'device_name_editor.dart';
 
 /// 设置将本机外观、共享业务配置和宿主管理明确分组，设备角色与操作限制持续可见。
 class SettingsPage extends StatefulWidget {
-  const SettingsPage(this.model, {this.active = true, super.key});
+  const SettingsPage(
+    this.model, {
+    this.active = true,
+    this.requestedTab,
+    this.navigationRevision = 0,
+    super.key,
+  });
   final WorkbenchModel model;
   final bool active;
+
+  /// 外部更新提醒仅请求切到一个有效设置页签；修订递增才接受同一目标的再次导航。
+  final String? requestedTab;
+  final int navigationRevision;
   @override
   State<SettingsPage> createState() => _SettingsPageState();
 }
@@ -27,7 +41,9 @@ class _SettingsPageState extends State<SettingsPage>
     'diagnostics': '诊断',
     'help': '帮助',
   };
-  String tab = 'connection';
+  late String tab = destinations.containsKey(widget.requestedTab)
+      ? widget.requestedTab!
+      : 'connection';
   // 页面会早于原生初始化创建；保存字段上次实际绑定的值，不能用可变模型的旧引用比较。
   // 与该基线不同的文本是用户草稿，后台初始化、连接切换和轮询都不能覆盖它。
   late String _boundEndpoint = widget.model.endpoint;
@@ -61,6 +77,16 @@ class _SettingsPageState extends State<SettingsPage>
   @override
   void didUpdateWidget(covariant SettingsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.navigationRevision != widget.navigationRevision &&
+        destinations.containsKey(widget.requestedTab)) {
+      tab = widget.requestedTab!;
+      // didUpdateWidget 已会触发 build；资源读取仍推迟至帧结束，不在重建中通知模型。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || !widget.active) return;
+        model.clearResourceSubscription();
+        loadActiveResource();
+      });
+    }
     _boundEndpoint = _synchronizeConnectionField(
       endpoint,
       _boundEndpoint,
@@ -165,9 +191,19 @@ class _SettingsPageState extends State<SettingsPage>
   }
 
   bool get _connectionPending => _submittingConnection || model.connecting;
+  bool get _registeredDevice {
+    final id = model.authority['currentDeviceId'];
+    return id is String &&
+        id.isNotEmpty &&
+        records(model.authority['devices'])
+                .where((item) => item['deviceId'] == id)
+                .length ==
+            1;
+  }
+
   bool get _hasConnectionDraft =>
       endpoint.text != model.endpoint ||
-      deviceLabel.text != model.clientLabel ||
+      !_registeredDevice && deviceLabel.text != model.clientLabel ||
       token.text != _boundConnectionToken;
 
   String get _deviceRole =>
@@ -182,6 +218,10 @@ class _SettingsPageState extends State<SettingsPage>
     if (!model.canEditConnection || _connectionPending || model.busy) return;
     final submittedEndpoint = endpoint.value;
     final submittedLabel = deviceLabel.value;
+    final registered = _registeredDevice;
+    final connectionLabel = registered
+        ? model.clientLabel
+        : submittedLabel.text;
     final submittedToken = token.value;
     final requestedModel = model;
     setState(() {
@@ -192,7 +232,7 @@ class _SettingsPageState extends State<SettingsPage>
       await requestedModel.connect(
         submittedEndpoint.text,
         submittedToken.text,
-        submittedLabel.text,
+        connectionLabel,
       );
       if (!mounted ||
           !identical(requestedModel, model) ||
@@ -203,9 +243,9 @@ class _SettingsPageState extends State<SettingsPage>
       // 收起表单；新草稿或composing保留在原controller上，不能被成功通知清掉。
       final retainEditor =
           endpoint.value != submittedEndpoint ||
-          deviceLabel.value != submittedLabel ||
+          !registered && deviceLabel.value != submittedLabel ||
           token.value != submittedToken ||
-          [endpoint, deviceLabel, token].any(
+          [endpoint, if (!registered) deviceLabel, token].any(
             (controller) =>
                 controller.value.composing.isValid &&
                 !controller.value.composing.isCollapsed,
@@ -243,6 +283,7 @@ class _SettingsPageState extends State<SettingsPage>
   }
 
   Widget _connectionPanel() {
+    final registered = _registeredDevice;
     final editing =
         model.canEditConnection &&
         (!model.connected || _editingConnection || _submittingConnection);
@@ -277,11 +318,13 @@ class _SettingsPageState extends State<SettingsPage>
         const SizedBox(height: 8),
         const _SettingsNote('同一地址留空 Token 会沿用已保存凭据；更换地址时请填写该电脑的 Token。'),
         const SizedBox(height: 8),
-        StewardField(
-          '设备名称',
-          controller: deviceLabel,
-          onChanged: (_) => _editConnection(),
-        ),
+        // 已注册设备改名必须走独立 rename 回执，不能仅靠重连接修改请求头。
+        if (!registered)
+          StewardField(
+            '设备名称',
+            controller: deviceLabel,
+            onChanged: (_) => _editConnection(),
+          ),
         ToolRow([
           StewardButton(
             _connectionPending
@@ -411,7 +454,8 @@ class _SettingsPageState extends State<SettingsPage>
             value: tab,
             onChanged: _select,
           ),
-          const SizedBox(height: 12),
+          // 主页签已经统一提供正文间距；此处不能再叠加页面专属留白，
+          // 否则与推荐、数据和扩展等同级页面的内容起点不一致。
           Expanded(child: content),
         ],
       ),
@@ -439,6 +483,8 @@ class _SettingsPageState extends State<SettingsPage>
     return [
       _connectionPanel(),
       Section('设备与共享配置', [
+        DeviceNameEditor(model),
+        const SizedBox(height: 8),
         Fact('本设备角色', _deviceRole),
         Fact('生效配置版本', model.authority['activeProfileRevision']),
         for (final device in devices)
@@ -576,10 +622,19 @@ class _SettingsPageState extends State<SettingsPage>
 
   List<Widget> _appearance() => [
     Section('显示', [
-      SettingToggle(
-        '深色主题',
-        model.dark,
-        (value) => model.updateLocal({'darkMode': value}),
+      Padding(
+        padding: StewardDensity.settingPadding,
+        child: SettingControlRow(
+          title: '主题',
+          maxControlWidth: stewardSelectWidth,
+          control: StewardSelect<String>(
+            label: '主题',
+            showLabel: false,
+            items: const {'system': '跟随系统', 'light': '浅色', 'dark': '深色'},
+            value: model.themeMode,
+            onChanged: (value) => model.updateLocal({'themeMode': value}),
+          ),
+        ),
       ),
       SettingToggle(
         '减少动效',
@@ -587,6 +642,11 @@ class _SettingsPageState extends State<SettingsPage>
         (value) => model.updateLocal({'reduceMotion': value}),
       ),
       _localNumber('字体缩放', 'fontScalePercent', 100, 90, 150),
+      SettingToggle(
+        '手柄导航',
+        model.localPreferences['gamepadNavigation'] != false,
+        (value) => model.updateLocal({'gamepadNavigation': value}),
+      ),
       if (model.desktop) ...[
         const _SettingsNote('背景不透明度影响页面和控件填充；内容不透明度影响文字、图标与边框。'),
         _localNumber('背景不透明度', 'backgroundOpacityPercent', 100, 20, 100),
@@ -599,7 +659,6 @@ class _SettingsPageState extends State<SettingsPage>
           'alwaysOnTop': '窗口置顶',
           'mousePassthrough': '鼠标穿透（F10 恢复）',
           'keepVisible': '切回游戏时保持可见',
-          'gamepadNavigation': '手柄导航',
         }.entries)
           SettingToggle(
             entry.value,
@@ -646,65 +705,9 @@ class _SettingsPageState extends State<SettingsPage>
     max: max,
     onSave: (value) => model.updateLocal({key: value}),
   );
-  List<Widget> _updates(BuildContext context) {
-    final state =
-        model.resources['/updates/status'] ?? const <String, Object?>{};
-    return [
-      Section('成套更新', [
-        Fact('当前版本', state['currentVersion']),
-        Fact('最新版本', state['latestVersion']),
-        Fact('状态', state['state']),
-        Fact('安装状态', state['installMessage']),
-        if (label(state['error'], '').isNotEmpty)
-          Fact('最近更新错误', state['error']),
-        if (label(state['releaseNotesError'], '').isNotEmpty)
-          Fact('版本说明错误', state['releaseNotesError']),
-        ToolRow([
-          StewardButton(
-            '刷新状态',
-            onPressed: model.connected
-                ? () => model.readResource('/updates/status')
-                : null,
-          ),
-        ]),
-        ToolRow([
-          StewardButton(
-            '检查更新',
-            onPressed: model.connected && !model.busy
-                ? () => model.mutate('/updates/check')
-                : null,
-          ),
-          StewardButton(
-            '下载整包',
-            onPressed: model.canEdit && state['hasUpdate'] == true
-                ? () => model.mutate('/updates/download')
-                : null,
-          ),
-          StewardButton(
-            '退出游戏后安装',
-            onPressed: model.canEdit && model.desktop && state['staged'] == true
-                ? () async {
-                    if (await confirmCurrentAction(
-                      context,
-                      model,
-                      '安装更新',
-                      '保存游戏进度并正常退出。独立更新程序会确认客户端退出、校验整包并在失败时恢复备份。',
-                    ))
-                      await model.mutate(
-                        '/updates/install-on-exit',
-                        localOnly: true,
-                      );
-                  }
-                : null,
-          ),
-        ]),
-        for (final release in records(state['availableReleases']))
-          CollapsibleSection(label(release['title']), [
-            Text(label(release['notesMarkdown'])),
-          ]),
-      ]),
-    ];
-  }
+  List<Widget> _updates(BuildContext context) => [
+    SettingsUpdatesSection(model),
+  ];
 
   List<Widget> _diagnostics() {
     final logs = model.resources['/logs/settings'] ?? const <String, Object?>{};

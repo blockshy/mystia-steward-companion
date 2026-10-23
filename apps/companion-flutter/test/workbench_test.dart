@@ -227,11 +227,15 @@ void main() {
     };
     addTearDown(model.dispose);
     await launch(tester, model, const Size(1280, 800));
-    expect(model.reads, isEmpty);
+    expect(model.reads, ['/favorites'], reason: '默认经营页读取收藏；隐藏扩展仍不能提前读取任务或邀请。');
     await tester.tap(find.text('扩展').last);
     await tester.pumpAndSettle();
     // 首个 Tab 就是任务；显式启用的本机模块进入时才开始读取。
-    expect(model.reads, ['/missions/tracked']);
+    expect(model.reads, [
+      '/favorites',
+      '/missions/tracked',
+      '/missions/available',
+    ]);
     await tester.tap(find.text('稀客邀请'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('经营').last);

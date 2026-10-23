@@ -29,7 +29,14 @@ internal sealed class LocalApiTrackedMissionDto
     public string Status { get; init; } = "";
     public int ConditionCount { get; init; }
     public int? CompletedConditionCount { get; init; }
-    public IReadOnlyList<bool?> ConditionStates { get; init; } = Array.Empty<bool?>();
+    public IReadOnlyList<LocalApiMissionConditionDto> Conditions { get; init; } = Array.Empty<LocalApiMissionConditionDto>();
+}
+
+/// <summary>一个对象同时携带条件内容及其完成事实，防止客户端把两份数组错位拼接。</summary>
+internal sealed class LocalApiMissionConditionDto
+{
+    public string Description { get; init; } = "";
+    public bool? Completed { get; init; }
 }
 
 internal sealed class LocalApiTrackedMissionsUnchangedDto
@@ -60,14 +67,16 @@ internal static class LocalApiTrackedMissionsPayload
         ArgumentNullException.ThrowIfNull(snapshot);
         ArgumentNullException.ThrowIfNull(jsonOptions);
         if (snapshot.Missions.Any(mission =>
-                !IsValidPresentation(
+                mission.ConditionStates.Count != mission.ConditionCount
+                || mission.ConditionDescriptions.Count != mission.ConditionCount
+                || !IsValidPresentation(
                     mission.ReceiverLabel,
                     mission.CharacterName,
                     mission.SceneNames,
                     mission.PresentationStatus)))
         {
             throw new InvalidOperationException(
-                "Tracked mission presentation fields are invalid.");
+                "Tracked mission condition or presentation fields are invalid.");
         }
 
         var missions = snapshot.Missions
@@ -82,7 +91,11 @@ internal static class LocalApiTrackedMissionsPayload
                 Status = MissionStatusValue(mission.Status),
                 ConditionCount = mission.ConditionCount,
                 CompletedConditionCount = mission.CompletedConditionCount,
-                ConditionStates = mission.ConditionStates.ToArray(),
+                Conditions = mission.ConditionStates.Select((completed, index) => new LocalApiMissionConditionDto
+                {
+                    Description = mission.ConditionDescriptions[index],
+                    Completed = completed,
+                }).ToArray(),
             })
             .ToArray();
         var content = new LocalApiTrackedMissionsContentDto

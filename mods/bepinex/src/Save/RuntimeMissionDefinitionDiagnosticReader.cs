@@ -1,11 +1,13 @@
 using System.Globalization;
 using System.Reflection;
+using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
 internal sealed record RuntimeMissionDefinitionDiagnosticCondition(
     int Type,
-    int Amount);
+    int Amount,
+    string Description = "");
 
 internal sealed record RuntimeMissionDefinitionDiagnostic(
     string Label,
@@ -38,6 +40,7 @@ internal static class RuntimeMissionDefinitionDiagnosticReader
     private const string ConditionTypeName =
         "GameData.Profile.SchedulerNodeCollection.MissionNode+FinishCondition+ConditionType";
     private const string LanguageBaseTypeName = "GameData.CoreLanguage.LanguageBase";
+    private const string MissionStatusTypeName = "GameData.RunTime.Common.RunTimeScheduler+MissionStatus";
     private const string Il2CppDictionaryTypeName = "Il2CppSystem.Collections.Generic.Dictionary`2";
     private const string Il2CppReferenceArrayTypeName =
         "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray`1";
@@ -47,9 +50,16 @@ internal static class RuntimeMissionDefinitionDiagnosticReader
     private static readonly object ShapeRoot = new();
     private static RuntimeMissionDefinitionShape? _definitionShape;
     private static RuntimeMissionLanguageShape? _languageShape;
+    private static RuntimeMissionConditionTextShape? _conditionTextShape;
 
-    // Callers must invoke this reader on the Unity main thread. Native objects never escape the method.
-    public static RuntimeMissionDefinitionDiagnosticReadResult Read(string trustedLabel)
+    /// <summary>
+    /// 调用方必须位于 Unity 主线程，任何 native 对象均不逃出读取方法。
+    /// 条件描述仅供活动任务在读档/新任务边界捕获；可接取来源的 fresh read 默认跳过，
+    /// 避免每次浏览刷新都重复本地化不需要展示的条件，保持原有调度读取成本。
+    /// </summary>
+    public static RuntimeMissionDefinitionDiagnosticReadResult Read(
+        string trustedLabel,
+        bool includeConditionDescriptions = false)
     {
         if (string.IsNullOrWhiteSpace(trustedLabel))
         {
@@ -144,7 +154,9 @@ internal static class RuntimeMissionDefinitionDiagnosticReader
                 }
 
                 var typeValue = Convert.ToInt32(rawConditionType, CultureInfo.InvariantCulture);
-                conditions[index] = new RuntimeMissionDefinitionDiagnosticCondition(typeValue, amount);
+                conditions[index] = new RuntimeMissionDefinitionDiagnosticCondition(
+                    typeValue, amount,
+                    includeConditionDescriptions ? TryReadConditionDescription(condition) : "");
                 if (typeValue == ServeInWorkConditionType)
                 {
                     if (amount < 0)
@@ -175,6 +187,58 @@ internal static class RuntimeMissionDefinitionDiagnosticReader
                 $"mission-definition-read-failed:{DescribeException(ex)}");
         }
     }
+
+    /// <summary>
+    /// 使用游戏自己的本地化条件描述，不根据 amount/tag 的数值猜测语义。
+    /// 当前 metadata / #783 interop 对应 GetText(MissionStatus)，RVA 0x7A9EA0；
+    /// Native 的 Finished(2) 分支对组合任务/事件仅拼接名称，避免 Tracking 分支
+    /// 进一步查询并重新评估子任务完成状态。这里的 Finished 仅选择纯文本格式，
+    /// 绝不写回任务状态；完成事实仍由独立、已验证的 conditionFinishStates 提供。
+    /// 此方法只在既有有界定义读取中执行，返回托管字符串，不增加轮询或全目录扫描。
+    /// </summary>
+    private static string TryReadConditionDescription(object condition)
+    {
+        try
+        {
+            RuntimeMissionConditionTextShape shape;
+            lock (ShapeRoot)
+            {
+                if (_conditionTextShape == null)
+                {
+                    var conditionType = RequireType(FinishConditionTypeName);
+                    var statusType = RequireType(MissionStatusTypeName);
+                    var finished = statusType.GetField(
+                        "Finished", BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly);
+                    if (!statusType.IsEnum || Enum.GetUnderlyingType(statusType) != typeof(int)
+                        || finished == null || !finished.IsLiteral || finished.FieldType != statusType
+                        || Convert.ToInt32(finished.GetRawConstantValue(), CultureInfo.InvariantCulture) != 2)
+                        return "";
+                    var matches = conditionType.GetMethods(
+                            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                        .Where(method => method.Name == "GetText" && !method.IsGenericMethod
+                            && method.ReturnType == typeof(string)
+                            && method.GetParameters().Select(parameter => parameter.ParameterType)
+                                .SequenceEqual(new[] { statusType }))
+                        .Take(2).ToArray();
+                    if (matches.Length != 1) return "";
+                    _conditionTextShape = new RuntimeMissionConditionTextShape(
+                        matches[0], Enum.ToObject(statusType, 2));
+                }
+                shape = _conditionTextShape;
+            }
+            return NormalizeConditionDescription(
+                shape.GetText.Invoke(condition, new[] { shape.DescriptionOnlyStatus }) as string);
+        }
+        catch
+        {
+            // 本地化资料暂不可用不能破坏已确认的条件状态，也不能回退到推测的任务文案。
+            return "";
+        }
+    }
+
+    /// <summary>仅移除游戏的常见富文本样式；保留任务内容、换行及普通比较符号。</summary>
+    internal static string NormalizeConditionDescription(string? text)
+        => GameDisplayText.Normalize(text);
 
     private static RuntimeMissionTitleReadResult TryReadTitle(string label)
     {
@@ -476,6 +540,10 @@ internal static class RuntimeMissionDefinitionDiagnosticReader
         Type LanguageBaseType,
         PropertyInfo Missions,
         PropertyInfo Name);
+
+    private sealed record RuntimeMissionConditionTextShape(
+        MethodInfo GetText,
+        object DescriptionOnlyStatus);
 
     private readonly record struct RuntimeMissionTitleReadResult(string Title, string Status)
     {

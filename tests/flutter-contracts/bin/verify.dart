@@ -43,6 +43,7 @@ Future<void> main(List<String> args) async {
   await validateOrderDisplayContinuity();
   await validateSnapshotPresentationToken();
   await validateTransport();
+  await validateRenameMetadata();
   await validateLeaseRace();
   await validateSession();
   await validateSessionResources();
@@ -397,6 +398,7 @@ class FakeTransport implements CompanionTransport {
   )
   handler;
   final List<String> paths = [];
+  final List<ApiConnection> connections = [];
   final List<({String path, Map<String, String> query})> requestQueries = [];
   @override
   Future<JsonMap> request(
@@ -409,6 +411,7 @@ class FakeTransport implements CompanionTransport {
     Duration timeout = const Duration(seconds: 5),
   }) {
     paths.add(path);
+    connections.add(connection);
     requestQueries.add((path: path, query: Map<String, String>.of(query)));
     // 普通夹具只提供无副作用的会话打开/撤销；逆序与 TTL 由独立真实协议回归覆盖。
     if (handlePageSessions && path == '/business/page-session/open') {
@@ -432,6 +435,80 @@ class FakeTransport implements CompanionTransport {
 
   @override
   void close() {}
+}
+
+/// 只使用合成传输。确认显示名切换不会修改旧请求对象或地址/密钥/设备身份；
+/// 同时覆盖在途读取、并发改名排队、明确失败和缺少唯一确认记录的拒绝路径。
+Future<void> validateRenameMetadata() async {
+  final original = connection(32145);
+  final gate = Completer<JsonMap>(), entered = Completer<void>();
+  final oldRead = Completer<JsonMap>();
+  var renameCount = 0;
+  final transport = FakeTransport((method, path, body, revision) async {
+    if (path == '/slow-read') return oldRead.future;
+    if (path != '/devices/rename') return {'ok': true};
+    renameCount++;
+    if (renameCount == 1) {
+      entered.complete();
+      return gate.future;
+    }
+    if (body?['label'] == '失败') return {'ok': false, 'error': '合成改名失败'};
+    final state = authorityJson();
+    state['devices'] = <JsonMap>[
+      {'deviceId': original.clientId, 'label': body?['label']},
+    ];
+    if (body?['label'] == '歧义') {
+      state['devices'] = <JsonMap>[
+        ...jsonObjects(state['devices']),
+        {'deviceId': original.clientId, 'label': '歧义'},
+      ];
+    }
+    return state;
+  });
+  final api = CompanionApi(connection: original, transport: transport);
+  final pendingRead = api.read('/slow-read');
+  final first = api.rename('名称一');
+  await entered.future;
+  final second = api.rename('名称二');
+  await Future<void>.delayed(Duration.zero);
+  check(renameCount == 1, '并发改名必须排队，不能让迟到回执覆盖后发请求。');
+  final firstResult = authorityJson();
+  firstResult['devices'] = <JsonMap>[
+    {'deviceId': original.clientId, 'label': '名称一'},
+  ];
+  gate.complete(firstResult);
+  await first;
+  await second;
+  check(
+    api.connection.clientLabel == '名称二' && renameCount == 2,
+    '改名成功后必须采用最后确认名称。',
+  );
+  check(
+    identical(transport.connections.first, original) &&
+        original.clientLabel == '中文设备',
+    '改名不能修改已发出的旧连接对象。',
+  );
+  check(transport.connections[2].clientLabel == '名称一', '后续改名请求应携带上一已确认名称。');
+  oldRead.complete({'ok': true});
+  await pendingRead;
+  await api.read('/after-rename');
+  check(transport.connections.last.clientLabel == '名称二', '后续普通请求和租约必须携带新名称。');
+  final confirmed = api.connection;
+  try {
+    await api.rename('失败');
+    throw StateError('失败响应不应被接受。');
+  } on ApiException {
+    check(identical(api.connection, confirmed), '失败改名不能替换连接元数据。');
+  }
+  await expectApiError(() => api.rename('歧义'), 'rename-unconfirmed');
+  check(
+    identical(api.connection, confirmed) &&
+        confirmed.endpoint == original.endpoint &&
+        confirmed.token == original.token &&
+        confirmed.clientId == original.clientId,
+    '缺少唯一确认及成功改名都不得改变地址、Token或设备身份。',
+  );
+  transport.close();
 }
 
 Future<void> validateLeaseRace() async {
@@ -833,6 +910,7 @@ Future<void> validateSession() async {
   var failPersistence = false;
   var failSnapshot = false;
   var writes = 0;
+  var resetRequests = 0;
   final transport = FakeTransport((method, path, body, revision) async {
     if (path == '/health') return {'clientProtocolVersion': 2};
     if (path == '/devices/register' || path == '/devices') return authority;
@@ -849,6 +927,21 @@ Future<void> validateSession() async {
       );
     if (path == '/automation/lease/acquire') return leaseJson();
     if (path == '/automation/lease/release') return leaseJson(owned: false);
+    if (path == '/business/automation/reset') {
+      resetRequests++;
+      check(
+        method == 'POST' && revision == authority['authorityRevision'],
+        '重置缺少当前设备权威修订。',
+      );
+      check(
+        body?['kind'] == 'normal' &&
+            body?['key'] == 'N-1|lifecycle:1' &&
+            body?['automationSessionId'] == snapshot['automationSessionId'] &&
+            body?['businessGeneration'] == snapshot['nightBusinessGeneration'],
+        '重置未携带精确经营及订单边界。',
+      );
+      return {'ok': true};
+    }
     if (path == '/business/page-session/update')
       return {
         'protocolVersion': 1,
@@ -911,6 +1004,26 @@ Future<void> validateSession() async {
     'interaction-changed',
   );
   check(!transport.paths.contains('/automation/barriers/ack'), '旧确认被重新绑定到新进程。');
+  await expectApiError(
+    () => session.reset(
+      'normal',
+      'N-1|lifecycle:1',
+      expectedSessionId: 'session-1',
+      expectedGeneration: session.state.snapshot!.nightBusinessGeneration,
+    ),
+    'interaction-changed',
+  );
+  check(
+    !transport.paths.contains('/business/automation/reset'),
+    '旧重置确认被重新绑定到新进程。',
+  );
+  await session.reset(
+    'normal',
+    'N-1|lifecycle:1',
+    expectedSessionId: session.state.snapshot!.automationSessionId,
+    expectedGeneration: session.state.snapshot!.nightBusinessGeneration,
+  );
+  check(resetRequests == 1, '有效重置应只提交一次并正常刷新。');
   failSnapshot = true;
   await session.refresh();
   check(

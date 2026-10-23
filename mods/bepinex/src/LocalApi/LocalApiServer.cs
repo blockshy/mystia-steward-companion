@@ -619,6 +619,9 @@ internal sealed partial class LocalApiServer : IDisposable
                     case "/business/automation/retry":
                         WriteResponse(stream, 200, "OK", RetryBusinessAutomation(request, requestData));
                         break;
+                    case "/business/automation/reset":
+                        WriteResponse(stream, 200, "OK", ResetBusinessAutomation(request, requestData));
+                        break;
                     case "/devices/register":
                         WriteResponse(stream, 200, "OK", ToJson(RegisterCompanionDevice(request, requestData)));
                         break;

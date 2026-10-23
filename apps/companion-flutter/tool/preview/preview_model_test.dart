@@ -6,6 +6,10 @@ import 'rich_preview_workbench_model.dart';
 /// 此测试只保护独立预览的可交互性与隔离边界，不证明真实 Mod 行为。
 /// 所有输入均为合成数据；没有生产会话、HTTP、平台初始化或持久化依赖。
 void main() {
+  // 三态主题会读取 Flutter 的系统亮度端口；建立测试绑定即可，不初始化原生平台、
+  // 生产会话或持久化。显式主题与旧布尔迁移仍由下方原有断言验证。
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('连接管理与诊断包仅改变合成内存，操作历史不含Token且读取不新增记录', () async {
     final model = RichPreviewWorkbenchModel();
     addTearDown(model.dispose);
@@ -264,6 +268,8 @@ void main() {
       query: {
         'mode': 'customer',
         'expectedModeRevision': '0',
+        // 与产品单条按钮及正式 API 一致，明确选择 entry；缺失范围不是单条默认值。
+        'scope': 'entry',
         'id': '$id',
         'enabled': 'false',
       },
@@ -587,6 +593,117 @@ void main() {
     expect(model.canEdit, isFalse);
     expect(model.profile['automationEnabled'], isTrue);
     expect(model.canExecute, isFalse);
+  });
+
+  test('统计预览包含尚未点单稀客及明确合成挑战，日间撤销夜间数据', () {
+    final model = RichPreviewWorkbenchModel();
+    addTearDown(model.dispose);
+    final guests = records(model.night['activeRareGuests']);
+    final orders = records(model.night['orders']);
+    expect(guests, hasLength(9));
+    expect(orders, hasLength(8));
+    expect(guests.last['guestName'], contains('尚未点单'));
+    expect(
+      orders.any((row) => row['guestId'] == guests.last['guestId']),
+      isFalse,
+    );
+    final challenge = object(model.snapshot['specialBusiness']);
+    expect(challenge['source'], '离线合成数据');
+    expect(challenge['active'], isTrue);
+    expect(challenge['targetTagTimeProgress'], .6);
+    model.selectScenario('day');
+    expect(records(model.night['activeRareGuests']), isEmpty);
+    expect(model.snapshot['specialBusiness'], isNull);
+  });
+
+  test('合成重置只清指定订单规划，保留现场、其它任务和送达事实', () async {
+    final model = RichPreviewWorkbenchModel();
+    addTearDown(model.dispose);
+    final snapshot = model.snapshot;
+    final recommendations = model.business['recommendations'];
+    final other = records(model.automation['rareDiagnostics']).first;
+    final normal = records(model.automation['normalDiagnostics']);
+    final target = normal.last;
+    expect(target['canReset'], isTrue);
+    expect(target['hasServedFood'], isTrue);
+    await model.resetOrder(
+      'normal',
+      target['orderKey']! as String,
+      expectedSessionId: model.snapshot['automationSessionId']! as String,
+      expectedGeneration: model.snapshot['nightBusinessGeneration']! as int,
+    );
+    final changed = records(model.automation['normalDiagnostics']).last;
+    expect(model.error, isEmpty);
+    expect(identical(model.snapshot, snapshot), isTrue);
+    expect(
+      identical(model.business['recommendations'], recommendations),
+      isTrue,
+    );
+    expect(records(model.automation['rareDiagnostics']).first, other);
+    expect(changed['stepLabel'], '等待重新规划');
+    expect(changed['targetSource'], '');
+    expect(changed['foodId'], isNull);
+    expect(changed['hasServedFood'], isTrue);
+    expect(changed['hasServedBeverage'], target['hasServedBeverage']);
+    expect(
+      changed['lastRuntimeEventSequence'],
+      target['lastRuntimeEventSequence'],
+    );
+    expect(model.recentOperations.single.name, '重置订单规划');
+  });
+
+  test('合成重置拒绝过期会话、活动锅次和人工屏障，不靠按钮状态保证安全', () async {
+    final model = RichPreviewWorkbenchModel();
+    addTearDown(model.dispose);
+    final session = model.snapshot['automationSessionId']! as String;
+    final generation = model.snapshot['nightBusinessGeneration']! as int;
+    model.selectScenario('night');
+    final automation = model.business['automation'];
+    await model.resetOrder(
+      'rare',
+      'preview-rare-1',
+      expectedSessionId: session,
+      expectedGeneration: generation,
+    );
+    expect(model.error, contains('会话'));
+    expect(identical(model.business['automation'], automation), isTrue);
+    // 故意把展示布尔改成可用，仍应由当前锅次与明确限制再次拒绝。
+    records(model.automation['rareDiagnostics'])[3]['canReset'] = true;
+    await model.resetOrder(
+      'rare',
+      'preview-rare-3',
+      expectedSessionId: model.snapshot['automationSessionId']! as String,
+      expectedGeneration: model.snapshot['nightBusinessGeneration']! as int,
+    );
+    expect(model.error, contains('料理任务'));
+    model.selectScenario('barrier');
+    final barriers = model.automation['safetyBarriers'];
+    await model.resetOrder(
+      'rare',
+      'preview-rare-0',
+      expectedSessionId: model.snapshot['automationSessionId']! as String,
+      expectedGeneration: model.snapshot['nightBusinessGeneration']! as int,
+    );
+    expect(model.error, contains('人工确认'));
+    expect(model.automation['safetyBarriers'], barriers);
+  });
+
+  test('检查合成更新可触发全局提醒，说明为就绪Markdown且不调用宿主', () async {
+    var exits = 0;
+    final model = RichPreviewWorkbenchModel(onExit: () async => exits++);
+    addTearDown(model.dispose);
+    expect(model.resources['/updates/status']!['hasUpdate'], isFalse);
+    await model.mutate('/updates/check');
+    final updates = model.resources['/updates/status']!;
+    expect(updates['hasUpdate'], isTrue);
+    expect(updates['enabled'], isTrue);
+    expect(updates['releaseHistoryState'], 'ready');
+    expect(
+      records(updates['availableReleases']).single['notesMarkdown'],
+      contains('## 离线验收样本'),
+    );
+    expect(exits, 0);
+    expect(model.error, isEmpty);
   });
 
   test('仅明确退出调用注入的宿主动作，偏好和其他命令只改变内存', () async {

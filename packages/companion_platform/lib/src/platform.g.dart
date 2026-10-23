@@ -447,6 +447,28 @@ class PlatformHostApi {
     return pigeonVar_replyValue! as bool;
   }
 
+  /// 仅打开本项目 GitHub 发布页。原生端再次校验 URL，不能启动任意协议或文件。
+  Future<bool> openExternalUrl(String url) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.companion_platform.PlatformHostApi.openExternalUrl$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(
+      <Object?>[url],
+    );
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as bool;
+  }
+
   Future<PlatformInput> pollInput() async {
     final pigeonVar_channelName =
         'dev.flutter.pigeon.companion_platform.PlatformHostApi.pollInput$pigeonVar_messageChannelSuffix';

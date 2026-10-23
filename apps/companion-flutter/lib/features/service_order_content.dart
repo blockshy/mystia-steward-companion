@@ -8,6 +8,7 @@ import '../ui/menu_item_content.dart';
 import '../ui/steward_style.dart';
 import 'service_menu_adapter.dart';
 import 'service_plan_placeholder.dart';
+import 'service_favorites.dart';
 
 /// 订单标题统一占据左列，进度标签只在右列换行；避免把送达状态分散到菜品正文。
 /// 右列受实际可用宽度约束，长中文与大字号可以增加高度，不截断、不缩小命中区域。
@@ -138,31 +139,33 @@ class ServiceOrderSummary extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (rare)
-          _Tags([
-            OrderTag(
-              '料理：${label(order['foodTag'])}',
-              kind: OrderTagKind.request,
-            ),
-            OrderTag(
-              '酒水：${label(order['beverageTag'])}',
-              kind: OrderTagKind.request,
-            ),
-          ])
-        else
-          _Tags([
-            ServiceOriginalOrderTag(
-              object(item['originalFood']),
-              food: true,
-              labelRole: true,
-            ),
-            ServiceOriginalOrderTag(
-              object(item['originalBeverage']),
-              food: false,
-              labelRole: true,
-            ),
-          ]),
-        ServiceOrderStatus(item, rare: rare),
+        ServiceOrderStatus(
+          item,
+          rare: rare,
+          leading: [
+            if (rare) ...[
+              OrderTag(
+                '料理：${label(order['foodTag'])}',
+                kind: OrderTagKind.request,
+              ),
+              OrderTag(
+                '酒水：${label(order['beverageTag'])}',
+                kind: OrderTagKind.request,
+              ),
+            ] else ...[
+              ServiceOriginalOrderTag(
+                object(item['originalFood']),
+                food: true,
+                labelRole: true,
+              ),
+              ServiceOriginalOrderTag(
+                object(item['originalBeverage']),
+                food: false,
+                labelRole: true,
+              ),
+            ],
+          ],
+        ),
         const MenuItemDivider(),
         // 订单事实即时显示；尚未返回的推荐使用同结构占位，不把原点料理冒充执行结果。
         // 常态 current/pending 信封变化仍只更新页头；这里仅依据逐单精确联结的待加载状态。
@@ -178,7 +181,7 @@ class ServiceOrderSummary extends StatelessWidget {
               if (item['presentationIssue'] is String)
                 Text(label(item['presentationIssue']))
               else if (rare && plans.isNotEmpty)
-                ServicePlanContent(model, plans.first)
+                ServicePlanContent(model, plans.first, favoriteItem: item)
               else if (rare)
                 const _Tags([OrderTag('暂无可执行主方案', kind: OrderTagKind.warning)])
               else
@@ -229,22 +232,27 @@ class ServiceOriginalOrderTag extends StatelessWidget {
   );
 }
 
-/// 订单的业务附注与完整阻断解释。普通送达／评价进度已在标题右侧呈现，不在此重复。
+/// 点单、剩余单数与短业务附注共享一条流式标签带，按实际宽度整体换行。
+/// 不为“免费订单”等少量附注强制占用单独一行；完整阻断原因则作为说明段落保留，
+/// 避免将长句塞进短标签，或把送达／评价进度从标题右侧重复到正文。
 class ServiceOrderStatus extends StatelessWidget {
   const ServiceOrderStatus(
     this.item, {
     required this.rare,
     this.details = false,
+    this.leading = const [],
     super.key,
   });
   final DataMap item;
   final bool rare;
   final bool details;
+  final List<Widget> leading;
   @override
   Widget build(BuildContext context) {
     final order = object(item['order']);
     final block = order[rare ? 'automationBlockReason' : 'actionBlockReason'];
-    return _Tags([
+    final tags = <Widget>[
+      ...leading,
       if (label(order['specialBusinessRoleLabel'], '').isNotEmpty)
         OrderTag(
           label(order['specialBusinessRoleLabel']),
@@ -254,12 +262,24 @@ class ServiceOrderStatus extends StatelessWidget {
         const OrderTag('免费订单', kind: OrderTagKind.success),
       if (item['hasExecutionOverride'] == true)
         const OrderTag('含替换或加料方案', kind: OrderTagKind.request),
-      if (details &&
-          order[rare ? 'automationAllowed' : 'canAutomate'] == false &&
-          label(block, '').isNotEmpty &&
-          block != '暂不可自动处理')
-        OrderTag(label(block), kind: OrderTagKind.warning),
-    ]);
+    ];
+    final showBlock =
+        details &&
+        order[rare ? 'automationAllowed' : 'canAutomate'] == false &&
+        label(block, '').isNotEmpty &&
+        block != '暂不可自动处理';
+    if (tags.isEmpty && !showBlock) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _Tags(tags),
+        if (showBlock)
+          Padding(
+            padding: const EdgeInsets.only(top: 5),
+            child: Text(label(block), style: StewardText.caption),
+          ),
+      ],
+    );
   }
 }
 
@@ -270,12 +290,16 @@ class ServicePlanContent extends StatelessWidget {
     this.plan, {
     this.details = false,
     this.showBasics = true,
+    this.favoriteItem,
     super.key,
   });
   final WorkbenchModel model;
   final DataMap plan;
   final bool details;
   final bool showBasics;
+
+  /// 整笔经营行提供服务端规范化的 customer 与原点单标签，不能从配方名称反查收藏范围。
+  final DataMap? favoriteItem;
   @override
   Widget build(BuildContext context) {
     final food = object(plan['food']);
@@ -294,6 +318,8 @@ class ServicePlanContent extends StatelessWidget {
         const MenuItemDivider(),
         if (showBasics) MenuItemContent(beverageView),
         if (details) MenuItemDetails(beverageView, showName: !showBasics),
+        if (favoriteItem != null)
+          ServiceFavoriteActions(model, favoriteItem!, plan),
         if (details) ...[
           _Tags([
             if (food['customRecipe'] == true)

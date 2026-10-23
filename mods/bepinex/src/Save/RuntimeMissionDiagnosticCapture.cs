@@ -992,7 +992,8 @@ internal static class RuntimeMissionDiagnosticCapture
         foreach (var boundMission in boundMissions)
         {
             var definition = RuntimeMissionDefinitionDiagnosticReader.Read(
-                boundMission.Label);
+                boundMission.Label,
+                includeConditionDescriptions: true);
             if (!definition.Success
                 || definition.Definition == null
                 || !string.Equals(
@@ -1369,7 +1370,8 @@ internal static class RuntimeMissionDiagnosticCapture
             if (!__state.Faulted && __state.GeneratedSeed != null)
             {
                 definition = RuntimeMissionDefinitionDiagnosticReader.Read(
-                    __state.GeneratedSeed.Label);
+                    __state.GeneratedSeed.Label,
+                    includeConditionDescriptions: true);
                 if (!definition.Success
                     || definition.Definition == null
                     || !string.Equals(

@@ -292,6 +292,7 @@ public sealed partial class AutomationCoordinator
         {
             if (!_pending.Remove(requestId, out var request) || !IsCurrent(request)) return;
             if (request.Action == "ack-barrier") { _message = message; return; }
+            _resetUncertainOrders.Add(request.StateKey);
             var state = _states[request.StateKey];
             AutomationMachine.TransportFailure(state, request.Stage, message, nowMs, request.StopOnError, request.MaximumRetries);
             AutomationMachine.Detail(state, message, nowMs);
@@ -370,12 +371,16 @@ public sealed partial class AutomationCoordinator
         _currentOrderKeys.Clear();
         _usedCookers.Clear();
         _rejectedRecipes.Clear();
+        _resetUncertainOrders.Clear();
         _cookerBucket = -1;
         _rejectionScope = "";
     }
 
     private void InvalidateRequests()
     {
+        // 权限撤销不证明排队动作从未开始；没有明确 Abandon 回执的订单保留重置禁用证据。
+        foreach (var request in _pending.Values)
+            if (request.StateKey.Length > 0) _resetUncertainOrders.Add(request.StateKey);
         _scopeVersion++;
         _pending.Clear();
         _continuations.Clear();

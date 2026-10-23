@@ -659,6 +659,28 @@ class CompanionSession {
     await refresh();
   }
 
+  /// 确认窗口使用打开时的经营边界；重连或换场后不能把旧确认绑定到新游戏实例。
+  /// 只调用一次，不在超时后重放。是否有安全可重置状态仍由 C# 协调器最终核验。
+  Future<void> reset(
+    String kind,
+    String key, {
+    required String expectedSessionId,
+    required int expectedGeneration,
+  }) async {
+    final snapshot = _snapshot;
+    if (expectedSessionId.isEmpty ||
+        expectedGeneration <= 0 ||
+        snapshot?.automationSessionId != expectedSessionId ||
+        snapshot?.nightBusinessGeneration != expectedGeneration) {
+      throw const ApiException('interaction-changed', '确认期间经营状态已变化，请重新查看并确认。');
+    }
+    if (!state.canExecute) {
+      throw const ApiException('not-current', '当前状态暂不允许此操作，请刷新后重试。');
+    }
+    await api.reset(kind, key, _authority!, snapshot!);
+    await refresh();
+  }
+
   /// 页面后台、明确暂停和退出复用同一释放流程；Windows 托盘隐藏无需调用本方法。
   Future<void> pause() async {
     _paused = true;

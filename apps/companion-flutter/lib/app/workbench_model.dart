@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show ImageProvider;
+import 'package:flutter/widgets.dart' show Brightness, WidgetsBinding;
 import 'package:companion_protocol/companion_protocol.dart'
     show CompanionProfile;
 import 'package:companion_client/companion_client.dart'
@@ -25,6 +26,25 @@ String words(Object? value) =>
     values(value)
         .map((item) => item is Map ? label(item['name']) : label(item))
         .join(' · ');
+
+/// 旧客户端只保存深色布尔值；三态设置存在后以明确选择为准，避免系统模式被旧键覆盖。
+String workbenchThemeMode(DataMap preferences) {
+  final mode = preferences['themeMode'];
+  if (mode == 'system' || mode == 'light' || mode == 'dark')
+    return mode! as String;
+  if (preferences['darkMode'] is bool) {
+    return preferences['darkMode'] == true ? 'dark' : 'light';
+  }
+  return 'system';
+}
+
+/// 同一解析同时用于 Flutter 主题和原生窗口，系统亮度改变时不得只更新其中一层。
+bool workbenchDark(DataMap preferences, Brightness systemBrightness) =>
+    switch (workbenchThemeMode(preferences)) {
+      'dark' => true,
+      'light' => false,
+      _ => systemBrightness == Brightness.dark,
+    };
 
 /// 配置来源与权限独立。预览须明确标识，不能把内存合成连接称为真实启动或安全存储恢复。
 enum ConnectionSource { unknown, launchArguments, saved, manual, preview }
@@ -152,7 +172,11 @@ abstract class WorkbenchModel extends ChangeNotifier {
 
   bool get primary => authority['currentDeviceIsPrimary'] == true;
   bool get canEdit => connected && primary && !busy && gameMediaReady;
-  bool get dark => localPreferences['darkMode'] == true;
+  String get themeMode => workbenchThemeMode(localPreferences);
+  bool get dark => workbenchDark(
+    localPreferences,
+    WidgetsBinding.instance.platformDispatcher.platformBrightness,
+  );
   bool get reduceMotion => localPreferences['reduceMotion'] == true;
   DataMap get runtime => object(snapshot['recommendationState']);
   DataMap get night => object(snapshot['nightBusiness']);
@@ -177,6 +201,15 @@ abstract class WorkbenchModel extends ChangeNotifier {
   }
 
   Future<void> connect(String endpoint, String token, String deviceLabel);
+
+  /// 名称属于设备登记信息，与连接地址和 Token 的来源锁无关。
+  Future<void> renameDevice(String name) =>
+      mutate('/devices/rename', body: {'label': name.trim()});
+
+  /// 发布页必须由原生边界校验允许的 HTTPS 地址，不能将任意服务端字符串当命令执行。
+  Future<void> openReleasePage(String url) async {
+    throw UnsupportedError('当前模型不支持打开发布页。');
+  }
 
   /// 使用当前来源及凭据重试，不接受页面提供的新地址、Token 或设备名称。
   /// 默认实现供内存模型使用；生产实现同时重试尚未完成的原生初始化。
@@ -242,6 +275,17 @@ abstract class WorkbenchModel extends ChangeNotifier {
     required int expectedGeneration,
   });
   Future<void> retryOrder(String kind, String key);
+
+  /// 重新规划只针对确认时的订单与经营生命周期；生产实现还需拒绝在途及未知结果。
+  Future<void> resetOrder(
+    String kind,
+    String key, {
+    required String expectedSessionId,
+    required int expectedGeneration,
+  }) async {
+    throw UnsupportedError('当前模型不支持重新规划订单。');
+  }
+
   Future<void> platformCommand(String command);
   Future<void> importHistory(String path);
 

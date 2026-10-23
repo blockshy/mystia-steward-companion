@@ -17,7 +17,11 @@ internal sealed record RuntimeTrackedMissionSnapshot(
     RuntimeTrackedMissionStatus Status,
     int ConditionCount,
     int? CompletedConditionCount,
-    IReadOnlyList<bool?> ConditionStates);
+    IReadOnlyList<bool?> ConditionStates)
+{
+    /// <summary>与 ConditionStates 同索引的游戏本地化条件；空串明确表示描述暂不可读取。</summary>
+    public IReadOnlyList<string> ConditionDescriptions { get; init; } = Array.Empty<string>();
+}
 
 internal sealed record RuntimeTrackedMissionsSnapshot(
     bool RuntimeAvailable,

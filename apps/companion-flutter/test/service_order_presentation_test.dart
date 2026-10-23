@@ -556,9 +556,17 @@ void main() {
         (EntityImageKind.beverage, 72),
       ]);
     }
+    // 短业务附注现在与原点单共用标签带，避免免费等附注独占一行；完整阻断原因
+    // 仍在短标签下方保留说明间距，不能缩回原点单文字里或删掉原因以节省空间。
+    expect(find.descendant(of: original, matching: status), findsOneWidget);
+    final originalTags = find.descendant(
+      of: original,
+      matching: find.byType(ServiceOriginalOrderTag),
+    );
+    final reason = find.descendant(of: status, matching: find.text('特殊经营等待确认'));
     expect(
-      tester.getRect(original).top - tester.getRect(status).bottom,
-      greaterThanOrEqualTo(14),
+      tester.getRect(reason).top - tester.getRect(originalTags.last).bottom,
+      greaterThanOrEqualTo(5),
     );
     expect(model.writes, isEmpty);
     expect(tester.takeException(), isNull);

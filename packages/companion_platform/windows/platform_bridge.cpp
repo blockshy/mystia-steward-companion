@@ -13,6 +13,7 @@
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <regex>
 #include <stdexcept>
 #include <thread>
 #include "focus_transition.h"
@@ -587,6 +588,17 @@ ErrorOr<bool> CompanionPlatformBridge::PerformWindowAction(const mystia_platform
       case WindowAction::kExit: PostQuitMessage(0); return true;
     }
     return false;
+  } catch (const std::exception& error) { return Error(error); }
+}
+ErrorOr<bool> CompanionPlatformBridge::OpenExternalUrl(const std::string& url) {
+  try {
+    // Dart 的检查不是原生权限边界；完整匹配 ASCII 发布页路径后才交给系统浏览器。
+    // 不接受查询、用户信息、文件路径、任意协议或重定向参数。
+    static const std::regex allowed(R"(^https://github\.com/blockshy/mystia-steward-companion/releases(/latest|/tag/[A-Za-z0-9._-]+)?$)");
+    Require(std::regex_match(url, allowed), "only project release pages may be opened");
+    const std::wstring target(url.begin(), url.end());
+    const auto result = ShellExecuteW(impl_->top, L"open", target.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return reinterpret_cast<INT_PTR>(result) > 32;
   } catch (const std::exception& error) { return Error(error); }
 }
 ErrorOr<PlatformInput> CompanionPlatformBridge::PollInput() {

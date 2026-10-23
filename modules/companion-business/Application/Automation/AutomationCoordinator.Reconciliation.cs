@@ -80,6 +80,7 @@ public sealed partial class AutomationCoordinator
             {
                 _states.Remove(key);
                 _orders.Remove(key);
+                _resetUncertainOrders.Remove(key);
             }
         }
     }

@@ -276,4 +276,5 @@ AutomationInputViewTests.Run(Check, Input, RareInput);
 AutomationIngredientAdmissionTests.Run(Check, Input, RareInput);
 AutomationRecoveryBudgetTests.Run(Check, Input, RareInput);
 AutomationAvailabilityMessageTests.Run(Check, Input);
+AutomationResetSafetyTests.Run(Check, Input);
 Console.WriteLine($"PASS csharp-automation: {checks} assertions (pure managed; no game execution).");

@@ -147,6 +147,21 @@ class CompanionPlatform {
   Future<bool> show() => _host.performWindowAction(WindowAction.show);
   Future<bool> hide() => _host.performWindowAction(WindowAction.hide);
   Future<bool> exit() => _host.performWindowAction(WindowAction.exit);
+
+  /// 发布页以系统浏览器打开，不将网页嵌入具有本地 API 凭据的客户端。
+  /// 白名单只包含项目 releases/latest/tag 页面；原生层重复检查同一边界。
+  Future<bool> openExternalUrl(String url) {
+    if (!isProjectReleaseUrl(url)) {
+      throw const FormatException('只允许打开夜雀管家的 GitHub 发布页面。');
+    }
+    return _host.openExternalUrl(url);
+  }
+
+  static bool isProjectReleaseUrl(String url) =>
+      RegExp(
+        r'^https://github\.com/blockshy/mystia-steward-companion/releases(?:/latest|/tag/[A-Za-z0-9._-]+)?$',
+      ).hasMatch(url) &&
+      !url.contains(RegExp(r'[\r\n]'));
   Future<String?> readSecret(String key) => _host.readSecret(key);
   Future<void> writeSecret(String key, String value) =>
       _serialize(() => _host.writeSecret(key, value));

@@ -641,6 +641,29 @@ internal sealed partial class LocalApiServer
         }
     }
 
+    /// <summary>
+    /// 单订单重置只修改业务规划；复用主设备租约、真实生命周期与图片就绪检查，并要求当前
+    /// 已发布帧仍然有效。协调器还比较冻结输入引用，防止核验后后台已推进到另一个订单快照。
+    /// </summary>
+    private string ResetBusinessAutomation(string request, HttpRequestData requestData)
+    {
+        var intent = ReadJsonRequest<BusinessRetryRequest>(requestData,
+            "protocolVersion", "automationSessionId", "businessGeneration", "kind", "key");
+        if (intent.Kind is not ("rare" or "normal") || string.IsNullOrWhiteSpace(intent.Key) || intent.Key.Length > 300)
+            throw new CompanionDeviceAuthorityException(400, "重置订单标识无效。");
+        lock (_authorityTransitionLock)
+        {
+            RequireBusinessInteractionScope(intent.ProtocolVersion, intent.AutomationSessionId, intent.BusinessGeneration);
+            if (!TryRequireAutomationLease(request, out var error, out _)) return ToJson(error);
+            BusinessFrame? frame;
+            lock (_businessLock) frame = _businessFrame;
+            if (frame == null || !IsBusinessFrameCurrent(frame) || !IsBusinessNightRuntimeCurrent(frame))
+                throw new CompanionDeviceAuthorityException(409, "经营状态正在更新，请刷新后重新确认。");
+            return _businessCoordinator.Reset(intent.Kind, intent.Key, intent.AutomationSessionId,
+                intent.BusinessGeneration, frame.Snapshot, BusinessNow).ToJsonString();
+        }
+    }
+
     /// <summary>快照身份和真实生命周期同时复核；不依赖下一次轮询清理旧窗口的操作。</summary>
     private void RequireBusinessInteractionScope(int protocolVersion, string sessionId, long generation)
     {

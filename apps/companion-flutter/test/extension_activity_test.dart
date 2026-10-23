@@ -78,6 +78,12 @@ void main() {
       'inventoryEditorModuleEnabled': true,
     }
     ..resources = {
+      '/missions/available': {
+        'ok': true,
+        'runtimeAvailable': true,
+        'status': 'ready',
+        'missions': <Object?>[],
+      },
       '/missions/tracked': {
         'ok': true,
         'runtimeAvailable': true,
@@ -89,7 +95,7 @@ void main() {
             'status': 'tracking',
             'conditionCount': 0,
             'completedConditionCount': 0,
-            'conditionStates': <bool>[],
+            'conditions': <Object?>[],
           },
         ],
       },
@@ -127,7 +133,7 @@ void main() {
     await open(tester, fixture, channel);
     expect(channel.value, isNull);
     expect(find.text('ready'), findsNothing);
-    expect(find.text('进行中'), findsOneWidget);
+    expect(find.text('进行中'), findsNWidgets(2));
     await tab(tester, '稀客邀请');
     expect(channel.value, isNull);
     expect(find.text('当前日间场景没有新的可邀请稀客。'), findsNothing);
@@ -258,7 +264,7 @@ void main() {
     };
     fixture.resources['/missions/available'] = valid;
     await open(tester, fixture, channel);
-    await tester.tap(find.text('可接取任务'));
+    await tester.tap(find.text('可接取'));
     await tester.pumpAndSettle();
     expect(channel.value?.message, '等待读取存档');
     expect(channel.value?.error, isFalse);

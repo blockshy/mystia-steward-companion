@@ -84,8 +84,9 @@ int validateOrderPresentation() {
     }
     check(
       project([
-        {...original, 'serviceOrderPosition': 2, 'fund': 1},
-      ]).single['presentationPending'] == true,
+            {...original, 'serviceOrderPosition': 2, 'fund': 1},
+          ]).single['presentationPending'] ==
+          true,
       '$key 显示顺位变化不能掩盖预算需求变化。',
     );
     check(project([]).isEmpty, '$key 已消失订单不能被缓存结果复活。');

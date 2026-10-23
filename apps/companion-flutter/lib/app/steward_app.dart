@@ -14,6 +14,7 @@ import '../features/service_focus.dart';
 import '../features/recommendations.dart';
 import '../features/tools.dart';
 import '../features/settings.dart';
+import '../features/update_notice.dart';
 import '../features/resource_management.dart';
 import '../ui/game_media_scope.dart';
 import '../ui/components.dart';
@@ -29,13 +30,37 @@ final workbenchProvider = Provider<WorkbenchModel>(
   (ref) => throw StateError('应用未注入工作台。'),
 );
 
-class StewardApp extends ConsumerWidget {
+class StewardApp extends ConsumerStatefulWidget {
   const StewardApp({this.previewControls, super.key});
 
   /// 仅独立离线预览入口传入场景控制条，生产入口始终不传入此控件。
   final Widget? previewControls;
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<StewardApp> createState() => _StewardAppState();
+}
+
+/// 即使没有游戏连接，系统主题变化也要更新界面；原生窗口同步由生产模型负责。
+class _StewardAppState extends ConsumerState<StewardApp>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void didChangePlatformBrightness() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final model = ref.watch(workbenchProvider);
     return ListenableBuilder(
       listenable: model,
@@ -93,7 +118,7 @@ class StewardApp extends ConsumerWidget {
                         ? GameMediaInitialization(
                             model,
                             key: const ValueKey('game-media-initialization'),
-                            previewControls: previewControls,
+                            previewControls: widget.previewControls,
                           )
                         : child!,
                   ),
@@ -101,7 +126,7 @@ class StewardApp extends ConsumerWidget {
               ),
             ),
           ),
-          home: WorkbenchShell(model, previewControls: previewControls),
+          home: WorkbenchShell(model, previewControls: widget.previewControls),
         );
       },
     );
@@ -149,6 +174,8 @@ class _WorkbenchShellState extends State<WorkbenchShell>
   bool restoredPage = false;
   bool serviceFocusActive = false;
   bool pageSwitchPending = false;
+  String? requestedSettingsTab;
+  int settingsNavigationRevision = 0;
   final gamepadNavigation = GamepadNavigationController();
   // 每个主页面独立拥有提示通道，隐藏页完成异步读取时不污染当前页标题。
   final pageActivities = List.generate(
@@ -347,6 +374,7 @@ class _WorkbenchShellState extends State<WorkbenchShell>
       OverviewPage(model),
       ServicePage(
         model,
+        active: index == 1,
         onFocusModeChanged: (active) {
           if (serviceFocusActive != active) {
             setState(() => serviceFocusActive = active);
@@ -355,7 +383,12 @@ class _WorkbenchShellState extends State<WorkbenchShell>
       ),
       RecommendationsPage(model, active: index == 2),
       ToolsPage(model, active: index == 3),
-      SettingsPage(model, active: index == 4),
+      SettingsPage(
+        model,
+        active: index == 4,
+        requestedTab: requestedSettingsTab,
+        navigationRevision: settingsNavigationRevision,
+      ),
       DataPage(model, active: index == 5),
     ];
     final body = FocusTraversalGroup(
@@ -663,10 +696,21 @@ class _WorkbenchShellState extends State<WorkbenchShell>
                     ),
             ),
           ),
+          UpdateNoticeButton(widget.model, onOpenUpdates: _openUpdates),
         ],
       ),
     ),
   );
+
+  /// 外部提醒只请求切换设置页签，不通过重建整页丢弃连接表单的未保存草稿。
+  void _openUpdates() {
+    if (_resourcesBlocked) return;
+    setState(() {
+      requestedSettingsTab = 'updates';
+      settingsNavigationRevision++;
+    });
+    _select(4);
+  }
 
   /// 对话框只读当前通道，不缓存点击前的错误文本。后台恢复后立即更新内容，
   /// 且没有可执行回调，不能借查看提示绕过业务页的重试、人工确认和权限检查。

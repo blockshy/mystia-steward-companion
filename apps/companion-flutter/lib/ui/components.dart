@@ -67,24 +67,67 @@ Future<bool> confirmCurrentAction(
   return false;
 }
 
-/// IndexedStack 会保留隐藏页；本门面只在当前页首次显示或恢复连接后触发资源读取。
-/// 回调推迟到帧结束，避免网络状态通知发生在 Widget 构建中；隐藏页不会自行注册轮询。
+/// IndexedStack 会保留隐藏页；资源页统一先在构建期撤销旧订阅，再于帧结束注册新读取。
+/// 经营、推荐、扩展和设置遵循同一顺序，避免旧页失活取消新页刚开始的请求。
+/// 延迟回调只属于安排时的模型及连接；隐藏、重连或替换模型后不能偷偷恢复旧轮询。
 mixin ActiveResourcePage<T extends StatefulWidget> on State<T> {
   bool get resourcePageActive;
   WorkbenchModel get resourceModel;
   void loadActiveResource();
   bool _previousActive = false, _previousConnected = false;
+  WorkbenchModel? _previousResourceModel;
+  int? _previousConnectionVersion;
+  Object? _previousResourceBoundary;
+  int _resourceActivationGeneration = 0;
+  Object _resourceBoundary(WorkbenchModel model) => (
+    model.snapshot['automationSessionId'],
+    model.snapshot['runtimeDaySceneGeneration'],
+    model.snapshot['nightBusinessGeneration'],
+  );
   void synchronizeResourceActivation() {
-    final active = resourcePageActive, connected = resourceModel.connected;
+    final model = resourceModel;
+    final active = resourcePageActive, connected = model.connected;
+    final changedModel = !identical(model, _previousResourceModel);
+    final changedConnection =
+        model.connectionVersion != _previousConnectionVersion;
+    final boundary = _resourceBoundary(model);
+    final changedBoundary = boundary != _previousResourceBoundary;
+    if (_previousActive && (!active || changedModel)) {
+      _previousResourceModel?.clearResourceSubscription();
+    }
     final shouldLoad =
-        active && connected && (!_previousActive || !_previousConnected);
+        active &&
+        connected &&
+        (!_previousActive ||
+            !_previousConnected ||
+            changedModel ||
+            changedConnection ||
+            changedBoundary);
+    if (active != _previousActive ||
+        connected != _previousConnected ||
+        changedModel ||
+        changedConnection ||
+        changedBoundary)
+      _resourceActivationGeneration++;
     _previousActive = active;
     _previousConnected = connected;
-    if (shouldLoad)
+    _previousResourceModel = model;
+    _previousConnectionVersion = model.connectionVersion;
+    _previousResourceBoundary = boundary;
+    if (shouldLoad) {
+      final generation = _resourceActivationGeneration;
+      final connection = model.connectionVersion;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && resourcePageActive && resourceModel.connected)
+        if (mounted &&
+            generation == _resourceActivationGeneration &&
+            resourcePageActive &&
+            identical(resourceModel, model) &&
+            model.connected &&
+            model.connectionVersion == connection &&
+            _resourceBoundary(model) == boundary)
           loadActiveResource();
       });
+    }
   }
 }
 

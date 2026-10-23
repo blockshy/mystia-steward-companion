@@ -1643,9 +1643,14 @@ internal sealed class StewardOverlayController
             AppendInts(builder, cooker.TypeIds);
             AppendStrings(builder, cooker.TypeNames);
             AppendValue(builder, cooker.Name);
+            AppendValue(builder, cooker.CookerId);
+            AppendValue(builder, cooker.DisplayName);
+            AppendValue(builder, cooker.Effect);
+            AppendValue(builder, cooker.MetadataStatus);
             AppendValue(builder, cooker.CouldOpen);
             AppendValue(builder, cooker.AutomationAvailable);
             AppendValue(builder, cooker.AutomationAvailability);
+            AppendValue(builder, cooker.UnavailableReason);
             AppendValue(builder, cooker.AutomationAvailabilityDiagnostic);
             AppendValue(builder, cooker.Source);
         }

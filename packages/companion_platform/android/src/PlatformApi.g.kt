@@ -446,6 +446,8 @@ interface PlatformHostApi {
   fun applyWindowPreferences(preferences: WindowPreferences)
   /** 返回是否实际完成。焦点切换被系统拒绝时为 false，不伪造成功。 */
   fun performWindowAction(action: WindowAction): Boolean
+  /** 仅打开本项目 GitHub 发布页。原生端再次校验 URL，不能启动任意协议或文件。 */
+  fun openExternalUrl(url: String): Boolean
   fun pollInput(): PlatformInput
   /** 只接收受限键名；损坏数据必须报错且保留密文，不自动重置。 */
   fun readSecret(key: String): String?
@@ -505,6 +507,23 @@ interface PlatformHostApi {
             val actionArg = args[0] as WindowAction
             val wrapped: List<Any?> = try {
               listOf(api.performWindowAction(actionArg))
+            } catch (exception: Throwable) {
+              PlatformApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.openExternalUrl$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val urlArg = args[0] as String
+            val wrapped: List<Any?> = try {
+              listOf(api.openExternalUrl(urlArg))
             } catch (exception: Throwable) {
               PlatformApiPigeonUtils.wrapError(exception)
             }

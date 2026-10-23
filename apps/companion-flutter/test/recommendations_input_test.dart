@@ -124,14 +124,16 @@ void main() {
       tester.widget<DenseListDetail>(find.byType(DenseListDetail)).items,
       hasLength(8),
     );
-    // 收藏和自定义仍是跨客人的管理列表，本轮精确结果名称筛选不应缩窄它们的范围。
+    // 收藏扩展为名称/标签/食材/编号检索后仍保留客人名称；自定义仍是跨客人的管理
+    // 列表。使用各页当前提示定位真实输入框，不把旧提示文案当作控件已消失。
     for (final title in ['收藏', '自定义配方']) {
       await tester.tap(find.text(title));
       await tester.pumpAndSettle();
-      await tester.enterText(
-        input(title == '收藏' ? '筛选名称 / 客人' : '筛选料理 / 稀客'),
-        '雾雨魔理沙',
+      final searchInput = input(
+        title == '收藏' ? '筛选名称 / 标签 / 食材 / ID' : '筛选料理 / 稀客',
       );
+      expect(searchInput, findsOneWidget);
+      await tester.enterText(searchInput, '雾雨魔理沙');
       await tester.pumpAndSettle();
       final source =
           model.resources[title == '收藏' ? '/favorites' : '/custom-recipes'];

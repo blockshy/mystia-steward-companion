@@ -15,6 +15,7 @@ try
     TestPresentationProjection();
     TestPresentationRetryBudget();
     TestPresentationApplyIsTaskScoped();
+    TestConditionDescriptions();
     TestPublicApiPayload();
     Console.WriteLine(
         "PASS: tracked missions publish only active, strictly validated managed state "
@@ -739,6 +740,38 @@ static RuntimeMissionPresentationApply PresentationApply(
         presentation);
 }
 
+/// <summary>证明条件描述与已验证布尔状态按同一索引投影，不把 amount 当成进度数。</summary>
+static void TestConditionDescriptions()
+{
+    var definition = Definition("description", 2).Definition! with
+    {
+        Conditions = new[]
+        {
+            new RuntimeMissionDefinitionDiagnosticCondition(4, 907, "请角色品尝合成料理"),
+            new RuntimeMissionDefinitionDiagnosticCondition(0, 1000, "交付 1000 金钱"),
+        },
+    };
+    var state = CreateReadyState(19, Loaded("description", 2,
+        identity: (nint)907, definition: new(true, definition, "")));
+    AssertTrue(state.TryObserveStateRefresh(1, 19,
+        Tracked((nint)907, "description", true, false), Utc(5)), "Condition refresh rejected.");
+    var mission = Find(state.ReadTrackedMissions(), "description");
+    AssertSequence(new[] { "请角色品尝合成料理", "交付 1000 金钱" },
+        mission.ConditionDescriptions, "Descriptions lost definition order.");
+    AssertSequence(new bool?[] { true, false }, mission.ConditionStates,
+        "Descriptions were not paired with their own completion facts.");
+    AssertEqual<int?>(1, mission.CompletedConditionCount, "A definition amount was mistaken for progress.");
+
+    AssertEqual("交付 3 份料理\n品质 < 5",
+        RuntimeMissionDefinitionDiagnosticReader.NormalizeConditionDescription(
+            " <color=#ff00ff>交付 <b>3</b> 份料理</color><br>品质 < 5 "),
+        "Game formatting removal damaged condition content or line breaks.");
+    AssertEqual("", RuntimeMissionDefinitionDiagnosticReader.NormalizeConditionDescription(null),
+        "Missing localization must remain unavailable, not invented.");
+    AssertEqual("", RuntimeMissionDefinitionDiagnosticReader.NormalizeConditionDescription(new string('x', 16385)),
+        "Unbounded condition text was accepted.");
+}
+
 static void TestPublicApiPayload()
 {
     var jsonOptions = new JsonSerializerOptions
@@ -761,7 +794,7 @@ static void TestPublicApiPayload()
                 Status: RuntimeTrackedMissionStatus.Unverified,
                 ConditionCount: 1,
                 CompletedConditionCount: null,
-                new bool?[] { null }),
+                new bool?[] { null }) { ConditionDescriptions = new[] { "请与角色交谈" } },
             new RuntimeTrackedMissionSnapshot(
                 "mission-b",
                 "任务乙",
@@ -772,7 +805,7 @@ static void TestPublicApiPayload()
                 Status: RuntimeTrackedMissionStatus.Tracking,
                 ConditionCount: 2,
                 CompletedConditionCount: 1,
-                new bool?[] { true, false }),
+                new bool?[] { true, false }) { ConditionDescriptions = new[] { "交付合成食材", "交付合成酒水" } },
             new RuntimeTrackedMissionSnapshot(
                 "mission-c",
                 "任务丙",
@@ -783,7 +816,7 @@ static void TestPublicApiPayload()
                 Status: RuntimeTrackedMissionStatus.Fulfilled,
                 ConditionCount: 1,
                 CompletedConditionCount: 1,
-                new bool?[] { true }),
+                new bool?[] { true }) { ConditionDescriptions = new[] { "" } },
         });
 
     var fullJson = LocalApiTrackedMissionsPayload.BuildJson(
@@ -807,6 +840,18 @@ static void TestPublicApiPayload()
     AssertEqual("红魔馆", missions[1].GetProperty("sceneNames")[0].GetString(), "Related scene missing.");
     AssertEqual("ready", missions[1].GetProperty("presentationStatus").GetString(), "Presentation status missing.");
     AssertEqual("fulfilled", missions[2].GetProperty("status").GetString(), "Fulfilled status was not lowercase.");
+    AssertFalse(missions[0].TryGetProperty("conditionStates", out _),
+        "The obsolete parallel condition array must not remain in the public DTO.");
+    AssertEqual("请与角色交谈", missions[0].GetProperty("conditions")[0].GetProperty("description").GetString(),
+        "A specific condition description was omitted.");
+    AssertEqual(JsonValueKind.Null, missions[0].GetProperty("conditions")[0].GetProperty("completed").ValueKind,
+        "Unverified condition became false.");
+    AssertTrue(missions[1].GetProperty("conditions")[0].GetProperty("completed").GetBoolean(),
+        "Completed condition was not retained.");
+    AssertFalse(missions[1].GetProperty("conditions")[1].GetProperty("completed").GetBoolean(),
+        "Incomplete condition was not retained.");
+    AssertEqual("", missions[2].GetProperty("conditions")[0].GetProperty("description").GetString(),
+        "Missing description must not erase a known completion fact.");
     var signature = root.GetProperty("contentSignature").GetString() ?? "";
     AssertTrue(
         signature.Length == 64 && signature.All(character =>
@@ -837,6 +882,21 @@ static void TestPublicApiPayload()
         "Unchanged payload returned a different signature.");
     AssertEqual(2, unchanged.EnumerateObject().Count(),
         "Unchanged payload contains fields from the full response.");
+
+    var changedMissions = snapshot.Missions.ToArray();
+    changedMissions[0] = changedMissions[0] with { ConditionDescriptions = new[] { "更新后的具体条件" } };
+    using var changedDescription = JsonDocument.Parse(LocalApiTrackedMissionsPayload.BuildJson(
+        snapshot with { Missions = changedMissions }, signature, jsonOptions));
+    AssertFalse(changedDescription.RootElement.GetProperty("unchanged").GetBoolean(),
+        "A condition description change was hidden by the content signature.");
+    changedMissions[0] = changedMissions[0] with { ConditionDescriptions = Array.Empty<string>() };
+    var rejectedShape = false;
+    try
+    {
+        LocalApiTrackedMissionsPayload.BuildJson(snapshot with { Missions = changedMissions }, "", jsonOptions);
+    }
+    catch (InvalidOperationException) { rejectedShape = true; }
+    AssertTrue(rejectedShape, "Mismatched condition descriptions could be paired with the wrong states.");
 
     var nextGenerationJson = LocalApiTrackedMissionsPayload.BuildJson(
         snapshot with { Generation = 18 },
@@ -963,7 +1023,8 @@ static RuntimeMissionDefinitionDiagnosticReadResult Definition(
     string receiver = "")
 {
     var conditions = Enumerable.Range(0, conditionCount)
-        .Select(_ => new RuntimeMissionDefinitionDiagnosticCondition(Type: 0, Amount: 0))
+        .Select(index => new RuntimeMissionDefinitionDiagnosticCondition(Type: 0, Amount: 0,
+            Description: $"合成具体条件 {index + 1}"))
         .ToArray();
     return new RuntimeMissionDefinitionDiagnosticReadResult(
         Success: true,

@@ -10,6 +10,7 @@ import 'package:material_ui/material_ui.dart' as material;
 import 'package:mystia_steward_companion/app/workbench_model.dart';
 import 'package:mystia_steward_companion/features/service.dart';
 import 'package:mystia_steward_companion/features/service_statistics.dart';
+import 'package:mystia_steward_companion/features/current_cooker_row.dart';
 import 'package:mystia_steward_companion/ui/components.dart';
 import 'package:mystia_steward_companion/ui/entity_image.dart';
 import 'package:mystia_steward_companion/ui/page_activity.dart';
@@ -38,9 +39,14 @@ class _StatisticsModel extends FixtureModel {
     runtime['placedCookerStatus'] = '合成现场完整';
     runtime['placedCookers'] = [
       {
-        'name': '多功能厨具',
+        'name': '煮锅/蒸锅',
+        'displayName': '多功能厨具',
         'controllerIndex': 901,
         'typeIds': [1, 4],
+        'typeNames': ['煮锅', '蒸锅'],
+        'cookerId': 901,
+        'metadataStatus': 'ready',
+        'effect': '合成效果：烹饪时间缩短20%',
         'automationAvailability': 'StrictIdle',
         'automationAvailabilityDiagnostic': '已确认空闲',
       },
@@ -49,6 +55,8 @@ class _StatisticsModel extends FixtureModel {
         'controllerIndex': 1,
         'typeIds': [2, 2],
         'automationAvailability': 'Unavailable',
+        'unavailableReason': 'cooking',
+        'metadataStatus': 'unavailable',
         'automationAvailabilityDiagnostic': '等待确切类型',
       },
     ];
@@ -446,26 +454,33 @@ void main() {
           expect(text.right, lessThanOrEqualTo(card(title).right - 9.9));
         }
         expect(find.textContaining('请从上方'), findsNothing);
-        // 整页只保留三个业务口径分区；“暂无待确认”是概况摘要，不独占大卡片。
+        // 在场客人使用独立现场列表，不能用已有订单冒充所有客人；其余原有分区
+        // 顺序及几何检查保持不变。“暂无待确认”仍是摘要，不独占大卡片。
         expect(
           tester
               .widgetList<Section>(find.byType(Section))
               .map((item) => item.title),
-          ['经营概况', '当前厨具', '自动化拟分配'],
+          ['经营概况', '当前厨具', '在场稀客', '自动化拟分配'],
         );
+        expect(find.text('尚未取得在场稀客列表。'), findsOneWidget);
         final section = find.widgetWithText(Section, '当前厨具');
         final images = tester.widgetList<EntityImage>(
           find.descendant(of: section, matching: find.byType(EntityImage)),
         );
         expect(images.map((image) => image.id), [1, 4, null]);
         expect(find.text('空闲可用'), findsOneWidget);
-        expect(find.text('暂不可用'), findsOneWidget);
-        // 当前厨具卡中的名称与状态分别成行，状态不是隔着整屏空白浮在最右边。
-        // 验证真正的文字盒完整处于卡内，不能仅凭“无overflow异常”掩盖裁切。
-        for (final entry in const [
-          (0, '多功能厨具', '空闲可用'),
-          (1, '未确认类型', '暂不可用'),
-        ]) {
+        expect(find.text('制作中'), findsOneWidget);
+        expect(
+          find.textContaining('合成效果：烹饪时间缩短20%', findRichText: true),
+          findsOneWidget,
+        );
+        expect(
+          find.textContaining('说明未读取', findRichText: true),
+          findsOneWidget,
+        );
+        // 紧凑厨具改为连续信息行，状态保持在名称行右侧，效果不再占用另一张大卡。
+        // 大字号允许名称和效果自然换行，所有文字仍须位于真实行边界内。
+        for (final entry in const [(0, '多功能厨具', '空闲可用'), (1, '未确认类型', '制作中')]) {
           final owner = find.byKey(ValueKey('service-cooker-${entry.$1}'));
           final bounds = tester.getRect(owner);
           final name = tester.getRect(
@@ -474,12 +489,14 @@ void main() {
           final status = tester.getRect(
             find.descendant(of: owner, matching: find.text(entry.$3)),
           );
-          expect(status.top, greaterThanOrEqualTo(name.bottom));
+          expect(status.top, lessThan(name.bottom));
+          expect(status.right, closeTo(bounds.right, .1));
           for (final text in [name, status]) {
-            expect(text.left, greaterThanOrEqualTo(bounds.left + 9.9));
-            expect(text.right, lessThanOrEqualTo(bounds.right - 9.9));
-            expect(text.bottom, lessThanOrEqualTo(bounds.bottom - 9.9));
+            expect(text.left, greaterThanOrEqualTo(bounds.left));
+            expect(text.right, lessThanOrEqualTo(bounds.right + .1));
+            expect(text.bottom, lessThanOrEqualTo(bounds.bottom - 7.9));
           }
+          if (width >= 627 && scale == 1.0) expect(bounds.height, lessThan(92));
         }
         await tester.scrollUntilVisible(
           find.text('自动化拟分配'),
@@ -502,7 +519,7 @@ void main() {
       addTearDown(model.dispose);
       const longName = '合成多功能厨具：这是用于验证长名称自然换行并保留全部信息的实例';
       final cookers = records(model.runtime['placedCookers']);
-      cookers[0]['name'] = longName;
+      cookers[0]['displayName'] = longName;
       cookers[1]['automationAvailability'] = 'FutureUnavailable';
       cookers[1]['automationAvailabilityDiagnostic'] =
           'synthetic-future-cooker-state';
@@ -540,16 +557,16 @@ void main() {
       final title = find.descendant(of: owner, matching: find.text(longName));
       final status = find.descendant(of: owner, matching: find.text('空闲可用'));
       expect(tester.widget<Text>(title).maxLines, isNull);
-      expect(tester.getRect(title).right, lessThanOrEqualTo(card.right - 9.9));
+      expect(tester.getRect(title).right, lessThanOrEqualTo(card.right));
       expect(
         tester.getRect(status).top,
-        greaterThanOrEqualTo(tester.getRect(title).bottom),
+        lessThan(tester.getRect(title).bottom),
       );
       expect(
         tester.getRect(status).bottom,
-        lessThanOrEqualTo(card.bottom - 9.9),
+        lessThanOrEqualTo(card.bottom - 7.9),
       );
-      expect(find.text('状态未知'), findsOneWidget);
+      expect(find.text('状态待确认'), findsOneWidget);
       // 未识别的可用性保持未知；诊断必须可操作展开，不能删字段来让卡片显得整齐。
       final diagnostics = find.byKey(
         const ValueKey('service-cooker-diagnostics'),
@@ -609,6 +626,62 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
   }
+
+  testWidgets('当前厨具区分具体不可用原因和未知效果，保持实例名称与类型图片分离', (tester) async {
+    final model = _StatisticsModel(desktop: false);
+    addTearDown(model.dispose);
+    const reasons = {
+      'loaded': '已放入食材',
+      'cooking': '制作中',
+      'finished': '待取餐',
+      'result-pending': '待取出成品',
+      'residual-unconfirmed': '待确认上次取餐',
+      'closed': '当前未开放',
+      'no-cooker': '未放置厨具',
+      'future-reason': '状态待确认',
+    };
+    model.runtime['placedCookers'] = [
+      for (final reason in reasons.keys)
+        <String, Object?>{
+          'name': '油锅',
+          'displayName': '实例名称 $reason',
+          'cookerId': 9001,
+          'typeIds': [3],
+          'typeNames': ['油锅'],
+          'automationAvailability': 'Unavailable',
+          'unavailableReason': reason,
+          'metadataStatus': reason == 'loaded' ? 'ready' : 'unavailable',
+          'effect': '',
+        },
+    ];
+    await mount(
+      tester,
+      model,
+      ServiceStatisticsPage(model),
+      width: 390,
+      scale: 1.5,
+    );
+    expect(find.byType(CurrentCookerRow), findsNWidgets(reasons.length));
+    for (final text in reasons.values) expect(find.text(text), findsOneWidget);
+    expect(find.text('暂不可用'), findsNothing);
+    expect(
+      find.textContaining('游戏未提供效果说明', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('说明未读取', findRichText: true),
+      findsNWidgets(reasons.length - 1),
+    );
+    final images = tester.widgetList<EntityImage>(
+      find.descendant(
+        of: find.byType(CurrentCookerList),
+        matching: find.byType(EntityImage),
+      ),
+    );
+    expect(images.map((item) => item.id), everyElement(3));
+    expect(model.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('统计Tab位于专注右侧，返回保留原筛选且订单顶部无厨具汇总', (tester) async {
     final model = _StatisticsModel();

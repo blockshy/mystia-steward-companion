@@ -13,6 +13,7 @@ import 'service_order_content.dart';
 import 'service_plan_placeholder.dart';
 import 'service_order_highlight.dart';
 import 'service_plan_activity.dart';
+import 'service_favorites.dart';
 
 /// 专注页的开关全部是本机显示偏好，不进入共享 profile，不影响推荐、执行或租约。
 /// 顶层布尔字段通过既有 updateLocal 逐字段合并及持久化，避免保存整份旧偏好覆盖他项。
@@ -35,11 +36,15 @@ const serviceFocusWindowUiPreference = 'serviceFocusShowWindowUi';
 /// 不改变普/稀客执行竞争；每组内部仍严格消费服务端点单显示顺位。
 const serviceFocusRareFirstPreference = 'serviceFocusRareFirst';
 
+/// 收藏按钮仅影响本机专注页的辅助操作区，默认保留现有显示；不计入制作信息字段。
+/// 隐藏按钮不移除已保存收藏，也不改变推荐权重或其它页面的收藏入口。
+const serviceFocusFavoritesPreference = 'serviceFocusShowFavorites';
+
 bool serviceFocusShowsWindowUi(WorkbenchModel model) =>
     model.localPreferences[serviceFocusWindowUiPreference] != false;
 
 /// 面向做菜的只读投影：只接受经营结果中的实际 order 及同一主方案，不从目录、
-/// 独立推荐候选或备选重新拼搭配，也不在此提供完成订单、清缓存或自动化写入动作。
+/// 独立推荐候选或备选重新拼搭配。收藏仅保存当前精确搭配，不提供完成订单、清缓存或自动化写入动作。
 class ServiceFocusPage extends StatefulWidget {
   const ServiceFocusPage(this.model, {this.active = true, super.key});
   final WorkbenchModel model;
@@ -185,6 +190,14 @@ class _ServiceFocusPageState extends State<ServiceFocusPage> {
                   : null,
               key: const ValueKey(serviceFocusRareFirstPreference),
               description: '仅本机将稀客列在普客之前，各类内部保持点单顺序。',
+            ),
+            SettingToggle(
+              '显示收藏按钮',
+              _show(serviceFocusFavoritesPreference),
+              _saving == null
+                  ? (value) => _save(serviceFocusFavoritesPreference, value)
+                  : null,
+              key: const ValueKey(serviceFocusFavoritesPreference),
             ),
             for (final entry in serviceFocusPreferences.entries)
               SettingToggle(
@@ -366,6 +379,11 @@ class _FocusOrder extends StatelessWidget {
             ),
             if (plan['bucket'] == 'blocked')
               const Text('当前主方案不可执行。', style: StewardText.caption),
+            if (show(serviceFocusFavoritesPreference) &&
+                rare &&
+                plans.isNotEmpty &&
+                item['presentationPending'] != true)
+              ServiceFavoriteActions(model, item, plan),
             if (values(item['blockedMessages']).isNotEmpty)
               Text(
                 '阻断 · ${words(item['blockedMessages'])}',

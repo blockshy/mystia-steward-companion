@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:companion_protocol/companion_protocol.dart';
 
 /// 连接是不可变凭据组；切换地址或身份必须创建新会话，避免迟到请求复用新 Token。
+/// 设备显示名不参与授权；成功改名只替换同凭据的新连接副本，旧请求仍持有原不可变对象。
 class ApiConnection {
   ApiConnection({
     required String endpoint,

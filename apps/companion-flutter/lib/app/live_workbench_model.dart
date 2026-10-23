@@ -24,6 +24,12 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   StreamSubscription<CompanionState>? _states;
   StreamSubscription<PlatformEvent>? _platformEvents;
   Timer? _resourceTimer;
+  Timer? _updateTimer;
+  Future<void>? _updateRead;
+  bool _updateReadReportError = false;
+  DataMap _updateStatus = {};
+  int _updateGeneration = 0;
+  int _lastUpdateReadAt = -30000;
   bool _disposed = false, _desktop = false, _initialized = false;
   bool _pageQueryVisible = true;
   int _pending = 0, _epoch = 0, _resourceGeneration = 0;
@@ -63,7 +69,9 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   final Map<String, DataMap> _resources = {};
   final Map<String, Map<String, String>> _resourceQueries = {};
   final Map<String, Map<String, String>> _resourceResultQueries = {};
-  final Set<String> _reading = {};
+  // 单飞属于一次连接、订阅和经营上下文，不能让已经撤销的旧 GET 挡住新页面读取。
+  // 旧请求只允许自行结束；finally 按同一身份释放，绝不能清掉后来请求的占位。
+  final Map<String, (int, int, String)> _reading = {};
   int _recommendationGeneration = 0;
   bool _recommendationActive = false, _recommendationPending = false;
   String _recommendationError = '';
@@ -108,7 +116,10 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   @override
   DataMap get localPreferences => Map.unmodifiable(_local);
   @override
-  Map<String, DataMap> get resources => Map.unmodifiable(_resources);
+  Map<String, DataMap> get resources => Map.unmodifiable({
+    ..._resources,
+    if (_updateStatus.isNotEmpty) '/updates/status': _updateStatus,
+  });
   @override
   DataMap get gameMediaStatus => _gameMedia.status;
   @override
@@ -306,6 +317,25 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         unawaited(readResource(entry.key, query: entry.value));
       }
     });
+    // 更新提醒属于客户端全局只读状态，不与可见页面抢占资源订阅，也不触发更新检查。
+    // 后台服务决定检查频率；这里仅低频读取已存在状态，手机退后台时停止读取。
+    _updateTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      final phase = _updateStatus['state'];
+      final install = label(_updateStatus['installState'], '');
+      final active =
+          phase == 'checking' ||
+          phase == 'downloading' ||
+          phase == 'idle' && _updateStatus['autoCheck'] == true ||
+          install.isNotEmpty &&
+              !{'succeeded', 'failed', 'cancelled'}.contains(install);
+      // 检查/下载进行中两秒刷新，稳定状态三十秒；用户停留更新页也无需反复手动刷新。
+      if (connected &&
+          (_desktop || !_state.paused) &&
+          _inputClock.elapsedMilliseconds - _lastUpdateReadAt >=
+              (active ? 2000 : 30000)) {
+        unawaited(_refreshUpdateStatus());
+      }
+    });
   }
 
   /// 比较经过协议校验的实际地址；无效或未知旧地址不能作为复用安全凭据的依据。
@@ -428,6 +458,9 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       clientLabel: deviceLabel.trim(),
     );
     ++_epoch;
+    _updateGeneration++;
+    _updateRead = null;
+    _updateStatus = {};
     _gameMedia.bind(null);
     _notice = '';
     await _states?.cancel();
@@ -505,11 +538,19 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       final oldSessionId = snapshot['automationSessionId'];
       final wasConnected = connected;
       _state = state;
+      if (wasConnected && !state.connected) {
+        // 断线后可能恢复到完全相同的游戏会话与场景。保留可见页面的订阅意图，
+        // 但撤销旧在途读取身份，恢复时首读不能被旧连接尚未结束的单飞挡住。
+        _resourceGeneration++;
+      }
       if ((wasConnected && !state.connected) ||
           (oldSessionId != null &&
               oldSessionId != snapshot['automationSessionId'])) {
         // HTTP 会话重试仍可能连接同一个地址的新游戏进程，必须重新确认资源代次。
         _gameMedia.bind(api);
+        _updateGeneration++;
+        _updateRead = null;
+        _updateStatus = {};
       }
       final newBoundary =
           '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
@@ -519,6 +560,9 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     await session.connect();
     // 首次快照读取也可能失败；只有会话已确认可读时才显示成功提示。
     if (session.state.connected) _notice = '已连接，自动化按已保存配置运行。';
+    if (session.state.connected) {
+      unawaited(_refreshUpdateStatus());
+    }
   }
 
   @override
@@ -658,6 +702,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   }, operationName: '重新读取游戏资源');
   @override
   void activatePage(int index) {
+    // 路由只同步撤销旧订阅。所有页面（含经营）统一由 ActiveResourcePage 在帧后
+    // 建立新订阅，确保 IndexedStack 内旧页的失活清理先完成，不能取消新页请求。
     clearResourceSubscription();
     // 推荐查询不是自动化许可；离开后撤销服务器查询订阅，避免隐藏页面持续产生 POST。
     if (index != 2) clearRecommendationQuery();
@@ -692,6 +738,10 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     String path, {
     Map<String, String> query = const {},
   }) async {
+    if (path == '/updates/status') {
+      await _refreshUpdateStatus(reportError: true);
+      return;
+    }
     const allowed = {
       '/favorites',
       '/custom-recipes',
@@ -708,33 +758,43 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       _resources.remove(path);
     // 诊断设置与包列表同属一个可见页面；仅这两个已声明的只读端点共享订阅。
     // 切到其他资源仍撤销整个旧组，不能让隐藏页面继续周期读取。
-    const diagnostics = {'/logs/settings', '/logs/packages'};
-    final sameDiagnosticGroup =
-        diagnostics.contains(path) &&
-        _resourceQueries.keys.every(diagnostics.contains);
-    if ((!_resourceQueries.containsKey(path) && !sameDiagnosticGroup) ||
+    const groups = [
+      {'/logs/settings', '/logs/packages'},
+      // 全部任务由两个不同来源组成；仅在同一任务页共同订阅，离页整组撤销。
+      {'/missions/tracked', '/missions/available'},
+    ];
+    final sameResourceGroup = groups.any(
+      (group) =>
+          group.contains(path) && _resourceQueries.keys.every(group.contains),
+    );
+    if ((!_resourceQueries.containsKey(path) && !sameResourceGroup) ||
         _resourceQueries.containsKey(path) &&
             !mapEquals(query, _resourceQueries[path]))
       clearResourceSubscription();
     _resourceQueries[path] = Map.of(query);
-    if (_reading.contains(path)) return;
-    _reading.add(path);
     final epoch = _epoch;
     final generation = _resourceGeneration;
     final boundary =
         '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
+    final flight = (epoch, generation, boundary);
+    if (_reading[path] == flight) return;
+    _reading[path] = flight;
+    // 成功和失败必须接受相同的上下文校验。只校验连接/订阅代次还不足以识别同一
+    // HTTP 连接上的游戏进程或场景更换；旧失败也不能覆盖新页面已经读到的成功状态。
+    bool isCurrentRead() =>
+        !_disposed &&
+        connected &&
+        epoch == _epoch &&
+        generation == _resourceGeneration &&
+        mapEquals(query, _resourceQueries[path]) &&
+        boundary ==
+            '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
     try {
       final api = _requiredSession().api;
       final result = path == '/updates/status'
           ? await api.updateStatus()
           : await api.read(path, query: query);
-      if (_disposed ||
-          epoch != _epoch ||
-          generation != _resourceGeneration ||
-          !mapEquals(query, _resourceQueries[path]) ||
-          boundary !=
-              '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}')
-        return;
+      if (!isCurrentRead()) return;
       // 更新状态中的 error 描述此前的下载/安装失败，不能据此丢弃仍有效的完整状态。
       // 可接任务也有专用只读 DTO：非就绪快照的 error 是运行时诊断。只有此端点
       // 且完整合法的非就绪形状才保留；其它资源及所有写入继续接受普通操作校验。
@@ -749,12 +809,9 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         _resourceResultQueries[path] = Map.of(query);
       }
     } catch (cause) {
-      if (!_disposed && epoch == _epoch && generation == _resourceGeneration) {
+      if (isCurrentRead()) {
         _error = _safeError(cause);
-        if (path == '/logs/packages' &&
-            mapEquals(query, _resourceQueries[path]) &&
-            boundary ==
-                '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}') {
+        if (path == '/logs/packages') {
           // 包列表失败有独立只读状态，不能保留旧条目供删除，也不能用空集合
           // 冒充“确实没有诊断包”。不复制服务端异常路径或响应正文到此投影。
           _resources[path] = const {
@@ -766,9 +823,53 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         }
       }
     } finally {
-      _reading.remove(path);
+      if (_reading[path] == flight) _reading.remove(path);
       _changed();
     }
+  }
+
+  /// 全局状态读取独立于页签、经营场景和五秒列表订阅。连接替换或写入成功后旧回复
+  /// 必须丢弃；静默读取失败不覆盖用户正在查看的操作错误，更新页主动刷新才报告。
+  Future<void> _refreshUpdateStatus({bool reportError = false}) {
+    if (!connected || _disposed || !_desktop && _state.paused)
+      return Future.value();
+    final pending = _updateRead;
+    if (pending != null) {
+      // 用户主动刷新复用后台请求时提升报错意图，不把网络失败误显示为无变化。
+      _updateReadReportError = _updateReadReportError || reportError;
+      return pending;
+    }
+    _updateReadReportError = reportError;
+    final session = _requiredSession();
+    final epoch = _epoch, generation = _updateGeneration;
+    final gameSession = snapshot['automationSessionId'];
+    _lastUpdateReadAt = _inputClock.elapsedMilliseconds;
+    late final Future<void> operation;
+    operation = (() async {
+      try {
+        final result = await session.api.updateStatus();
+        if (_disposed ||
+            epoch != _epoch ||
+            generation != _updateGeneration ||
+            !identical(session, _session) ||
+            !connected ||
+            gameSession != snapshot['automationSessionId'])
+          return;
+        // DTO 的 error 是更新操作结果，必须完整保留，不能当读取异常丢弃。
+        _updateStatus = result;
+      } catch (cause) {
+        if (_updateReadReportError &&
+            !_disposed &&
+            epoch == _epoch &&
+            generation == _updateGeneration)
+          _error = _safeError(cause);
+      } finally {
+        if (identical(_updateRead, operation)) _updateRead = null;
+        _changed();
+      }
+    })();
+    _updateRead = operation;
+    return operation;
   }
 
   @override
@@ -847,6 +948,17 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
               throw StateError('请在主设备进行此操作。');
             final resourceGeneration = _resourceGeneration;
             final identityGeneration = _profileWriteGeneration;
+            final updateGeneration = _updateGeneration;
+            final updateSessionId = snapshot['automationSessionId'];
+            // 同一地址也可能已换游戏进程。更新写回必须与只读轮询使用相同边界，
+            // 迟到的成功或失败都不能覆盖新进程刚取得的状态，也不能显示旧操作提示。
+            bool currentUpdateContext() =>
+                !_disposed &&
+                epoch == _epoch &&
+                updateGeneration == _updateGeneration &&
+                identical(session, _session) &&
+                connected &&
+                updateSessionId == snapshot['automationSessionId'];
             // 配方模式修订属于独立资源，写入被拒绝后不能只保留旧缓存。补读仍绑定
             // 原连接、权威及游戏上下文；切主/重连后的响应不得污染新会话或显示旧错误。
             final customBoundary = (
@@ -890,6 +1002,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
                 ),
               );
             } catch (_) {
+              if (path.startsWith('/updates/') && !currentUpdateContext())
+                return;
               if (!path.startsWith('/custom-recipes/')) rethrow;
               if (!currentCustomContext()) return;
               if (resourceGeneration == _resourceGeneration) {
@@ -912,11 +1026,14 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
               rethrow;
             }
             if (_disposed || epoch != _epoch) return;
+            if (path.startsWith('/updates/') && !currentUpdateContext()) return;
             confirmed = true;
             // 写入成功后的缓存比任何更早启动的 GET 新；拒绝旧读取把已确认结果覆盖回去。
             _resourceGeneration++;
-            if (path.startsWith('/updates/'))
-              _resources['/updates/status'] = result;
+            if (path.startsWith('/updates/')) {
+              _updateGeneration++;
+              _updateStatus = result;
+            }
             if (path.startsWith('/favorites/'))
               _resources['/favorites'] = object(result['favorites']);
             if (path.startsWith('/custom-recipes/'))
@@ -1112,6 +1229,66 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   Future<void> retryOrder(String kind, String key) =>
       _guard(() => _requiredSession().retry(kind, key), operationName: '重试订单');
   @override
+  Future<void> resetOrder(
+    String kind,
+    String key, {
+    required String expectedSessionId,
+    required int expectedGeneration,
+  }) => _guard(
+    () => _requiredSession().reset(
+      kind,
+      key,
+      expectedSessionId: expectedSessionId,
+      expectedGeneration: expectedGeneration,
+    ),
+    operationName: '重置订单状态',
+  );
+
+  @override
+  Future<void> renameDevice(String name) async {
+    if (busy) return;
+    var confirmed = false;
+    await _guard(
+      () async {
+        final session = _requiredSession();
+        final epoch = _epoch;
+        final requested = name.trim();
+        if (requested.isEmpty ||
+            requested.length > 48 ||
+            requested.runes.any(
+              (value) => value < 32 || value >= 127 && value <= 159,
+            )) {
+          throw ArgumentError('设备名称应为1至48个字符，且不含控制字符。');
+        }
+        await session.rename(requested);
+        if (_disposed || epoch != _epoch || !identical(session, _session))
+          return;
+        final current = records(authority['devices'])
+            .where((item) => item['deviceId'] == authority['currentDeviceId']);
+        if (current.length != 1 ||
+            label(current.single['label'], '') != requested) {
+          throw StateError('设备名称尚未确认，请刷新设备列表。');
+        }
+        confirmed = true;
+        // 服务端登记是名称的权威来源，成功后才更新本机；不替换地址、凭据或设备身份。
+        _clientLabel = requested;
+        await platform.writePreferences({'deviceLabel': requested});
+        if (_disposed || epoch != _epoch || !identical(session, _session))
+          return;
+        _savedLocal['deviceLabel'] = requested;
+        _local['deviceLabel'] = requested;
+        _notice = '设备名称已更新。';
+      },
+      operationName: '修改设备名称',
+      wasConfirmed: () => confirmed,
+    );
+  }
+
+  @override
+  Future<void> openReleasePage(String url) => _guard(() async {
+    if (!await platform.openExternalUrl(url)) throw StateError('无法打开发布页。');
+  }, operationName: '打开版本发布页');
+  @override
   Future<void> updateLocal(DataMap changes) {
     if (_disposed) return Future.value();
     // 地址和设备名只能通过连接队列一起保存，不能由通用外观偏好入口旁路修改。
@@ -1170,7 +1347,10 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         alwaysOnTop: _savedLocal['alwaysOnTop'] != false,
         mousePassthrough: _savedLocal['mousePassthrough'] == true,
         keepVisible: _savedLocal['keepVisible'] == true,
-        darkMode: _savedLocal['darkMode'] == true,
+        darkMode: workbenchDark(
+          _savedLocal,
+          WidgetsBinding.instance.platformDispatcher.platformBrightness,
+        ),
         switchCooldownMs:
             (_savedLocal['switchCooldownMs'] as num?)?.toInt() ?? 800,
       ),
@@ -1230,7 +1410,7 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         changes[entry.value] = imported[entry.key] == 'true';
     }
     if (imported['theme-mode'] != null)
-      changes['darkMode'] = imported['theme-mode'] == 'dark';
+      changes['themeMode'] = imported['theme-mode'];
     final oldPage = imported['mod-tab'];
     if (oldPage != null)
       changes['lastPage'] = const {
@@ -1258,6 +1438,21 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     await _applyWindow();
     _notice = '历史偏好已导入；原文件保留，自动化仍按当前设备保存的配置运行。';
   }, operationName: '导入历史偏好');
+
+  /// 系统亮度变化不保存为用户选择；仅当当前选择跟随系统时更新原生和 Flutter 绘制。
+  @override
+  void didChangePlatformBrightness() {
+    if (themeMode != 'system' || _disposed) return;
+    _changed();
+    unawaited(
+      _applyWindow().catchError((Object cause) {
+        if (!_disposed) {
+          _error = _safeError(cause);
+          _changed();
+        }
+      }),
+    );
+  }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -1428,6 +1623,7 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     _epoch++;
     WidgetsBinding.instance.removeObserver(this);
     _resourceTimer?.cancel();
+    _updateTimer?.cancel();
     _gameMedia.removeListener(_changed);
     _gameMedia.dispose();
     unawaited(_states?.cancel());

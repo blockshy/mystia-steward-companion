@@ -6,10 +6,15 @@ import 'transport.dart';
 
 /// 类型化核心 API。扩展页面通过 read/write 调用当前端点，所有授权由 Mod 再次判定。
 class CompanionApi {
-  CompanionApi({required this.connection, CompanionTransport? transport})
-    : transport = transport ?? DartIoTransport();
-  final ApiConnection connection;
+  CompanionApi({
+    required ApiConnection connection,
+    CompanionTransport? transport,
+  }) : _connection = connection,
+       transport = transport ?? DartIoTransport();
+  ApiConnection _connection;
+  ApiConnection get connection => _connection;
   final CompanionTransport transport;
+  Future<void> _renameTail = Future<void>.value();
 
   /// 图片身份由当前资源清单给出；请求头携带凭据，URL 永不包含 Token。
   Future<Uint8List> gameImage({
@@ -134,13 +139,41 @@ class CompanionApi {
       },
     ),
   );
-  Future<DeviceAuthorityState> rename(String label) async =>
-      DeviceAuthorityState.fromJson(
+
+  /// 只串行化改名，不阻塞普通读取。每次请求仍取得独立不可变的连接对象，因此改名
+  /// 成功后旧请求继续使用原名称，后续租约/读取才携带新名称；凭据和设备 ID 始终不变。
+  /// 串行队列消除两个改名响应逆序返回的覆盖窗口，失败不修改元数据，也不重放请求。
+  Future<DeviceAuthorityState> rename(String label) {
+    final next = _renameTail.then((_) async {
+      final before = _connection;
+      final requested = label.trim();
+      final state = DeviceAuthorityState.fromJson(
         await write(
           '/devices/rename',
-          body: {'protocolVersion': deviceProtocolVersion, 'label': label},
+          body: {'protocolVersion': deviceProtocolVersion, 'label': requested},
         ),
       );
+      final current = state.devices
+          .where((device) => device['deviceId'] == before.clientId)
+          .toList();
+      if (state.currentDeviceId != before.clientId ||
+          current.length != 1 ||
+          current.single['label'] != requested) {
+        throw const ApiException('rename-unconfirmed', '设备名称尚未确认，请刷新设备列表。');
+      }
+      // 不原地修改 ApiConnection：在途请求可能还在等待网络，不能使其身份头隐式变化。
+      _connection = ApiConnection(
+        endpoint: before.endpoint.toString(),
+        token: before.token,
+        clientId: before.clientId,
+        clientLabel: requested,
+      );
+      return state;
+    });
+    _renameTail = next.then<void>((_) {}).catchError((Object _) {});
+    return next;
+  }
+
   Future<DeviceAuthorityState> forget(
     DeviceAuthorityState expected,
     String deviceId,
@@ -249,6 +282,24 @@ class CompanionApi {
     GameSnapshot snapshot,
   ) => write(
     '/business/automation/retry',
+    authorityRevision: authority.authorityRevision,
+    body: {
+      'protocolVersion': interactionProtocolVersion,
+      'automationSessionId': snapshot.automationSessionId,
+      'businessGeneration': snapshot.nightBusinessGeneration,
+      'kind': kind,
+      'key': key,
+    },
+  );
+
+  /// 重置只发送订单身份，客户端不能提供新配方或伪造已送达状态。
+  Future<JsonMap> reset(
+    String kind,
+    String key,
+    DeviceAuthorityState authority,
+    GameSnapshot snapshot,
+  ) => write(
+    '/business/automation/reset',
     authorityRevision: authority.authorityRevision,
     body: {
       'protocolVersion': interactionProtocolVersion,

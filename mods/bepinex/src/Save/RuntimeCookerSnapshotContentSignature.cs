@@ -24,10 +24,17 @@ internal static class RuntimeCookerSnapshotContentSignature
                 hash = (hash * 31) + cooker.GridPosition.Z;
                 hash = (hash * 31) + cooker.ControllerIdentity.GetHashCode();
                 hash = HashIds(hash, cooker.TypeIds);
+                // 展示数据独立变化也应发布；不将此文本用于厨具预约或能力判断。
+                hash = (hash * 31) + cooker.CookerId.GetHashCode();
+                hash = (hash * 31) + cooker.Name.GetHashCode();
+                hash = (hash * 31) + cooker.DisplayName.GetHashCode();
+                hash = (hash * 31) + cooker.Effect.GetHashCode();
+                hash = (hash * 31) + cooker.MetadataStatus.GetHashCode();
                 hash = (hash * 31) + (cooker.ChallengeLocked ? 1 : 0);
                 hash = (hash * 31) + (cooker.CouldOpen ? 1 : 0);
                 hash = (hash * 31) + (cooker.AutomationAvailable ? 1 : 0);
                 hash = (hash * 31) + cooker.AutomationAvailability.GetHashCode();
+                hash = (hash * 31) + cooker.UnavailableReason.GetHashCode();
                 hash = (hash * 31) + cooker.AutomationAvailabilityDiagnostic.GetHashCode();
                 hash = (hash * 31) + cooker.Source.GetHashCode();
             }

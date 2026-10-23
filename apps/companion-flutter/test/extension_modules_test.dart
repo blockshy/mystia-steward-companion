@@ -90,6 +90,34 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  for (final width in [390.0, 640.0, 1280.0]) {
+    testWidgets('任务工具栏到列表只保留标准间距 $width', (tester) async {
+      final model = _ModuleModel();
+      model.localPreferences['missionListModuleEnabled'] = true;
+      model.resources['/missions/tracked'] = {
+        'status': 'ready',
+        'missions': [
+          {'label': 'layout-task', 'title': '合成任务', 'status': 'tracking'},
+        ],
+      };
+      await open(tester, model, width: width, scale: 1.5);
+      final filter = find.byWidgetPredicate(
+        (widget) => widget is StewardField && widget.title == '筛选名称',
+      );
+      final field = find.descendant(
+        of: filter,
+        matching: find.byType(material.TextField),
+      );
+      final list = find.byKey(const ValueKey('mission-items'));
+      // 检查真实控件边界到结果列表的距离，防止滚动区和工具栏重复叠加底部留白。
+      expect(
+        tester.getRect(list).top - tester.getRect(field).bottom,
+        closeTo(8, .01),
+      );
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   testWidgets('五个模块 Tab 始终可见；默认停用不读取，查看设备可保存本机工具开关', (tester) async {
     final model = _ModuleModel();
     model.authority = {'currentDeviceIsPrimary': false};
@@ -124,6 +152,7 @@ void main() {
     }
     expect(model.reads, [
       '/missions/tracked',
+      '/missions/available',
       '/rare-guests/invitations',
     ], reason: '只读取当前已启用的模块；库存使用已有快照。');
     expect(model.writes, isEmpty);
@@ -149,7 +178,7 @@ void main() {
     active.value = false;
     await tester.pumpAndSettle();
     expect(model.cancellations, greaterThan(before));
-    await tap(tester, '可接取任务');
+    await tap(tester, '可接取');
     expect(model.reads.length, reads);
     active.value = true;
     await tester.pumpAndSettle();
@@ -208,10 +237,10 @@ void main() {
     model.localPreferences['missionListModuleEnabled'] = true;
     model.publish();
     await tester.pumpAndSettle();
-    expect(model.reads, ['/missions/tracked']);
+    expect(model.reads, ['/missions/tracked', '/missions/available']);
     model.publish();
     await tester.pumpAndSettle();
-    expect(model.reads, ['/missions/tracked']);
+    expect(model.reads, ['/missions/tracked', '/missions/available']);
   });
 
   testWidgets('邀请确认后停用阻止批量写入，已有写入未返回时模块开关禁用', (tester) async {

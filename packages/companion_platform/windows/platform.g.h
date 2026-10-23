@@ -262,6 +262,8 @@ class PlatformHostApi {
   virtual std::optional<FlutterError> ApplyWindowPreferences(const WindowPreferences& preferences) = 0;
   // 返回是否实际完成。焦点切换被系统拒绝时为 false，不伪造成功。
   virtual ErrorOr<bool> PerformWindowAction(const WindowAction& action) = 0;
+  // 仅打开本项目 GitHub 发布页。原生端再次校验 URL，不能启动任意协议或文件。
+  virtual ErrorOr<bool> OpenExternalUrl(const std::string& url) = 0;
   virtual ErrorOr<PlatformInput> PollInput() = 0;
   // 只接收受限键名；损坏数据必须报错且保留密文，不自动重置。
   virtual ErrorOr<std::optional<std::string>> ReadSecret(const std::string& key) = 0;

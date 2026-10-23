@@ -18,8 +18,14 @@ import 'service_statistics.dart';
 
 /// 经营工作区只展示 C# 提供的主方案、执行诊断和资源占用，绝不从候选重建执行计划。
 class ServicePage extends StatefulWidget {
-  const ServicePage(this.model, {this.onFocusModeChanged, super.key});
+  const ServicePage(
+    this.model, {
+    this.active = true,
+    this.onFocusModeChanged,
+    super.key,
+  });
   final WorkbenchModel model;
+  final bool active;
 
   /// 壳层只需要知道专注视图是否在前台；订单选择及滚动仍归本页面所有。
   final ValueChanged<bool>? onFocusModeChanged;
@@ -27,16 +33,28 @@ class ServicePage extends StatefulWidget {
   State<ServicePage> createState() => _ServicePageState();
 }
 
-class _ServicePageState extends State<ServicePage> {
+class _ServicePageState extends State<ServicePage>
+    with ActiveResourcePage<ServicePage> {
   String kind = 'rare';
   bool focusMode = false;
   bool statisticsMode = false;
   bool diagnostics = false;
+  bool _resetPending = false;
   // 搜索状态归页面控制器所有；窄宽重排、切换方案/状态时不丢选择区或输入法组合文本。
   final searchInput = TextEditingController();
   String get search => searchInput.text;
   final controlsScroll = ScrollController();
   WorkbenchModel get model => widget.model;
+
+  @override
+  bool get resourcePageActive => widget.active;
+  @override
+  WorkbenchModel get resourceModel => model;
+  @override
+  void loadActiveResource() {
+    // 与所有资源页统一在旧页面撤销之后订阅，不在壳层切页时抢先读取收藏。
+    if (widget.active && model.connected) model.readResource('/favorites');
+  }
 
   @override
   void dispose() {
@@ -94,6 +112,7 @@ class _ServicePageState extends State<ServicePage> {
 
   @override
   Widget build(BuildContext context) {
+    synchronizeResourceActivation();
     final liveOrders = model.serviceOrders;
     final raw = diagnostics
         ? records(
@@ -430,10 +449,11 @@ class _ServicePageState extends State<ServicePage> {
               '${label(order['guestName'])} · ${_displayDesk(order['deskCode'])} 桌',
         ),
         const SizedBox(height: 10),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
+        ServiceOrderStatus(
+          item,
+          rare: true,
+          details: true,
+          leading: [
             OrderTag(
               '料理：${label(order['foodTag'])}',
               kind: OrderTagKind.request,
@@ -449,7 +469,6 @@ class _ServicePageState extends State<ServicePage> {
               ),
           ],
         ),
-        ServiceOrderStatus(item, rare: true, details: true),
         if (item['presentationIssue'] is String)
           Text(label(item['presentationIssue'])),
         const SizedBox(height: 18),
@@ -464,7 +483,8 @@ class _ServicePageState extends State<ServicePage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               ServiceBudget(item['budget']),
-              if (plans.isNotEmpty) _plan(plans.first, primary: true),
+              if (plans.isNotEmpty)
+                _plan(plans.first, item: item, primary: true),
             ],
           ),
         ),
@@ -489,7 +509,7 @@ class _ServicePageState extends State<ServicePage> {
         // 第一项始终是 C# 返回的主方案；展开备选不会改变执行选择或偷偷重新排序。
         if (plans.length > 1)
           CollapsibleSection('备选搭配 · ${plans.length - 1} 项', [
-            for (final plan in plans.skip(1)) _plan(plan),
+            for (final plan in plans.skip(1)) _plan(plan, item: item),
           ]),
         CollapsibleSection('高级诊断 · 订单捕获', [
           Fact('追踪标识', order['traceId']),
@@ -535,7 +555,7 @@ class _ServicePageState extends State<ServicePage> {
   }
 
   /// 详情沿用同一个服务端方案对象，备选仅供查看，不改变实际执行选择。
-  Widget _plan(DataMap plan, {bool primary = false}) {
+  Widget _plan(DataMap plan, {required DataMap item, bool primary = false}) {
     final bucket =
         const {
           'complete': '完整满足',
@@ -551,6 +571,7 @@ class _ServicePageState extends State<ServicePage> {
       plan,
       details: true,
       showBasics: !primary,
+      favoriteItem: item,
     );
     if (!primary) return Section('备选 · $bucket', [content]);
     // 当前方案与外层摘要使用相同分隔方式，不再用“主方案”增加一层标题。
@@ -576,14 +597,12 @@ class _ServicePageState extends State<ServicePage> {
             '${label(object(item['order'])['guestName'])} · ${_displayDesk(object(item['order'])['deskCode'])} 桌',
       ),
       const SizedBox(height: 10),
-      ServiceOrderStatus(item, rare: false, details: true),
-      // 送达状态属于订单进度；与下方“原订单”资料留出独立分组间距，避免紧贴标题带。
-      const SizedBox(height: 14),
       Section('原订单', [
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
+        ServiceOrderStatus(
+          item,
+          rare: false,
+          details: true,
+          leading: [
             ServiceOriginalOrderTag(object(item['originalFood']), food: true),
             ServiceOriginalOrderTag(
               object(item['originalBeverage']),
@@ -632,5 +651,61 @@ class _ServicePageState extends State<ServicePage> {
             item['manualResolutionRequired'] != true
         ? () => model.retryOrder(kind, label(item['orderKey'], ''))
         : null,
+    onReset: !_resetPending && model.canExecute && item['canReset'] == true
+        ? () => _resetOrder(item)
+        : null,
   );
+
+  /// 重置确认绑定打开时的会话、经营代次和订单键。页面刷新不借旧弹窗修改新订单；
+  /// 真正的锅次、回执、人工屏障与在途操作限制由服务端在提交瞬间再次检查。
+  Future<void> _resetOrder(DataMap item) async {
+    final expectedModel = model;
+    final selectedKind = label(item['kind'], kind);
+    final key = label(item['orderKey'], '');
+    final connection = model.connectionVersion;
+    final session = label(model.snapshot['automationSessionId'], '');
+    final generation = model.snapshot['nightBusinessGeneration'];
+    if (_resetPending ||
+        !TickerMode.valuesOf(context).enabled ||
+        !diagnostics ||
+        focusMode ||
+        statisticsMode ||
+        kind != selectedKind ||
+        !model.canExecute ||
+        item['canReset'] != true ||
+        key.isEmpty ||
+        session.isEmpty ||
+        generation is! int)
+      return;
+    setState(() => _resetPending = true);
+    try {
+      if (!await confirmCurrentAction(
+        context,
+        model,
+        '重置此订单的规划状态',
+        '${label(item['title'])}。下轮按当前现场重新选择方案；不会取消正在制作的料理或清除人工确认事项。',
+      ))
+        return;
+      if (!mounted ||
+          !identical(model, expectedModel) ||
+          !TickerMode.valuesOf(context).enabled ||
+          !diagnostics ||
+          focusMode ||
+          statisticsMode ||
+          kind != selectedKind ||
+          model.connectionVersion != connection ||
+          label(model.snapshot['automationSessionId'], '') != session ||
+          model.snapshot['nightBusinessGeneration'] != generation ||
+          !model.canExecute)
+        return;
+      await model.resetOrder(
+        selectedKind,
+        key,
+        expectedSessionId: session,
+        expectedGeneration: generation,
+      );
+    } finally {
+      if (mounted) setState(() => _resetPending = false);
+    }
+  }
 }

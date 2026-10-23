@@ -48,7 +48,7 @@ const _customers = <DataMap>[
 ];
 
 class _TagModel extends RichPreviewWorkbenchModel {
-  _TagModel() {
+  _TagModel({super.desktop}) {
     catalog = {...catalog, 'isComplete': true, 'rareCustomers': _customers};
   }
   final List<DataMap> queries = [];
@@ -292,6 +292,56 @@ void main() {
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     });
+  }
+
+  for (final desktop in [true, false]) {
+    for (final scale in [100, 150]) {
+      testWidgets('普客稀客查询首行与结果栏切换不跳动 $desktop / $scale%', (tester) async {
+        final model = _TagModel(desktop: desktop);
+        model.localPreferences['fontScalePercent'] = scale;
+        await open(tester, model, width: desktop ? 624 : 390);
+        for (final width in desktop ? [624.0, 1280.0] : [390.0, 423.0]) {
+          tester.view.physicalSize = Size(width, 920);
+          await tester.pumpAndSettle();
+          final rare = tester.getRect(
+            find.byKey(const ValueKey('rare-customer-selector')),
+          );
+          final rareResults = tester.getRect(
+            find.byKey(const ValueKey('recommendation-results-toolbar')),
+          );
+          await tester.tap(find.text('普客'));
+          await tester.pumpAndSettle();
+          final normal = tester.getRect(
+            find.byKey(const ValueKey('normal-place-selector')),
+          );
+          final normalResults = tester.getRect(
+            find.byKey(const ValueKey('recommendation-results-toolbar')),
+          );
+          // 测量完整应用布局，包含侧栏、页头、页签及触屏密度。只验证选择器本身
+          // 同高会漏掉外层不同 Padding；同时核对工具栏起点才能阻止旧问题回归。
+          expect(normal.top, closeTo(rare.top, .01));
+          expect(normal.height, closeTo(rare.height, .01));
+          expect(normalResults.top, closeTo(rareResults.top, .01));
+          expect(normalResults.top - normal.bottom, closeTo(8, .01));
+          for (final key in [
+            'normal-follow-place',
+            'normal-customer-preferences',
+          ]) {
+            final rect = tester.getRect(find.byKey(ValueKey(key)));
+            expect(rect.center.dy, closeTo(normal.center.dy, .01));
+            expect(rect.right, lessThanOrEqualTo(width));
+          }
+          expect(tester.takeException(), isNull);
+          await tester.tap(find.text('稀客'));
+          await tester.pumpAndSettle();
+          final restored = tester.getRect(
+            find.byKey(const ValueKey('rare-customer-selector')),
+          );
+          expect(restored.top, closeTo(rare.top, .01));
+        }
+        await tester.pumpWidget(const SizedBox());
+      });
+    }
   }
 
   Future<void> screenshot(

@@ -21,6 +21,7 @@ try
     VerifyLockedCookerSourceContracts();
     VerifyInventoryReadSourceProjection();
     VerifyBeverageUnlockSourceProjection();
+    RuntimeCookerDisplayChecks.Run();
 
     Console.WriteLine("PASS: runtime cooker snapshots retain exact identities and fail closed on uncertain lock state.");
     return 0;
@@ -1210,10 +1211,15 @@ static PlacedCookerInfo CloneCooker(
         TypeIds = source.TypeIds.ToList(),
         TypeNames = source.TypeNames.ToList(),
         Name = source.Name,
+        CookerId = source.CookerId,
+        DisplayName = source.DisplayName,
+        Effect = source.Effect,
+        MetadataStatus = source.MetadataStatus,
         ChallengeLocked = challengeLocked ?? source.ChallengeLocked,
         CouldOpen = source.CouldOpen,
         AutomationAvailable = source.AutomationAvailable,
         AutomationAvailability = source.AutomationAvailability,
+        UnavailableReason = source.UnavailableReason,
         AutomationAvailabilityDiagnostic = source.AutomationAvailabilityDiagnostic,
         Source = source.Source,
     };

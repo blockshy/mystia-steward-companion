@@ -344,16 +344,22 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
           'id': 401,
           'name': '妖精',
           'places': ['妖怪兽道', '博丽神社'],
+          'positiveTags': ['甜', '小巧', '凉爽'],
+          'beverageTags': ['无酒精', '水果'],
         },
         {
           'id': 402,
           'name': '人类村民',
           'places': ['人间之里', '博丽神社'],
+          'positiveTags': ['家常', '饱腹'],
+          'beverageTags': ['低酒精', '清爽'],
         },
         {
           'id': 403,
           'name': '妖怪客人',
           'places': ['妖怪兽道', '红魔馆'],
+          'positiveTags': ['肉', '鲜'],
+          'beverageTags': ['中酒精'],
         },
       ],
     };
@@ -533,11 +539,18 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
                   ? 3
                   : null,
               'conditionCount': 3,
-              'conditionStates': i == 0
-                  ? [true, true, false]
-                  : i == 1
-                  ? [true, true, true]
-                  : [null, null, null],
+              // 描述与完成状态使用同一生产结构；未核实状态保留 null，不能按计数推断。
+              'conditions': [
+                for (var condition = 0; condition < 3; condition++)
+                  {
+                    'description': [
+                      ['收集两份新鲜食材', '备好一份酒水', '完成一次食材交付'],
+                      ['招待指定客人', '满足料理点单', '获得本次好评'],
+                      ['确认料理灵感', '准备对应食材', '交付暖心料理'],
+                    ][i][condition],
+                    'completed': i == 2 ? null : i == 1 || condition < 2,
+                  },
+              ],
             },
         ],
       },
@@ -630,16 +643,21 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
         ],
       },
       '/updates/status': {
+        'enabled': true,
+        'autoCheck': true,
         'currentVersion': '1.3.1',
         'latestVersion': '1.3.2-preview',
         'state': '尚未检查',
         'hasUpdate': false,
         'staged': false,
         'installMessage': '预览不会下载或执行更新程序。',
+        'releaseHistoryState': 'ready',
         'availableReleases': [
           {
+            'tag': 'v1.3.2-preview',
             'title': '1.3.2 · 合成版本说明',
-            'notesMarkdown': '界面预览用说明：优化信息组织、保留原有权限边界。不是已发布版本。',
+            'publishedAtUtc': _fixtureTime,
+            'notesMarkdown': '## 离线验收样本\n\n- 优化信息组织。\n- 保留原有权限边界。\n\n**不是已发布版本**；检查和下载只改变预览内存。',
           },
         ],
       },
@@ -761,10 +779,21 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
             for (final entry in [(1, '煮锅'), (4, '蒸锅'), (2, '烧烤架')])
               {
                 'name': entry.$2,
+                'displayName': '合成${entry.$2}',
+                // 实例目录编号与类型编号明确不同；效果只为合成排版资料，不声明实机效果。
+                'cookerId': 900 + entry.$1,
                 'typeIds': [entry.$1],
-                'automationAvailability': entry.$1 == 4
-                    ? 'ExtractedResidual'
-                    : 'StrictIdle',
+                'typeNames': [entry.$2],
+                'effect': entry.$1 == 1 ? '烹饪时间缩短20%\n续单概率提高10%' : '',
+                'metadataStatus': entry.$1 == 1 ? 'ready' : 'unavailable',
+                'automationAvailability': entry.$1 == 1
+                    ? 'StrictIdle'
+                    : 'Unavailable',
+                'unavailableReason': entry.$1 == 4
+                    ? 'cooking'
+                    : entry.$1 == 2
+                    ? 'finished'
+                    : '',
                 'automationAvailabilityDiagnostic': '合成状态，仅用于离线排版验收',
               },
         ],
@@ -777,6 +806,25 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
       },
       'nightBusiness': {
         'place': '博丽神社',
+        // 在场列表直接来自合成现场，不从推荐行有无方案推断客人是否出现。
+        // 额外保留一个尚未点单的合成人物，验收统计与订单数量不必相等的情况。
+        'activeRareGuests': [
+          if (!day) ...[
+            for (final entry in orders)
+              {
+                'guestId': object(entry['order'])['guestId'],
+                'guestName': object(entry['order'])['guestName'],
+                'deskCode': object(entry['order'])['deskCode'],
+                'fund': object(entry['order'])['fund'],
+              },
+            {
+              'guestId': 399,
+              'guestName': '合成候场稀客（尚未点单）',
+              'deskCode': null,
+              'fund': 180,
+            },
+          ],
+        ],
         'orders': day
             ? <Object?>[]
             : [for (final entry in orders) entry['order']],
@@ -786,7 +834,36 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
             ? <Object?>[]
             : [for (final entry in normal) entry['order']],
       },
-      'specialBusiness': null,
+      // 明确的离线多目标挑战只用于信息排版，不套用真实挑战规则，也不影响推荐结果。
+      // 日间立即撤销该区域，避免旧的夜间目标被误认作当前现场。
+      'specialBusiness': day
+          ? null
+          : {
+              'active': true,
+              'displayName': '合成多目标挑战',
+              'challengeType': 'offline-preview-challenge',
+              'source': '离线合成数据',
+              'phase': '第二阶段（合成）',
+              'foodTargetTags': ['家常', '鲜'],
+              'beverageTargetTags': ['无酒精', '清爽'],
+              'targetFund': 1200,
+              'targetLabel': '合成阶段进度',
+              'currentValue': 3,
+              'maxValue': 8,
+              'targetValue': 6,
+              'currentSpellCount': 2,
+              'targetSpellCount': 5,
+              'currentAnger': 20,
+              'maxAnger': 100,
+              'targetAnger': 60,
+              'targetTagTimeProgress': .6,
+              'targetTimeProgress': .75,
+              'wackyKoishiShieldBroken': false,
+              'ruleSummary': '合成目标用于查看长文本、标签及进度的排列，不代表真实游戏规则。',
+              'recommendationPolicy': '仅展示固定方案，不运行推荐计算。',
+              'automationPolicy': '仅修改预览内存，不发送游戏动作。',
+              'lastTargetUpdatedUtc': _fixtureTime,
+            },
     };
     business = {
       'protocolVersion': 1,
@@ -858,6 +935,9 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
   DataMap _rareOrder(int index) {
     final guest = catalogItems('rareCustomers')[index % 6];
     return {
+      // OrderRecommendationService 的生产结果带有规范目录 customer；现场 runtimeGuestId
+      // 仅识别订单实例，不能用它代替收藏 customerId。预览也必须覆盖这一真实契约。
+      'customer': Map<String, Object?>.of(guest),
       'order': {
         'deskCode': index,
         'guestName': guest['name'],
@@ -873,6 +953,10 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
         'beverageTag': '无酒精',
         'fund': 100 + index * 15,
         'remainingOrderCount': 3,
+        // 明确的未送达事实供安全重置样例使用；未知状态不能假装尚未送达。
+        'hasServedFood': false,
+        'hasServedBeverage': false,
+        'hasEvaluated': false,
         // 合成状态仅用于检查标签层次；不把人物名称当作真实游戏规则来源。
         'specialBusinessRoleLabel': index == 3 ? '合成挑战订单' : '',
         'automationAllowed': index != 4,
@@ -1056,6 +1140,17 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
       'rollbackCount': 0,
       'paused': index == 0,
       'manualResolutionRequired': scenario == 'barrier' && index == 0,
+      // 首条覆盖未知送达/人工屏障，第四条覆盖活动锅次，其余条目可验收安全重置。
+      // 这些约束由下方 resetOrder 再读一次，而不是只依赖按钮置灰。
+      'canReset': index != 0 && index != 3,
+      'resetBlockReason': index == 0
+          ? scenario == 'barrier'
+                ? '请先处理此订单的人工确认事项。'
+                : '合成送达请求尚未核实，不能重置。'
+          : index == 3
+          ? '此订单仍有合成料理任务，请等待完成。'
+          : '',
+      'cookingJobId': index == 3 ? 'preview-cooking-$kind-$index' : '',
       'completed': false,
       'prepared': order['hasServedFood'] == true,
       'foodDeliveryRequested': index == 0 || order['hasServedFood'] == true,
@@ -1271,7 +1366,17 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
             for (final row in records(resources['/custom-recipes']!['recipes']))
               {
                 ...row,
-                if (row['id'] == query['id']) ...{
+                // 离线预览同样区分当前模式与精确批量范围；不让演示菜单把另一
+                // 模式或相邻分组一起改写。这里只更新合成内存条目，不访问文件/HTTP。
+                if (row['mode'] == query['mode'] &&
+                    switch (query['scope']) {
+                      'all' => true,
+                      'customer' =>
+                        '${row['customerId']}' == query['customerId'],
+                      'recipe' => '${row['foodId']}' == query['foodId'],
+                      'entry' => row['id'] == query['id'],
+                      _ => false,
+                    }) ...{
                   if (query.containsKey('enabled'))
                     'enabled': query['enabled'] == 'true',
                   if (query.containsKey('pinToTop'))
@@ -1750,6 +1855,79 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
       ],
     };
     _publish('预览重试已记录');
+  }
+
+  /// 安全重置的离线替身只清除一个合成诊断的规划字段。提交时再次核对会话、代次、
+  /// 权限与阻断状态；现场订单、送达事实、库存和人工屏障始终保留，不调用真实编排器。
+  @override
+  Future<void> resetOrder(
+    String kind,
+    String key, {
+    required String expectedSessionId,
+    required int expectedGeneration,
+  }) async {
+    error = '';
+    if (!canExecute ||
+        !const {'rare', 'normal'}.contains(kind) ||
+        snapshot['automationSessionId'] != expectedSessionId ||
+        snapshot['nightBusinessGeneration'] != expectedGeneration) {
+      error = '场景、会话或权限已变化，未重置合成订单。';
+    } else {
+      final field = kind == 'rare' ? 'rareDiagnostics' : 'normalDiagnostics';
+      final rows = records(automation[field]);
+      final matches = rows.where((item) => item['orderKey'] == key).toList();
+      if (matches.length != 1) {
+        error = '合成订单不存在或身份不唯一，未重置。';
+      } else {
+        final item = matches.single;
+        if (item['canReset'] != true ||
+            label(item['resetBlockReason'], '').isNotEmpty ||
+            item['manualResolutionRequired'] == true ||
+            item['completed'] == true ||
+            label(item['cookingJobId'], '').isNotEmpty ||
+            item['foodDeliveryRequested'] == true &&
+                item['hasServedFood'] != true ||
+            item['beverageDeliveryRequested'] == true &&
+                item['hasServedBeverage'] != true) {
+          error = label(item['resetBlockReason'], '当前合成订单存在未处理状态，不能重置。');
+          if (error.isEmpty) error = '当前合成订单存在未处理状态，不能重置。';
+        } else {
+          business['automation'] = {
+            ...automation,
+            field: [
+              for (final row in rows)
+                if (row['orderKey'] != key)
+                  row
+                else
+                  {
+                    ...row,
+                    'paused': false,
+                    'retryCount': 0,
+                    'rollbackCount': 0,
+                    'stepLabel': '等待重新规划',
+                    'nextAction': '按合成现场重新评估',
+                    'targetSource': '',
+                    'foodId': null,
+                    'recipeId': null,
+                    'recipeName': '',
+                    'cookerName': '',
+                    'extraIngredientIds': null,
+                    'beverageId': null,
+                    'beverageName': '',
+                    'prepared': row['hasServedFood'] == true,
+                    'foodDeliveryRequested': row['hasServedFood'] == true,
+                    'beverageDeliveryRequested':
+                        row['hasServedBeverage'] == true,
+                    'detailMessage': '已重置合成规划；只改变预览内存，不调用游戏或重新发出动作。',
+                    'lastError': '',
+                  },
+            ],
+          };
+        }
+      }
+    }
+    _recordOperation('重置订单规划');
+    _publish(error.isEmpty ? '合成订单规划已重置' : '合成订单规划未重置');
   }
 
   @override

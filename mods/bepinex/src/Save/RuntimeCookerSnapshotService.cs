@@ -6,6 +6,7 @@ internal static class RuntimeCookerSnapshotService
 {
     private const int MaxFailureSampleLength = 160;
     private const int MaxAvailabilityDiagnosticLength = 240;
+    private static readonly RuntimeCookerDisplayReader DisplayReader = new();
 
     public static void ApplyTo(RecommendationState state)
     {
@@ -72,6 +73,8 @@ internal static class RuntimeCookerSnapshotService
 
         var cookers = new List<PlacedCookerInfo>();
         var emptyControllerCount = 0;
+        var displayReadBudget = 2;
+        var displayReadTime = Environment.TickCount64;
         for (var controllerIndex = 0; controllerIndex < controllerEntries.Count; controllerIndex++)
         {
             var entry = controllerEntries[controllerIndex];
@@ -120,6 +123,8 @@ internal static class RuntimeCookerSnapshotService
                 controller,
                 controllerState,
                 out var automationAvailabilityDiagnostic);
+            // 复用同次主线程已读出的精确 Cooker；附加文本不会改变能力和完整性。
+            var display = DisplayReader.Read(controllerState.Cooker, displayReadTime, ref displayReadBudget);
             cookers.Add(new PlacedCookerInfo
             {
                 ControllerIndex = controllerIndex,
@@ -132,11 +137,18 @@ internal static class RuntimeCookerSnapshotService
                 ControllerIdentity = entry.ControllerIdentity,
                 TypeIds = typeIds,
                 TypeNames = typeNames,
+                CookerId = display.CookerId,
+                // Name是既有能力校验字段，必须继续保持规范类型组合；真实实例名独立显示。
                 Name = string.Join("/", typeNames),
+                DisplayName = display.Name,
+                Effect = display.Effect,
+                MetadataStatus = display.Status,
                 ChallengeLocked = false,
                 CouldOpen = controllerState.CouldOpen,
                 AutomationAvailable = automationAvailability != AutomationCookerStartAvailability.Unavailable,
                 AutomationAvailability = automationAvailability.ToString(),
+                UnavailableReason = RuntimeCookerStartAvailabilityService.DescribeUnavailable(
+                    controllerState, automationAvailability),
                 AutomationAvailabilityDiagnostic = SanitizeDiagnostic(
                     automationAvailabilityDiagnostic,
                     MaxAvailabilityDiagnosticLength),

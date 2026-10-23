@@ -1606,7 +1606,11 @@ internal sealed class RuntimeMissionDiagnosticState
             status,
             definition.ConditionCount,
             completedConditionCount,
-            conditionStates);
+            conditionStates)
+        {
+            // 描述与完成事实只能在同一已验证的定义形状中配对，不能按文字或条件类型重排。
+            ConditionDescriptions = definition.Conditions.Select(condition => condition.Description).ToArray(),
+        };
         return true;
     }
 

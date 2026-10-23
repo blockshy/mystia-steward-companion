@@ -20,6 +20,39 @@ import 'automation_module.dart';
 import 'game_ui_module.dart';
 import 'extension_item_content.dart';
 
+/// 状态只消费宿主枚举；未知或缺失归入“待确认”，不能由条件计数自行推断可完成。
+bool missionMatchesStatus(
+  DataMap item,
+  String filter, {
+  bool available = false,
+}) => switch (filter) {
+  'all' => true,
+  'available' => available,
+  'fulfilled' => !available && item['status'] == 'fulfilled',
+  'tracking' => !available && item['status'] == 'tracking',
+  'unverified' =>
+    !available && item['status'] != 'fulfilled' && item['status'] != 'tracking',
+  _ => false,
+};
+
+/// 两个来源以宿主任务 label 对齐，同名不同 label 仍是不同任务。追踪态比可接取态更新，
+/// 两份数据暂时重叠时保留追踪记录；缺失身份不能靠标题合并，保留原项供用户查看。
+List<({DataMap item, bool available})> mergeMissionEntries(
+  List<DataMap> tracked,
+  List<DataMap> available,
+) {
+  final trackedLabels = {
+    for (final item in tracked)
+      if (item['label'] is String && (item['label']! as String).isNotEmpty)
+        item['label'],
+  };
+  return [
+    for (final item in available)
+      if (!trackedLabels.contains(item['label'])) (item: item, available: true),
+    for (final item in tracked) (item: item, available: false),
+  ];
+}
+
 /// 扩展模块默认关闭；进入已启用模块后才读取数据，人工写入仍绑定原有场景与权限。
 /// 保留 ToolsPage 类型名供现有工作区集成使用，页面名称由主导航统一定义。
 class ToolsPage extends StatefulWidget {
@@ -34,7 +67,9 @@ class _ToolsPageState extends State<ToolsPage>
     with ActiveResourcePage<ToolsPage> {
   String tab = 'missions';
   bool _changingModule = false, _operationPending = false;
-  bool available = false;
+  // 来源由单层状态筛选决定；“全部”聚合两种读取，其他项只订阅所需来源。
+  String missionStatus = 'all';
+  bool get available => missionStatus == 'available';
   String scope = 'current';
   String inventoryType = 'ingredient';
   InventorySortColumn inventorySort = InventorySortColumn.name;
@@ -129,13 +164,6 @@ class _ToolsPageState extends State<ToolsPage>
   @override
   void loadActiveResource() => _load();
   @override
-  void didUpdateWidget(covariant ToolsPage oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // 独立嵌入工作区时也遵循隐藏即撤销读取；不依赖顶层路由替本模块取消订阅。
-    if (oldWidget.active && !widget.active) model.clearResourceSubscription();
-  }
-
-  @override
   void dispose() {
     controlsScroll.dispose();
     invitationLevelsScroll.dispose();
@@ -148,10 +176,11 @@ class _ToolsPageState extends State<ToolsPage>
     if (!widget.active || _changingModule || !_enabled(tab) || !model.connected)
       return;
     model.clearResourceSubscription();
-    if (tab == 'missions')
-      model.readResource(
-        available ? '/missions/available' : '/missions/tracked',
-      );
+    if (tab == 'missions') {
+      if (!available) model.readResource('/missions/tracked');
+      if (available || missionStatus == 'all')
+        model.readResource('/missions/available');
+    }
     if (tab == 'invitations')
       model.readResource('/rare-guests/invitations', query: {'scope': scope});
   }
@@ -217,6 +246,34 @@ class _ToolsPageState extends State<ToolsPage>
   /// 正常任务 ready 和邀请的成功人数摘要没有额外操作价值，故不占用正文或页头。
   /// 网络异常仍由模型原有反馈区呈现；这里不把其它页面的全局错误冒充本次读取错误。
   _ExtensionReadState? get _readState {
+    if (tab != 'missions' || missionStatus != 'all')
+      return _readStateForSource(available: available);
+    final tracked = _readStateForSource(available: false);
+    final obtainable = _readStateForSource(available: true);
+    if (tracked == null && obtainable == null) return null;
+    // 全部来源分别显示读取问题，不能把一方尚未读取解释为完整空列表。
+    final states = [
+      if (tracked != null) ('追踪任务', tracked),
+      if (obtainable != null) ('可接取任务', obtainable),
+    ];
+    final primary = states.firstWhere(
+      (entry) => entry.$2.error,
+      orElse: () => states.firstWhere(
+        (entry) => entry.$2.busy,
+        orElse: () => states.first,
+      ),
+    );
+    return _ExtensionReadState(
+      primary.$2.message,
+      detail: states
+          .map((entry) => '${entry.$1}：${entry.$2.detail ?? entry.$2.message}')
+          .join('\n'),
+      busy: states.any((entry) => entry.$2.busy),
+      error: states.any((entry) => entry.$2.error),
+    );
+  }
+
+  _ExtensionReadState? _readStateForSource({required bool available}) {
     // _enabled 只查询 extensionModules 的三个本机模块；自动化/游戏界面辅助
     // 不在该目录中，必须在读取任何附加资源前返回 null，不能继承邀请的旧状态。
     if (!widget.active || !_enabled(tab)) return null;
@@ -360,7 +417,9 @@ class _ToolsPageState extends State<ToolsPage>
               child: SingleChildScrollView(
                 key: const ValueKey('extension-controls'),
                 controller: controlsScroll,
-                padding: const EdgeInsets.only(right: 8, bottom: 8),
+                // 各工具栏已经提供标准底部间距，控制区只给滚动条预留右侧空间。
+                // 避免再叠两层8px，让任务搜索到首条内容比其它列表多出16px。
+                padding: const EdgeInsets.only(right: 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [toggle, ...controls],
@@ -368,7 +427,6 @@ class _ToolsPageState extends State<ToolsPage>
               ),
             ),
           ),
-          const SizedBox(height: 8),
           Expanded(child: content),
         ],
       ),
@@ -381,10 +439,12 @@ class _ToolsPageState extends State<ToolsPage>
     required Map<T, String> items,
     required T value,
     required ValueChanged<T> onChanged,
+    double maxSearchWidth = 152,
   }) => PageToolbar(
     key: const ValueKey('extension-page-toolbar'),
     controller: searchInput,
     searchLabel: '筛选名称',
+    maxSearchWidth: maxSearchWidth,
     onSearchChanged: (_) => setState(() {}),
     navigation: WorkspaceTabs<T>(
       horizontalScroll: true,
@@ -413,35 +473,66 @@ class _ToolsPageState extends State<ToolsPage>
   );
 
   Widget _missions() {
-    final response =
-        model.resources[available
-            ? '/missions/available'
-            : '/missions/tracked'] ??
-        const <String, Object?>{};
-    final items = records(response['missions'])
-        .where((item) => label(item['title']).contains(search))
+    final tracked = records(model.resources['/missions/tracked']?['missions']);
+    final obtainable = records(
+      model.resources['/missions/available']?['missions'],
+    );
+    final entries = missionStatus == 'all'
+        ? mergeMissionEntries(tracked, obtainable)
+        : [
+            for (final item in available ? obtainable : tracked)
+              (item: item, available: available),
+          ];
+    final items = entries
+        .where(
+          (entry) =>
+              label(entry.item['title']).contains(search) &&
+              missionMatchesStatus(
+                entry.item,
+                missionStatus,
+                available: entry.available,
+              ),
+        )
         .toList();
     final state = _readState;
     return _localPage(
       [
-        _toolbar<bool>(
-          items: const {false: '追踪任务', true: '可接取任务'},
-          value: available,
-          onChanged: (next) {
-            setState(() => available = next);
-            _load();
-          },
+        KeyedSubtree(
+          key: const ValueKey('mission-status-filter'),
+          child: _toolbar<String>(
+            // 单层筛选同时表达任务状态和可接取来源，不再让用户组合两排相互约束的条件。
+            // 窄屏保留横滚和独立搜索区域，大字号也不压缩字号或裁掉后面的筛选入口。
+            items: const {
+              'all': '全部',
+              'fulfilled': '可完成',
+              'tracking': '进行中',
+              'available': '可接取',
+              'unverified': '待确认',
+            },
+            maxSearchWidth: 120,
+            value: missionStatus,
+            onChanged: (value) {
+              setState(() => missionStatus = value);
+              _load();
+            },
+          ),
         ),
       ],
       items.isEmpty
-          ? EmptyState(state?.message ?? '暂无任务', '')
+          ? EmptyState(
+              state?.message ??
+                  (missionStatus != 'all' && !available ? '没有符合筛选的任务' : '暂无任务'),
+              '',
+            )
           : ListView.builder(
               key: const ValueKey('mission-items'),
               itemCount: items.length,
               itemBuilder: (context, index) => MissionItemContent(
-                items[index],
-                available: available,
-                key: ValueKey('mission-item-${items[index]['label']}-$index'),
+                items[index].item,
+                available: items[index].available,
+                key: ValueKey(
+                  'mission-item-${items[index].item['label']}-$index',
+                ),
               ),
             ),
     );
@@ -549,7 +640,7 @@ class _ToolsPageState extends State<ToolsPage>
     required double levelWidth,
     required VoidCallback? onInvite,
   }) => Padding(
-    padding: StewardDensity.togglePadding,
+    padding: const EdgeInsets.only(bottom: StewardDensity.toolbarGap),
     child: Row(
       key: const ValueKey('invitation-filter-row'),
       children: [

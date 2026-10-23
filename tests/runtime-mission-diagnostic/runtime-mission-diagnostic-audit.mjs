@@ -670,6 +670,15 @@ assert.ok(
     && definitionReader.includes('TryGetLanguageShape()'),
   'Definition metadata must be cached without retaining native mission or language objects.',
 );
+// 条件文字只在原有读档/新任务边界读取；可接取来源的重复 fresh read 不付出额外本地化成本。
+assert.ok(
+  definitionReader.includes('bool includeConditionDescriptions = false')
+    && definitionReader.includes('includeConditionDescriptions ? TryReadConditionDescription(condition) : ""')
+    && (capture.match(/includeConditionDescriptions: true/g) ?? []).length === 2
+    && !readSource('mods/bepinex/src/Save/RuntimeScheduledMissionSourceReader.cs')
+      .includes('includeConditionDescriptions: true'),
+  'Condition descriptions must remain opt-in only at the two bounded tracked mission capture boundaries.',
+);
 for (const forbiddenDefinitionPath of [
   'GetMissionLanguage',
   'm_Name',

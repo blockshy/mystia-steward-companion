@@ -300,7 +300,7 @@ void main() {
     ]);
     expect(model.writes, isEmpty);
     expect(model.localWrites, isEmpty);
-    expect(model.reads, isEmpty);
+    expect(model.reads, ['/favorites'], reason: '经营页只注册一次收藏读取；专注切换不重读或写游戏。');
     expect(tester.takeException(), isNull);
   });
 
@@ -368,6 +368,57 @@ void main() {
       tester.getTopLeft(focusText('2 桌 · 普客乙')).dy,
       lessThan(tester.getTopLeft(focusText('1 桌 · 稀客甲')).dy),
     );
+    expect(model.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('专注收藏按钮可独立隐藏并持久恢复，不影响制作字段或共享配置', (tester) async {
+    final model = _FocusModel();
+    addTearDown(model.dispose);
+    final item = records(model.recommendations['recommendations']).first;
+    item['customer'] = {'id': 7, 'name': '稀客甲'};
+    object(
+      object(records(item['executionPlans']).first['food'])['recipe'],
+    )['id'] = 11;
+    model.resources['/favorites'] = {
+      'recipes': <DataMap>[],
+      'beverages': <DataMap>[],
+    };
+    final profile = Map<String, Object?>.of(model.profile);
+    await open(tester, model);
+    await focus(tester);
+    await revealFocus(tester, focusText('收藏料理'));
+    expect(focusText('收藏料理'), findsOneWidget);
+    await preferences(tester);
+    await tester.ensureVisible(toggle(serviceFocusFavoritesPreference));
+    expect(
+      tester.widget<FSwitch>(toggle(serviceFocusFavoritesPreference)).value,
+      isTrue,
+    );
+    await tester.tap(toggle(serviceFocusFavoritesPreference));
+    await tester.pumpAndSettle();
+    expect(model.localWrites.single, {serviceFocusFavoritesPreference: false});
+    await preferences(tester);
+    await revealFocus(tester, focusText('主方案料理'));
+    expect(focusText('收藏料理'), findsNothing);
+    expect(focusText('收藏酒水'), findsNothing);
+    expect(focusText('主方案料理'), findsOneWidget);
+    expect(focusText('制作信息已全部隐藏，可在“专注显示”中重新开启。'), findsNothing);
+    expect(model.profile, profile);
+    expect(model.writes, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+    await open(tester, model);
+    await focus(tester);
+    await revealFocus(tester, focusText('主方案料理'));
+    expect(focusText('收藏料理'), findsNothing);
+    await preferences(tester);
+    await tester.ensureVisible(toggle(serviceFocusFavoritesPreference));
+    await tester.tap(toggle(serviceFocusFavoritesPreference));
+    await tester.pumpAndSettle();
+    await preferences(tester);
+    await revealFocus(tester, focusText('收藏料理'));
+    expect(focusText('收藏料理'), findsOneWidget);
+    expect(model.localWrites.last, {serviceFocusFavoritesPreference: true});
     expect(model.writes, isEmpty);
     expect(tester.takeException(), isNull);
   });

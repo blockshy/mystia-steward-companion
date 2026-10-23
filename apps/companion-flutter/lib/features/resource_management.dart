@@ -6,6 +6,7 @@ import '../app/workbench_model.dart';
 import '../ui/components.dart';
 import '../ui/entity_image.dart';
 import '../ui/page_activity.dart';
+import '../ui/page_toolbar.dart';
 import '../ui/steward_select.dart';
 import '../ui/steward_style.dart';
 
@@ -226,57 +227,51 @@ class _ResourceManagementPageState extends State<ResourceManagementPage> {
             key: PageStorageKey('resource-gallery-$_category'),
             slivers: [
               SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
+                child: PageFilterRow(
                   // 两个输入控件共享剩余宽度，重读按钮保留完整文字；窄屏、大字号
                   // 都维持一行，宽屏则限制输入宽度，避免搜索框占据整个画廊。
-                  child: Row(
-                    children: [
-                      Flexible(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(
-                            maxWidth: stewardSelectWidth,
-                          ),
-                          child: StewardSelect<String>(
-                            label: '资源分类',
-                            showLabel: false,
-                            value: _category,
-                            items: {
-                              'all': '全部资源（${model.gameMediaItems.length}）',
-                              for (final category in _categories.entries)
-                                category.key:
-                                    '${category.value}（${model.gameMediaItems.where((item) => item['kind'] == category.key).length}）',
-                            },
-                            onChanged: (value) =>
-                                setState(() => _category = value),
-                          ),
+                  children: [
+                    Flexible(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(
+                          maxWidth: stewardSelectWidth,
+                        ),
+                        child: StewardSelect<String>(
+                          label: '资源分类',
+                          showLabel: false,
+                          value: _category,
+                          items: {
+                            'all': '全部资源（${model.gameMediaItems.length}）',
+                            for (final category in _categories.entries)
+                              category.key:
+                                  '${category.value}（${model.gameMediaItems.where((item) => item['kind'] == category.key).length}）',
+                          },
+                          onChanged: (value) =>
+                              setState(() => _category = value),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 152),
-                          child: StewardField(
-                            '搜索名称或编号',
-                            key: const ValueKey('resource-media-search'),
-                            showLabel: false,
-                            hint: '搜索名称或编号',
-                            controller: _search,
-                            onChanged: (_) => setState(() {}),
-                          ),
+                    ),
+                    Flexible(
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 152),
+                        child: StewardField(
+                          '搜索名称或编号',
+                          key: const ValueKey('resource-media-search'),
+                          showLabel: false,
+                          hint: '搜索名称或编号',
+                          controller: _search,
+                          onChanged: (_) => setState(() {}),
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      StewardButton(
-                        '重新读取',
-                        icon: FLucideIcons.refreshCw,
-                        onPressed:
-                            model.connected && model.primary && !model.busy
-                            ? model.reloadGameMedia
-                            : null,
-                      ),
-                    ],
-                  ),
+                    ),
+                    StewardButton(
+                      '重新读取',
+                      icon: FLucideIcons.refreshCw,
+                      onPressed: model.connected && model.primary && !model.busy
+                          ? model.reloadGameMedia
+                          : null,
+                    ),
+                  ],
                 ),
               ),
               if (entries.isEmpty)

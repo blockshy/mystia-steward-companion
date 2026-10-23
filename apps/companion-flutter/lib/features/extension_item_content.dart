@@ -92,7 +92,7 @@ class MissionItemContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final status = available ? item['activationStatus'] : item['status'];
-    final states = item['conditionStates'];
+    final conditions = records(item['conditions']);
     final presentation = label(item['presentationStatus'], '');
     return ExtensionItemCard(
       title: label(item['title'], '未命名任务'),
@@ -116,11 +116,11 @@ class MissionItemContent extends StatelessWidget {
             '条件进度',
             '${_count(item['completedConditionCount'])} / ${_count(item['conditionCount'])}',
           ),
-          if (states is List && states.isNotEmpty) ...[
+          if (conditions.isNotEmpty) ...[
             const SizedBox(height: 7),
             // 条件使用只读列表，不使用复选控件或料理标签，避免暗示可以手工勾选。
-            for (final (index, state) in states.indexed)
-              _ConditionLine(index + 1, state),
+            for (final (index, condition) in conditions.indexed)
+              _ConditionLine(index + 1, condition),
           ],
         ] else ...[
           _DetailField('方式', _activationMode(item['activationMode'])),
@@ -342,17 +342,18 @@ class _ItemStatus extends StatelessWidget {
 }
 
 class _ConditionLine extends StatelessWidget {
-  const _ConditionLine(this.number, this.state);
+  const _ConditionLine(this.number, this.condition);
   final int number;
-  final Object? state;
+  final DataMap condition;
+  Object? get state => condition['completed'];
   @override
   Widget build(BuildContext context) => Padding(
     padding: const EdgeInsets.symmetric(vertical: 3),
     child: StewardBaselineRow(
       children: [
         StewardFirstLineCenter(
-          textStyle: StewardText.caption,
-          referenceText: '条件 $number',
+          textStyle: StewardText.body,
+          referenceText: label(condition['description'], '条件 $number：说明暂不可用'),
           child: Icon(
             state == true
                 ? FLucideIcons.circleCheck
@@ -366,13 +367,20 @@ class _ConditionLine extends StatelessWidget {
         const SizedBox(width: 8),
         Expanded(
           child: Text(
-            '条件 $number：${state == true
-                ? '已完成'
-                : state == false
-                ? '未完成'
-                : '未知'}',
-            style: StewardText.caption,
+            label(condition['description'], '条件 $number：说明暂不可用'),
+            style: StewardText.body,
           ),
+        ),
+        const SizedBox(width: 10),
+        // 条件文字可自然换行；进度保持独立、固定的右列，与第一行文字基线对齐。
+        // 未验证的 null 必须显示“待确认”，不把它渲染成未完成或伪造数值进度。
+        Text(
+          state == true
+              ? '已完成'
+              : state == false
+              ? '未完成'
+              : '待确认',
+          style: StewardText.caption,
         ),
       ],
     ),
@@ -436,7 +444,7 @@ String _count(Object? value) => value is int && value >= 0 ? '$value' : '未知'
 String _missionStatus(Object? value) => switch (value) {
   'tracking' => '进行中',
   'fulfilled' => '可完成',
-  'unverified' => '待核验',
+  'unverified' => '待确认',
   'available' => '可触发',
   'triggering' => '正在触发',
   _ => '状态未确认',

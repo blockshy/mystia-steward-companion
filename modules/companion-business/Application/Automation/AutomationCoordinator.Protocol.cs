@@ -126,6 +126,8 @@ public sealed partial class AutomationCoordinator
             if (guestImageKind is not ("rare-guest" or "normal-group")) guestImageKind = "";
             var guestImageId = guestImageKind.Length == 0 ? null
                 : DiagnosticId(order[kind == "rare" ? "guestId" : "guestImageId"]);
+            // 同一快照只扫描一次订单重置限制，避免诊断序列化重复遍历锅次和事件集合。
+            var resetBlockReason = ResetBlockReason(key);
             var diagnostic = J.Object(("orderKey", state["orderKey"]), ("traceId", order["traceId"]),
                 ("kind", kind), ("guestId", order["guestId"]), ("guestName", J.Str(order["guestName"])),
                 ("guestImageKind", guestImageKind), ("guestImageId", guestImageId),
@@ -153,6 +155,7 @@ public sealed partial class AutomationCoordinator
                 ("hasServedFood", J.Bool(order["hasServedFood"])), ("hasServedBeverage", J.Bool(order["hasServedBeverage"])),
                 ("readyToEvaluate", J.Bool(order["readyToEvaluate"])), ("hasEvaluated", J.Bool(order["hasEvaluated"])),
                 ("paused", state["paused"]), ("manualResolutionRequired", state["manualResolutionRequired"]),
+                ("canReset", resetBlockReason.Length == 0), ("resetBlockReason", resetBlockReason),
                 ("lastRuntimeEventSequence", state["lastRuntimeEventSequence"]),
                 ("controllerAvailable", order["controllerAvailable"]), ("canAutomate", order["canAutomate"]), ("actionBlockReason", J.Str(order["actionBlockReason"])));
             (kind == "normal" ? normal : rare).Add(diagnostic);

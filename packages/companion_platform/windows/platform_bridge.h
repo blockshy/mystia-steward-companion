@@ -21,6 +21,7 @@ class CompanionPlatformBridge final : public mystia_platform::PlatformHostApi {
   mystia_platform::ErrorOr<mystia_platform::PlatformLaunch> Initialize() override;
   std::optional<mystia_platform::FlutterError> ApplyWindowPreferences(const mystia_platform::WindowPreferences&) override;
   mystia_platform::ErrorOr<bool> PerformWindowAction(const mystia_platform::WindowAction&) override;
+  mystia_platform::ErrorOr<bool> OpenExternalUrl(const std::string&) override;
   mystia_platform::ErrorOr<mystia_platform::PlatformInput> PollInput() override;
   mystia_platform::ErrorOr<std::optional<std::string>> ReadSecret(const std::string&) override;
   std::optional<mystia_platform::FlutterError> WriteSecret(const std::string&, const std::string&) override;

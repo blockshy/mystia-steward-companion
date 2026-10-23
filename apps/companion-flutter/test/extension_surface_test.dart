@@ -74,7 +74,11 @@ void main() {
         'sceneNames': ['合成地图甲', '合成地图乙'],
         'conditionCount': 3,
         'completedConditionCount': 1,
-        'conditionStates': [true, false, null],
+        'conditions': [
+          {'description': '向合成角色交付三份含有指定标签的料理', 'completed': true},
+          {'description': '与合成角色交谈', 'completed': false},
+          {'description': '', 'completed': null},
+        ],
         'presentationStatus': 'ready',
       }, available: false),
     );
@@ -92,12 +96,24 @@ void main() {
       greaterThan(tester.getRect(find.text('合成长任务标题：准备招待远道而来的客人')).bottom),
     );
     expect(
-      tester.getRect(find.text('条件 1：已完成')).top,
-      lessThan(tester.getRect(find.text('条件 2：未完成')).top),
+      tester.getRect(find.text('向合成角色交付三份含有指定标签的料理')).top,
+      lessThan(tester.getRect(find.text('与合成角色交谈')).top),
     );
     expect(
-      tester.getRect(find.text('条件 2：未完成')).top,
-      lessThan(tester.getRect(find.text('条件 3：未知')).top),
+      tester.getRect(find.text('与合成角色交谈')).top,
+      lessThan(tester.getRect(find.text('条件 3：说明暂不可用')).top),
+    );
+    expect(find.text('已完成'), findsOneWidget);
+    expect(find.text('未完成'), findsOneWidget);
+    expect(find.text('待确认'), findsOneWidget);
+    // 长条件允许换行，进度列保持同一右边界，且不随段落高度向下漂移。
+    final done = tester.getRect(find.text('已完成'));
+    final pending = tester.getRect(find.text('未完成'));
+    expect(done.right, closeTo(pending.right, .1));
+    expect(done.right, lessThanOrEqualTo(262));
+    expect(
+      baseline(tester, '已完成'),
+      closeTo(baseline(tester, '向合成角色交付三份含有指定标签的料理'), .1),
     );
     expect(tester.takeException(), isNull);
   });

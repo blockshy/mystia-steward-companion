@@ -14,6 +14,7 @@
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionDefinitionDiagnosticReader.cs" Link="RuntimeMissionDefinitionDiagnosticReader.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/GameDisplayText.cs" Link="GameDisplayText.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionDiagnosticState.cs" Link="RuntimeMissionDiagnosticState.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeMissionPresentation.cs" Link="RuntimeMissionPresentation.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeReflectionUtility.cs" Link="RuntimeReflectionUtility.cs" />

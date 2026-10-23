@@ -3,6 +3,12 @@ package com.tyukki.mystia.steward.companion
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
+import android.content.Intent
+import android.hardware.input.InputManager
+import android.net.Uri
+import android.view.InputDevice
+import android.view.KeyEvent
+import android.view.MotionEvent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import java.io.File
@@ -16,7 +22,73 @@ import javax.crypto.spec.GCMParameterSpec
  * 原生安全存储和平台能力。后台租约由应用生命周期协调，不在 Activity 中常驻续约。
  * 密文损坏、密钥失效和写入失败均保留原文件并报告错误，不自动重置设备身份。
  */
-class MainActivity : FlutterActivity(), PlatformHostApi {
+class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDeviceListener {
+    private val controller = ControllerState()
+    private val inputManager: InputManager get() = getSystemService(INPUT_SERVICE) as InputManager
+
+    override fun onResume() {
+        super.onResume()
+        inputManager.registerInputDeviceListener(this, null)
+    }
+    override fun onPause() {
+        controller.reset()
+        inputManager.unregisterInputDeviceListener(this)
+        super.onPause()
+    }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        if (!hasFocus) controller.reset()
+        super.onWindowFocusChanged(hasFocus)
+    }
+    override fun onInputDeviceAdded(deviceId: Int) = Unit
+    override fun onInputDeviceRemoved(deviceId: Int) { controller.remove(deviceId) }
+    override fun onInputDeviceChanged(deviceId: Int) { controller.remove(deviceId) }
+
+    /** 不吞掉手机返回键或键盘方向键；只有明确来自游戏手柄的标准按钮进入导航。 */
+    private fun isController(device: InputDevice?) = device != null &&
+        (device.supportsSource(InputDevice.SOURCE_GAMEPAD) || device.supportsSource(InputDevice.SOURCE_JOYSTICK))
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (hasWindowFocus() && isController(event.device)) {
+            val mask = when (event.keyCode) {
+                KeyEvent.KEYCODE_DPAD_UP -> 0x0001L
+                KeyEvent.KEYCODE_DPAD_DOWN -> 0x0002L
+                KeyEvent.KEYCODE_DPAD_LEFT -> 0x0004L
+                KeyEvent.KEYCODE_DPAD_RIGHT -> 0x0008L
+                KeyEvent.KEYCODE_BUTTON_A -> 0x1000L
+                KeyEvent.KEYCODE_BUTTON_B -> 0x2000L
+                KeyEvent.KEYCODE_BUTTON_X -> 0x4000L
+                KeyEvent.KEYCODE_BUTTON_Y -> 0x8000L
+                KeyEvent.KEYCODE_BUTTON_L1 -> 0x0100L
+                KeyEvent.KEYCODE_BUTTON_R1 -> 0x0200L
+                KeyEvent.KEYCODE_BUTTON_L2 -> 0x10000L
+                KeyEvent.KEYCODE_BUTTON_R2 -> 0x20000L
+                else -> 0L
+            }
+            if (mask != 0L && (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP)) {
+                if (event.repeatCount == 0) controller.key(event.deviceId, mask, event.action == KeyEvent.ACTION_DOWN)
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (!hasWindowFocus() || !isController(event.device) || event.action != MotionEvent.ACTION_MOVE ||
+            (event.source and InputDevice.SOURCE_JOYSTICK) != InputDevice.SOURCE_JOYSTICK) return super.onGenericMotionEvent(event)
+        val device = event.device ?: return super.onGenericMotionEvent(event)
+        fun axis(axis: Int, trigger: Boolean = false): Double {
+            val range = device.getMotionRange(axis, event.source) ?: device.getMotionRange(axis) ?: return 0.0
+            val raw = event.getAxisValue(axis)
+            if (!raw.isFinite()) return 0.0
+            if (trigger) return if (range.max > range.min)
+                ((raw - range.min) / (range.max - range.min)).toDouble().coerceIn(0.0, 1.0) else 0.0
+            return if (kotlin.math.abs(raw) <= range.flat) 0.0 else raw.toDouble().coerceIn(-1.0, 1.0)
+        }
+        // Android 的Y向下为正，XInput/Dart契约向上为正，因此在单一适配层翻转。
+        controller.motion(event.deviceId, axis(MotionEvent.AXIS_X), -axis(MotionEvent.AXIS_Y),
+            maxOf(axis(MotionEvent.AXIS_LTRIGGER, true), axis(MotionEvent.AXIS_BRAKE, true)),
+            maxOf(axis(MotionEvent.AXIS_RTRIGGER, true), axis(MotionEvent.AXIS_GAS, true)),
+            axis(MotionEvent.AXIS_HAT_X), axis(MotionEvent.AXIS_HAT_Y))
+        return true
+    }
     private val alias = "mystia-companion-flutter-v1"
     // Android 提供的 /data/user/0 可能本身是系统别名；先规范化可信基目录，再检查应用自建路径。
     private val root: File get() = File(noBackupFilesDir.canonicalFile, "companion-v1").also {
@@ -91,7 +163,20 @@ class MainActivity : FlutterActivity(), PlatformHostApi {
         WindowAction.SHOW -> hasWindowFocus()
         else -> false
     }
-    override fun pollInput() = PlatformInput(hasWindowFocus(), false, 0, 0.0, 0.0, 0.0, 0.0, 0, initialize())
+    override fun pollInput(): PlatformInput {
+        val focused = hasWindowFocus()
+        val input = controller.poll(focused)
+        return PlatformInput(focused, input.connected, input.buttons, input.leftX, input.leftY,
+            input.leftTrigger, input.rightTrigger, 0, initialize())
+    }
+    override fun openExternalUrl(url: String): Boolean {
+        // 仅本项目发布页可离开客户端；不能通过Pigeon绕过Dart的URL白名单。
+        require(Regex("https://github\\.com/blockshy/mystia-steward-companion/releases(?:/latest|/tag/[A-Za-z0-9._-]+)?").matches(url)) {
+            "只允许打开夜雀管家的 GitHub 发布页面。"
+        }
+        return try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))); true }
+        catch (_: android.content.ActivityNotFoundException) { false }
+    }
     override fun readSecret(key: String): String? {
         val bytes = read(keyFile(key)) ?: return null
         require(bytes.size in 30..65536 && bytes[0].toInt() == 1) { "安全存储格式损坏，原文件已保留。" }

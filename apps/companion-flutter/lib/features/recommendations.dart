@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/widgets.dart';
 import 'package:forui/forui.dart';
@@ -14,6 +15,8 @@ import '../ui/steward_style.dart';
 import 'recommendation_item_content.dart';
 import 'custom_recipes.dart';
 import 'recommendation_preferences.dart';
+import 'recommendation_browser_support.dart';
+import 'favorites_selection.dart';
 
 /// 推荐页向 C# 提交最小选择条件；排序、预算和加料组合始终使用服务器计算结果。
 class RecommendationsPage extends StatefulWidget {
@@ -28,6 +31,8 @@ class _RecommendationsPageState extends State<RecommendationsPage>
     with ActiveResourcePage<RecommendationsPage> {
   String tab = 'normal';
   String place = '妖怪兽道';
+  bool _followPlace = true;
+  bool _favoriteBusy = false;
   int? customerId;
   // 点单标签只能来自当前稀客目录。状态归页面所有，切到收藏后返回仍显示同一组选项。
   // 名称筛选仍使用控制器，避免输入框卸载重建后显示为空、实际却按旧文字过滤。
@@ -52,7 +57,9 @@ class _RecommendationsPageState extends State<RecommendationsPage>
   // 普客与稀客的客人已由查询条件确定，结果框只筛选料理或酒水名称。
   // 收藏与自定义配方同时包含多个客人的记录，保留额外的客人名称筛选。
   bool get _filtersCustomer => tab == 'favorites' || tab == 'custom';
-  String get _searchHint => _filtersCustomer
+  String get _searchHint => tab == 'favorites'
+      ? '筛选名称 / 标签 / 食材 / ID'
+      : _filtersCustomer
       ? '筛选名称 / 客人'
       : _food
       ? '筛选料理名称'
@@ -78,6 +85,19 @@ class _RecommendationsPageState extends State<RecommendationsPage>
             .toSet()
             .toList()
           ..sort());
+  String? get _detectedPlace {
+    final value = model.night['place'];
+    return value is String && _normalPlaces.contains(value) ? value : null;
+  }
+
+  /// 现场明确提供可用地点时才跟随，不根据场景名、地点标签或目录顺序猜测现场。
+  /// 非经营场景仍可手动浏览目录；手动选定后保留固定值，直到用户恢复跟随。
+  void _reconcilePlace() {
+    final places = _normalPlaces;
+    if (_followPlace && _detectedPlace != null) place = _detectedPlace!;
+    if (places.isNotEmpty && !places.contains(place)) place = places.first;
+  }
+
   DataMap? get _selectedCustomer {
     for (final customer in _rareCustomers) {
       if (customer['id'] == customerId) return customer;
@@ -144,6 +164,7 @@ class _RecommendationsPageState extends State<RecommendationsPage>
     widget.active,
     tab,
     place,
+    _followPlace,
     customerId,
     foodTag,
     beverageTag,
@@ -174,7 +195,10 @@ class _RecommendationsPageState extends State<RecommendationsPage>
           if (_canAcceptSelection(boundary) &&
               tab == 'normal' &&
               _normalPlaces.contains(value))
-            setState(() => place = value);
+            setState(() {
+              place = value;
+              _followPlace = false;
+            });
         },
       ),
     );
@@ -263,7 +287,8 @@ class _RecommendationsPageState extends State<RecommendationsPage>
   @override
   void loadActiveResource() {
     if (!widget.active) return;
-    if (tab == 'favorites') model.readResource('/favorites');
+    // 稀客推荐需要同一权威收藏资源显示选中态并原地取消；不另建全局轮询。
+    if (tab == 'favorites' || tab == 'rare') model.readResource('/favorites');
     if (tab == 'custom') model.readResource('/custom-recipes');
   }
 
@@ -376,8 +401,7 @@ class _RecommendationsPageState extends State<RecommendationsPage>
   @override
   Widget build(BuildContext context) {
     _reconcileRareSelection();
-    final places = _normalPlaces;
-    if (places.isNotEmpty && !places.contains(place)) place = places.first;
+    _reconcilePlace();
     _synchronizeQuery();
     synchronizeResourceActivation();
     final result = object(model.pageResult['result']).isNotEmpty
@@ -392,10 +416,11 @@ class _RecommendationsPageState extends State<RecommendationsPage>
         : const <String, Object?>{};
     final rows = records(source[tab == 'custom' ? 'recipes' : category])
         .where(
-          (item) =>
-              _name(item).contains(search) ||
-              (_filtersCustomer &&
-                  label(item['customerName'], '').contains(search)),
+          (item) => tab == 'favorites'
+              ? favoriteMatchesSearch(model, item, search, food: _food)
+              : _name(item).contains(search) ||
+                    (_filtersCustomer &&
+                        label(item['customerName'], '').contains(search)),
         )
         .toList();
     return PageActivityReporter(
@@ -437,27 +462,58 @@ class _RecommendationsPageState extends State<RecommendationsPage>
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 if (tab == 'normal')
-                                  ToolRow([
-                                    _placeSelector(),
-                                  ], alignInputs: true),
+                                  PageFilterRow(
+                                    children: [
+                                      // 与稀客条件使用同一个标准行；手机上只收紧选择器，
+                                      // 保留跟随和偏好操作的完整命中区，切换页签不改变首行基线。
+                                      Flexible(child: _placeSelector()),
+                                      StewardIconButton(
+                                        key: const ValueKey(
+                                          'normal-follow-place',
+                                        ),
+                                        label: _followPlace
+                                            ? '固定当前地点（正在跟随）'
+                                            : '恢复跟随经营地点',
+                                        icon: _followPlace
+                                            ? FLucideIcons.locateFixed
+                                            : FLucideIcons.locate,
+                                        onPressed:
+                                            widget.active && model.connected
+                                            ? () => setState(() {
+                                                _followPlace = !_followPlace;
+                                                _reconcilePlace();
+                                              })
+                                            : null,
+                                      ),
+                                      StewardButton(
+                                        '客群偏好',
+                                        key: const ValueKey(
+                                          'normal-customer-preferences',
+                                        ),
+                                        onPressed:
+                                            widget.active &&
+                                                _normalPlaces.contains(place)
+                                            ? () =>
+                                                  showNormalCustomerPreferences(
+                                                    context,
+                                                    model,
+                                                    place,
+                                                  )
+                                            : null,
+                                      ),
+                                    ],
+                                  ),
                                 if (tab == 'rare')
-                                  Padding(
-                                    padding: const EdgeInsets.only(bottom: 8),
+                                  PageFilterRow(
                                     // 同一行按正文宽度等分收紧；不靠缩小字体或触屏点击高度
                                     // 挤入手机。每个条件保留可搜索下拉及独立读屏名称。
-                                    child: Row(
-                                      children: [
-                                        Flexible(child: _customerSelector()),
-                                        const SizedBox(width: 8),
-                                        Flexible(
-                                          child: _tagSelector(food: true),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        Flexible(
-                                          child: _tagSelector(food: false),
-                                        ),
-                                      ],
-                                    ),
+                                    children: [
+                                      Flexible(child: _customerSelector()),
+                                      Flexible(child: _tagSelector(food: true)),
+                                      Flexible(
+                                        child: _tagSelector(food: false),
+                                      ),
+                                    ],
                                   ),
                                 // 浏览类型与搜索属于结果工具栏；业务页签和查询动作不再混用同一组按钮。
                                 PageToolbar(
@@ -509,18 +565,38 @@ class _RecommendationsPageState extends State<RecommendationsPage>
                             title: _name,
                             // 外层名称由公共图文组件绘制；summary继续不重复名称，
                             // 缺少精确ID时仍保留同尺寸旧图标，不按名称猜图。
-                            titleContent: (item) => MenuItemName(
-                              _itemView(item),
-                              style: const TextStyle(
-                                fontWeight: FontWeight.w600,
-                                height: 1.35,
-                              ),
+                            titleContent: (item) => Row(
+                              children: [
+                                Expanded(
+                                  child: MenuItemName(
+                                    _itemView(item),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ),
+                                if (tab == 'rare' &&
+                                    _favoriteState(item).id != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(left: 6),
+                                    child: Semantics(
+                                      label: '已收藏',
+                                      child: Icon(
+                                        FLucideIcons.heart,
+                                        size: MediaQuery.textScalerOf(context)
+                                            .scale(15),
+                                        color: context.theme.colors.primary,
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                             onFavorite:
                                 tab == 'rare' &&
                                     model.canEdit &&
                                     customerId != null
-                                ? _favorite
+                                ? _favoriteCallback
                                 : null,
                             // 标题已显示名称；统一内容只追加主体，避免料理名称出现两遍。
                             subtitle: (_) => '',
@@ -541,31 +617,82 @@ class _RecommendationsPageState extends State<RecommendationsPage>
   }
 
   String _name(DataMap item) => _itemView(item).name;
-  void _favorite(DataMap item) {
+  ({bool known, String? id}) _favoriteState(DataMap item) =>
+      recommendationFavorite(
+        model.resources['/favorites'] ?? const {},
+        item,
+        food: category == 'recipes',
+        customerId: customerId,
+        tag: category == 'recipes' ? foodTag : beverageTag,
+      );
+  Object get _favoriteBoundary => (
+    model,
+    _selectionBoundary,
+    category,
+    model.authority['registryId'],
+    model.authority['currentDeviceId'],
+    model.authority['primaryDeviceId'],
+    model.authority['authorityRevision'],
+    // 轮询可能先更新模型、下一帧才重绘按钮。此时不能把用户看到的“加入收藏”
+    // 偷换成“取消收藏”；只比较本类别内容，忽略另一类别及读取时间的变化。
+    jsonEncode(model.resources['/favorites']?[category]),
+  );
+
+  /// 行快捷键和详情按钮共用渲染时的条件与设备身份，不能借后来条件执行旧操作。
+  ValueChanged<DataMap> get _favoriteCallback {
+    final boundary = _favoriteBoundary;
+    return (item) => _favorite(item, boundary);
+  }
+
+  Future<void> _favorite(DataMap item, Object boundary) async {
+    if (!mounted ||
+        !widget.active ||
+        !TickerMode.valuesOf(context).enabled ||
+        tab != 'rare' ||
+        !model.canEdit ||
+        _favoriteBusy ||
+        boundary != _favoriteBoundary)
+      return;
+    final saved = _favoriteState(item);
+    if (!saved.known) return;
     final entity = object(item[category == 'recipes' ? 'recipe' : 'beverage']);
-    model.mutate(
-      category == 'recipes'
-          ? '/favorites/add-recipe'
-          : '/favorites/add-beverage',
-      query: {
-        'customerId': '$customerId',
-        'customerName': model.itemName('rareCustomers', customerId),
-        if (category == 'recipes') ...{
-          'foodTag': foodTag,
-          'recipeId': '${entity['id']}',
-          'extraIngredientIds': records(item['extraIngredients'])
-              .map((entry) => entry['id'])
-              .join(','),
-        } else ...{
-          'beverageTag': beverageTag,
-          'beverageId': '${entity['id']}',
-        },
-      },
-    );
+    setState(() => _favoriteBusy = true);
+    try {
+      await model.mutate(
+        saved.id != null
+            ? category == 'recipes'
+                  ? '/favorites/remove-recipe'
+                  : '/favorites/remove-beverage'
+            : category == 'recipes'
+            ? '/favorites/add-recipe'
+            : '/favorites/add-beverage',
+        query: saved.id != null
+            ? {'id': saved.id!}
+            : {
+                'customerId': '$customerId',
+                'customerName': model.itemName('rareCustomers', customerId),
+                if (category == 'recipes') ...{
+                  'foodTag': foodTag,
+                  'recipeId': '${entity['id']}',
+                  'extraIngredientIds': safeFavoriteExtraIds(
+                    item['extraIngredients'],
+                    entities: true,
+                  )!.join(','),
+                } else ...{
+                  'beverageTag': beverageTag,
+                  'beverageId': '${entity['id']}',
+                },
+              },
+      );
+    } finally {
+      if (mounted) setState(() => _favoriteBusy = false);
+    }
   }
 
   Widget _details(BuildContext context, DataMap item) {
     final view = _itemView(item);
+    final favorite = _favoriteState(item);
+    final toggleFavorite = _favoriteCallback;
     return Section(
       _name(item),
       [
@@ -578,9 +705,16 @@ class _RecommendationsPageState extends State<RecommendationsPage>
         ToolRow([
           if (tab == 'rare')
             StewardButton(
-              '加入收藏',
-              onPressed: model.canEdit && customerId != null
-                  ? () => _favorite(item)
+              favorite.id != null ? '取消收藏' : '加入收藏',
+              key: const ValueKey('recommendation-toggle-favorite'),
+              primary: favorite.id != null,
+              onPressed:
+                  widget.active &&
+                      model.canEdit &&
+                      customerId != null &&
+                      favorite.known &&
+                      !_favoriteBusy
+                  ? () => toggleFavorite(item)
                   : null,
             ),
           if (tab == 'favorites')

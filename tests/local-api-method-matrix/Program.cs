@@ -29,6 +29,7 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/business/page-session/open",
     "/business/page-session/update",
     "/business/automation/retry",
+    "/business/automation/reset",
     "/custom-recipes/move",
     "/custom-recipes/remove",
     "/custom-recipes/settings",

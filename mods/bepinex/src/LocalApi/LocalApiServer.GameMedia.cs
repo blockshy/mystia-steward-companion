@@ -37,7 +37,7 @@ internal sealed partial class LocalApiServer
         || path.StartsWith("/inventory/", StringComparison.Ordinal)
         || path.StartsWith("/orders/", StringComparison.Ordinal)
         || path.StartsWith("/rare-guests/invite", StringComparison.Ordinal)
-        || path is "/automation/lease/acquire" or "/automation/barriers/ack" or "/business/automation/retry";
+        || path is "/automation/lease/acquire" or "/automation/barriers/ack" or "/business/automation/retry" or "/business/automation/reset";
 
     private void RequireGameMediaReady()
     {

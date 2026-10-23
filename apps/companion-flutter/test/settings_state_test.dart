@@ -30,7 +30,11 @@ class _RecordingPreviewModel extends RichPreviewWorkbenchModel {
 
 /// 合成连接只更新内存，并允许暂停提交以验证 HTTP 等待期间的草稿边界；不读取真实凭据。
 class _ConnectionPreviewModel extends _RecordingPreviewModel {
-  _ConnectionPreviewModel({super.desktop});
+  _ConnectionPreviewModel({super.desktop, bool registered = false}) {
+    // 本夹具验证尚未注册身份的连接草稿；已注册设备改名由独立组件专项覆盖，
+    // 不能再用重连接时修改请求头来模拟服务端 rename 成功。
+    if (!registered) authority = {...authority, 'currentDeviceId': ''};
+  }
   Completer<void>? connectionGate;
   String? connectFailure;
   @override
@@ -306,20 +310,20 @@ void main() {
   });
 
   testWidgets('取消修改仅收起表单，重新打开保留草稿且不提交凭据', (tester) async {
-    final model = _ConnectionPreviewModel();
+    // 已注册设备的连接编辑只管理地址和凭据；名称草稿由独立改名组件专项验证。
+    // 未注册身份会优先显示“身份尚未确认”，不适合验证这里的连接草稿提示。
+    final model = _ConnectionPreviewModel(registered: true);
     addTearDown(model.dispose);
     await open(tester, model);
     await tester.enterText(
       connectionField('API 地址'),
       'http://192.168.1.9:32145',
     );
-    await tester.enterText(connectionField('设备名称'), '尚未连接的新名称');
     await tester.enterText(
       connectionField('连接 Token'),
       'synthetic-cancelled-token',
     );
     final endpoint = connectionController(tester, 'API 地址');
-    final device = connectionController(tester, '设备名称');
     final token = connectionController(tester, '连接 Token');
     await revealConnection(tester, find.text('取消修改'));
     await tester.tap(find.text('取消修改'));
@@ -332,8 +336,6 @@ void main() {
     await tester.pumpAndSettle();
     expect(connectionController(tester, 'API 地址'), same(endpoint));
     expect(endpoint.text, 'http://192.168.1.9:32145');
-    expect(connectionController(tester, '设备名称'), same(device));
-    expect(device.text, '尚未连接的新名称');
     expect(connectionController(tester, '连接 Token'), same(token));
     expect(token.text, 'synthetic-cancelled-token');
     expect(
@@ -687,10 +689,11 @@ void main() {
     final model = _RecordingPreviewModel();
     addTearDown(model.dispose);
     await open(tester, model);
-    // 数字已改为自动生效滑块；文本草稿约束继续由仍需明确连接的设备名称验证。
-    final field = connectionField('设备名称');
+    // 已注册设备名使用独立编辑器；连接表单的响应式草稿约束由地址字段验证。
+    final field = connectionField('API 地址');
     final original = tester.widget<EditableText>(field).controller;
-    await tester.enterText(field, '设备草稿');
+    const draft = 'http://192.168.1.99:32145';
+    await tester.enterText(field, draft);
     original.selection = const TextSelection(baseOffset: 1, extentOffset: 3);
     final focus = tester.widget<EditableText>(field).focusNode;
     expect(focus.hasFocus, isTrue);
@@ -701,7 +704,7 @@ void main() {
       final editable = tester.widget<EditableText>(field);
       final current = editable.controller;
       expect(identical(current, original), isTrue);
-      expect(current.text, '设备草稿');
+      expect(current.text, draft);
       expect(
         current.selection,
         const TextSelection(baseOffset: 1, extentOffset: 3),
@@ -710,7 +713,7 @@ void main() {
       expect(focus.hasFocus, isTrue);
       expect(tester.takeException(), isNull);
     }
-    expect(model.clientLabel, isNot('设备草稿'));
+    expect(model.endpoint, isNot(draft));
     await tester.pumpWidget(const SizedBox());
   });
 
