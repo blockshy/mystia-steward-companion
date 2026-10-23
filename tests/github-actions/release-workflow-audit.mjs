@@ -407,7 +407,7 @@ if (jobs.build.includes('-ReferenceDir')) {
 if (jobs.build.includes('-BuildAndroidApk')) fail('The canonical Windows build step must not rebuild Android internally.');
 requireMatch(
   jobs.build,
-  /build-release\.ps1[\s\S]*node scripts\/manage-build-artifacts\.mjs clean[\s\S]*corepack pnpm tauri:android:apk:signed/u,
+  /build-release\.ps1[\s\S]*node scripts\/manage-build-artifacts\.mjs clean[\s\S]*corepack pnpm flutter:android:apk:signed/u,
   'The single approved package job must release desktop build caches before the Android build.',
 );
 requireMatch(
@@ -441,8 +441,8 @@ requireMatch(
   /if: \$\{\{ always\(\) \}\}[\s\S]*materialize-android-signing\.mjs[\s\S]*--cleanup/u,
   'Signing files need strict unconditional cleanup.',
 );
-requireMatch(jobs.build, /corepack pnpm tauri:android:apk:signed/u, 'The package job must build signed APKs.');
-requireMatch(jobs.build, /java-version: "21\.0\.4"/u, 'The package job must use the locked Temurin 21.0.4 JDK.');
+requireMatch(jobs.build, /corepack pnpm flutter:android:apk:signed/u, 'The package job must build signed APKs.');
+requireMatch(jobs.build, /java-version: "21\.0\.12\.1\+1"/u, 'The package job must use the locked Temurin 21.0.12.1+1 JDK.');
 requireMatch(jobs.build, /"build-tools;35\.0\.0"/u, 'The package job must install the locked Android build tools.');
 requireMatch(
   jobs.build,
@@ -534,9 +534,8 @@ requireMatch(
   'Validate must reject owner versions that are not newer than every published canonical Release.',
 );
 for (const auditCommand of [
-  'audit:release-policy',
-  'audit:release-package',
-  'audit:toolchain',
+  'audit:flutter-release',
+  'audit:package-manifest',
   'audit:build-references',
   'audit:android-apk-transaction',
 ]) {
@@ -547,7 +546,7 @@ for (const auditCommand of [
 
 const releaseAssets = [
   'mystia-steward-companion-bepinex.zip',
-  'mystia-steward-companion-companion-windows-x64.exe',
+  'mystia-steward-companion-companion-windows-x64.zip',
   'mystia-steward-companion-android-arm64-v8a.apk',
   'mystia-steward-companion-android-armeabi-v7a.apk',
   'update-manifest.json',

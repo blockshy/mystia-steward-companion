@@ -27,10 +27,14 @@ namespace NightScene
 
         public bool ThrowOnTutorialRead { get; set; }
 
+        // 记录精确 getter 的实际调用次数，防止分配优化意外跳过实时教学状态读取。
+        public int TutorialReads { get; private set; }
+
         public bool IsInTutorial
         {
             get
             {
+                TutorialReads++;
                 if (ThrowOnTutorialRead) throw new InvalidOperationException("simulated native tutorial read failure");
                 return _isInTutorial;
             }

@@ -7,7 +7,7 @@ permissions: {}
 
 jobs:
   companion-check:
-    name: Companion frontend checks
+    name: Flutter client and package checks
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,11 +32,27 @@ jobs:
       - name: Install dependencies
         run: corepack pnpm install --frozen-lockfile
 
-      - name: Audit GitHub Actions policy
-        run: corepack pnpm audit:github-actions
+      - name: Audit Flutter release policy
+        run: |
+          corepack pnpm audit:github-actions
+          corepack pnpm audit:flutter-release
 
-      - name: Lint
-        run: corepack pnpm lint
+      - name: Install locked Flutter
+        run: |
+          node scripts/install-locked-flutter.mjs --install-root "$RUNNER_TEMP/flutter"
+          echo "MYSTIA_FLUTTER_SDK_ROOT=$RUNNER_TEMP/flutter" >> "$GITHUB_ENV"
 
-      - name: Build frontend
-        run: corepack pnpm build
+      - name: Resolve locked Flutter dependencies
+        run: corepack pnpm flutter:get
+
+      - name: Analyze Flutter and run public unit tests
+        run: |
+          corepack pnpm flutter:format-check
+          corepack pnpm flutter:generated-check
+          corepack pnpm flutter:verify-unit
+          corepack pnpm flutter:contracts-unit
+
+      - name: Validate complete package policy
+        run: |
+          corepack pnpm audit:package-manifest
+          corepack pnpm audit:windows-runtime

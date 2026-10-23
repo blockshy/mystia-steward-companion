@@ -13,7 +13,6 @@ const sources = Object.fromEntries(await Promise.all([
   ['publish', 'mods/bepinex/tools/publish-release.ps1'],
   ['releaseRuntime', 'tests/build-artifacts/release-powershell-runtime-audit.ps1'],
   ['android', 'scripts/build-android-signed-apk.mjs'],
-  ['tauriApp', 'apps/companion/src-tauri/src/app.rs'],
   ['packageJson', 'package.json'],
 ].map(async ([name, relativePath]) => [name, await readFile(path.join(repoRoot, relativePath), 'utf8')])));
 
@@ -28,23 +27,8 @@ const extractPowerShellFunction = (source, name) => {
   const end = ends.length === 0 ? source.length : Math.min(...ends);
   return source.slice(start, end);
 };
-for (const scriptName of [
-  'tauri:dev',
-  'tauri:build',
-]) {
-  assert.match(
-    packageScripts[scriptName],
-    /^node scripts\/check-build-toolchain\.mjs tauri --require-corepack-invocation && node scripts\/manage-build-artifacts\.mjs prune && /u,
-    `${scriptName} does not enforce the toolchain and cache policies before building.`,
-  );
-}
-for (const scriptName of ['tauri:android:dev', 'tauri:android:build', 'tauri:android:apk']) {
-  assert.match(
-    packageScripts[scriptName],
-    /^node scripts\/check-build-toolchain\.mjs android --require-corepack-invocation && node scripts\/manage-build-artifacts\.mjs prune && /u,
-    `${scriptName} does not enforce the Android toolchain and cache policies before building.`,
-  );
-}
+assert.match(packageScripts.build, /flutter-workspace\.mjs --task build-windows/u);
+assert.match(packageScripts.lint, /flutter-workspace\.mjs --task analyze/u);
 
 assert.match(sources.publish, /\[Parameter\(Mandatory = \$true\)\]\[string\]\$TargetCommitSha/u);
 for (const scriptName of ['build', 'prepare', 'publish']) {
@@ -67,8 +51,7 @@ assert.doesNotMatch(sources.publish, /release",\s*"upload"/u);
 assert.doesNotMatch(sources.publish, /release",\s*"delete"|-Method "DELETE"/u);
 assert.doesNotMatch(sources.publish, /"--notes",\s*\$Notes/u);
 assert.doesNotMatch(sources.build, /SkipPreflight|Assert-BuildReferences|RequiredReferenceFiles/u);
-assert.match(sources.build, /\(Resolve-Path -LiteralPath \$ReferenceDir\)\.Path/u);
-assert.match(sources.build, /& \$PreflightScript -ReferenceDir \$EffectiveReferenceDir/u);
+assert.match(sources.build, /preflight\.ps1'\) -ReferenceDir \$ReferenceDir/u);
 
 const repositoryReleases = extractPowerShellFunction(sources.publish, 'Get-MystiaRepositoryReleases');
 assert.match(repositoryReleases, /api --paginate --slurp "repos\/\$Repo\/releases\?per_page=100"/u);
@@ -357,7 +340,6 @@ assert.match(sources.releaseCommon, /\[System\.StringComparer\]::Ordinal/u);
 assert.match(sources.releaseCommon, /MystiaReleaseAssetContentTypes\.Count -ne 7/u);
 for (const canonicalContentType of [
   'application/zip',
-  'application/x-msdownload',
   'application/vnd.android.package-archive',
   'application/json',
   'text/plain; charset=utf-8',
@@ -393,19 +375,10 @@ assert.doesNotMatch(
   'The stateful fake-gh must derive response MIME from its independent asset-name oracle.',
 );
 
-const prebuildPruneCondition = sources.build.match(
-  /if \(-not \$SkipBuildCacheCleanup[^\n]+\) \{\s*Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"/u,
-)?.[0] ?? '';
-assert.ok(prebuildPruneCondition, 'Missing prebuild Tauri cache prune condition.');
-assert.match(prebuildPruneCondition, /-not \$SkipTauriBuild/u);
-assert.doesNotMatch(prebuildPruneCondition, /SkipFrontendBuild/u);
-
-assert.match(sources.packagePowerShell, /function Assert-NoPendingReleaseTransactions/u);
-assert.match(sources.packagePowerShell, /\^dist\\\.\(staging\|backup\)-/u);
-assert.match(sources.packageBash, /assert_no_pending_release_transactions/u);
-assert.match(sources.packageBash, /cleanup_transaction 130/u);
-assert.match(sources.packageBash, /cleanup_transaction 143/u);
-
+assert.match(sources.build, /scripts\/manage-build-artifacts\.mjs/u);
+assert.match(sources.packagePowerShell, /未收尾打包事务/u);
+assert.match(sources.packagePowerShell, /package-manifest\.json/u);
+assert.match(sources.packageBash, /exec pwsh/u);
 assert.match(sources.android, /assertRealDirectory\(distDir, 'Android release dist'\)/u);
 assert.match(sources.android, /const stagingDir = mkdtempSync\(path\.join\(distDir, '\.android-apk-stage-'\)\)/u);
 const androidMainBody = sources.android.match(/function main\(\) \{[\s\S]+?\n\}/u)?.[0] ?? '';
@@ -415,25 +388,13 @@ assert.ok(
   'Signed Android APK builds do not verify the locked toolchain before writing build artifacts.',
 );
 assert.ok(
-  androidMainBody.indexOf('pruneBuildArtifacts();') < androidMainBody.indexOf('runTauriAndroidApkBuild();'),
+  androidMainBody.indexOf('pruneBuildArtifacts();') < androidMainBody.indexOf("run(process.execPath, [path.join(repoRoot, 'scripts/flutter-workspace.mjs')"),
   'Signed Android APK builds do not prune stale caches before compiling.',
 );
 assert.match(sources.android, /check-build-toolchain\.mjs/u);
 assert.match(sources.android, /\[buildToolchainCheck, 'android'\]/u);
 assert.match(sources.android, /signingCertificateSha256/u);
 assert.match(sources.android, /Android APK signing certificate mismatch/u);
-for (const helperName of ['is_main_window_focused', 'hide_main_window']) {
-  const definitions = [...sources.tauriApp.matchAll(new RegExp(
-    `(?<attributes>(?:#\\[cfg\\([^\\n]+\\)\\]\\s*)*)fn ${helperName}\\(`,
-    'gu',
-  ))];
-  assert.equal(definitions.length, 1, `${helperName} must have one canonical implementation.`);
-  assert.match(
-    definitions[0].groups?.attributes ?? '',
-    /#\[cfg\(desktop\)\]/u,
-    `${helperName} must remain excluded from Android and other mobile targets.`,
-  );
-}
 const pruneThenCommitBody = sources.android.match(
   /function pruneThenCommitAndroidApks[\s\S]+?\n\}/u,
 )?.[0] ?? '';

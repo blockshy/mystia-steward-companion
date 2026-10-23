@@ -158,6 +158,26 @@ Assert(nativeImage.color == nativeColor
        && nativeImage.transform.localScale == nativeScale,
     "Highlighting must not mutate the native current-order border.");
 
+// 同一稀客订单内容发生变化只更新目标与颜色，不能反复克隆同一 HUD 边框。
+// 这些 Tick 不推进健康检查时钟，确保发布代次变更路径本身完成即时身份核验。
+var rareContentColor = new RuntimeTargetHighlightColor(0x83, 0x51, 0xBF);
+var destroyedBeforeRareContent = GameObject.Destroyed.Count;
+foreach (var content in new[]
+         {
+             ChangeTargetContent(targetA, "rare:recipe-changed", 26, 3, new[] { 15, 20, 28 }, Array.Empty<int>()),
+             ChangeTargetContent(targetA, "rare:beverage-delivered", 26, -1, new[] { 15, 20, 28 }, Array.Empty<int>()),
+             ChangeTargetContent(targetA, "rare:extras-color-changed", 31, -1, new[] { 7, 15 }, new[] { 7, 7 }, rareContentColor),
+         })
+{
+    RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2, content));
+    RuntimeOrderHighlightService.Tick();
+    Assert(GameObject.Instantiated.Count == 1 && GameObject.Destroyed.Count == destroyedBeforeRareContent,
+        "同一稀客订单只改变料理/酒水/加料/修订时不能销毁或新建边框。");
+    Assert(ReferenceEquals(firstOverlay, FindLiveOverlayFor(elementA)),
+        "稀客内容变动后仍应持有原来的精确 HUD 边框。");
+}
+AssertColor(firstOverlayImage.color, rareContentColor, "复用边框仍须立即应用新目标颜色。");
+
 // A duplicate HUD card for the same native order must be rejected rather than picking either card.
 var duplicateElement = CreateElement(controller, orderA, deskCode: 0);
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
@@ -497,6 +517,25 @@ Assert(RuntimeOrderHighlightService.Status.StartsWith("active:2/2", StringCompar
        && RuntimeOrderHighlightService.Status.Contains("Normal:target:", StringComparison.Ordinal),
     "Both exact HUD target kinds must remain active simultaneously.");
 
+// 对应真实日志中普客酒水 2→-1 的相同订单修订：原生目标与 HUD 绑定未变时不创建新框。
+var normalContentCreated = GameObject.Instantiated.Count;
+var normalContentDestroyed = GameObject.Destroyed.Count;
+foreach (var content in new[]
+         {
+             ChangeTargetContent(dualNormalTarget, "normal:recipe", 26, 2, new[] { 15, 20, 28 }, Array.Empty<int>()),
+             ChangeTargetContent(dualNormalTarget, "normal:beverage-delivered", 26, -1, new[] { 15, 20, 28 }, Array.Empty<int>()),
+             ChangeTargetContent(dualNormalTarget, "normal:revision-only", 26, -1, new[] { 15, 20, 28 }, Array.Empty<int>()),
+         })
+{
+    RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(100, dualRareTarget, content));
+    RuntimeOrderHighlightService.Tick();
+    Assert(GameObject.Instantiated.Count == normalContentCreated && GameObject.Destroyed.Count == normalContentDestroyed,
+        "同一普客只改变配方/酒水/修订时不能重建任一通道的边框。");
+    Assert(ReferenceEquals(dualNormalOverlay, FindLiveOverlayFor(dualNormalElement))
+        && ReferenceEquals(dualRareOverlay, FindLiveOverlayFor(dualRareElement)),
+        "内容更新必须保留两个独立通道各自的原生视觉身份。");
+}
+
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(100, dualNormalTarget));
 Time.realtimeSinceStartup = 10.1f;
 RuntimeOrderHighlightService.Tick();
@@ -544,6 +583,107 @@ Assert(RuntimeOrderHighlightService.Status.Contains(
         StringComparison.Ordinal),
     "The cross-kind native-order collision must remain visible in diagnostics.");
 RuntimeOrderHighlightService.Dispose("dual target HUD coverage complete");
+
+// 八张真实注册卡片、一张活动高亮：非活动卡限频清理，但活动卡每一帧仍读取确切订单。
+// 这是离线操作次数对比，不代表 Unity 帧率或游戏内耗时。
+RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 200, unityThreadId);
+RuntimeOrderHighlightService.Resume("eight-card maintenance regression");
+SpecialOrderRuntimeCapture.Captures.Clear();
+NormalOrderRuntimeCapture.Captures.Clear();
+var perfController = new OrderController();
+var perfOrders = Enumerable.Range(0, 8).Select(index => new GuestsManager.OrderBase(deskCode: index)).ToArray();
+var perfElements = perfOrders.Select((order, index) => CreateElement(perfController, order, index)).ToArray();
+var perfCapture = AddCapture(perfOrders[0], capturedAtA.AddMinutes(3), 0, 301, 71, 81);
+var perfTarget = CreateRareTarget(RuntimeOrderTraceIdService.GetRareTraceId(perfCapture),
+    perfCapture.OrderLifecycleSequence, 0, "eight-card-target");
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(200, perfTarget));
+Time.realtimeSinceStartup = 20f;
+RuntimeOrderHighlightService.Tick();
+var perfOverlay = FindLiveOverlayFor(perfElements[0]);
+foreach (var element in perfElements) element.ActiveOrderReadCount = 0;
+const int simulatedFrames = 600;
+for (var frame = 1; frame <= simulatedFrames; frame++)
+{
+    Time.realtimeSinceStartup = 20f + frame / 60f;
+    RuntimeOrderHighlightService.Tick();
+}
+var inactiveReads = perfElements.Skip(1).Sum(element => element.ActiveOrderReadCount);
+Assert(perfElements[0].ActiveOrderReadCount >= simulatedFrames,
+    "活动卡片必须逐帧读取 ActiveOrder，不能跟随非活动清理时钟降频。");
+Assert(inactiveReads > 0 && inactiveReads <= 7 * 41,
+    "八张卡片场景中的七张非活动卡只按 250ms 清理，不得每帧反射读取。");
+Assert(ReferenceEquals(perfOverlay, FindLiveOverlayFor(perfElements[0])),
+    "稳定目标的限频维护不得重建活动视觉。");
+Console.WriteLine($"MAINTENANCE-COUNTS frames={simulatedFrames}; cards=8; oldInactiveReads={7 * simulatedFrames}; newInactiveReads={inactiveReads}; activeReads={perfElements[0].ActiveOrderReadCount}");
+
+// 即使不调用任何 teardown hook，活动卡被游戏重绑也必须在下一个 Tick 撤销旧高亮。
+perfElements[0].BindActiveOrder(new GuestsManager.OrderBase(deskCode: 0));
+Time.realtimeSinceStartup += 0.001f;
+RuntimeOrderHighlightService.Tick();
+Assert(perfOverlay.m_CachedPtr == IntPtr.Zero,
+    "非清理帧发现活动订单重绑时必须即时销毁旧视觉。");
+RuntimeOrderHighlightService.Dispose("eight-card maintenance regression complete");
+
+// 内容可复用不等于原生身份可复用：在未到 250ms 健康检查的同一时刻更换控制器、
+// 订单生命周期或撤回权限，发布代次处理必须立即撤销旧框并按新精确捕获重新绑定。
+RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 201, unityThreadId);
+RuntimeOrderHighlightService.Resume("target revision identity regression");
+SpecialOrderRuntimeCapture.Captures.Clear();
+NormalOrderRuntimeCapture.Captures.Clear();
+var revisionOrder = new GuestsManager.OrderBase(deskCode: 1);
+var revisionController = new OrderController();
+var revisionCapture = AddNormalCapture(revisionOrder, new GuestsManager.OrderBase(),
+    capturedAtA.AddMinutes(4), 1, 301);
+var revisionElement = CreateElement(revisionController, revisionOrder, 1);
+Time.realtimeSinceStartup = 40f;
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201, CreateNormalTarget(revisionCapture, "revision:initial")));
+RuntimeOrderHighlightService.Tick();
+var revisionOverlay = FindLiveOverlayFor(revisionElement);
+var beforeControllerReplacement = GameObject.Instantiated.Count;
+NormalOrderRuntimeCapture.Captures.Remove(revisionCapture);
+revisionCapture = revisionCapture with { ControllerObject = new GuestsManager.OrderBase() };
+NormalOrderRuntimeCapture.Captures.Add(revisionCapture);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201, CreateNormalTarget(revisionCapture, "revision:new-controller")));
+RuntimeOrderHighlightService.Tick();
+Assert(revisionOverlay.m_CachedPtr == IntPtr.Zero && GameObject.Instantiated.Count == beforeControllerReplacement + 1,
+    "控制器指针改变时，即使托管订单身份相同也必须在发布代次变更时立即重建。");
+revisionOverlay = FindLiveOverlayFor(revisionElement);
+var beforeLifecycleReplacement = GameObject.Instantiated.Count;
+NormalOrderRuntimeCapture.Captures.Remove(revisionCapture);
+revisionCapture = revisionCapture with { OrderLifecycleSequence = 302 };
+NormalOrderRuntimeCapture.Captures.Add(revisionCapture);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201, CreateNormalTarget(revisionCapture, "revision:new-lifecycle")));
+RuntimeOrderHighlightService.Tick();
+Assert(revisionOverlay.m_CachedPtr == IntPtr.Zero && GameObject.Instantiated.Count == beforeLifecycleReplacement + 1,
+    "订单指针相同但生命周期变化时仍须重建，不能把原生地址重用当同一订单。");
+
+revisionOverlay = FindLiveOverlayFor(revisionElement);
+var beforeMissingIdentity = GameObject.Instantiated.Count;
+NormalOrderRuntimeCapture.Captures.Remove(revisionCapture);
+var incompleteCapture = revisionCapture with { ControllerObject = null };
+NormalOrderRuntimeCapture.Captures.Add(incompleteCapture);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201, CreateNormalTarget(incompleteCapture, "revision:missing-controller")));
+RuntimeOrderHighlightService.Tick();
+Assert(revisionOverlay.m_CachedPtr == IntPtr.Zero && GameObject.Instantiated.Count == beforeMissingIdentity,
+    "控制器身份缺失时必须撤销旧框，不得按桌号或旧目标续用。");
+NormalOrderRuntimeCapture.Captures.Remove(incompleteCapture);
+NormalOrderRuntimeCapture.Captures.Add(revisionCapture);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201, CreateNormalTarget(revisionCapture, "revision:recovered")));
+RuntimeOrderHighlightService.Tick();
+revisionOverlay = FindLiveOverlayFor(revisionElement);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201));
+RuntimeOrderHighlightService.Tick();
+Assert(revisionOverlay.m_CachedPtr == IntPtr.Zero, "权限撤回为空目标集必须立即移除高亮，不能因身份可复用而保留。");
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(201, CreateNormalTarget(revisionCapture, "revision:authorized-again")));
+RuntimeOrderHighlightService.Tick();
+revisionOverlay = FindLiveOverlayFor(revisionElement);
+var beforeBusinessReplacement = GameObject.Instantiated.Count;
+RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 202, unityThreadId);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(202, CreateNormalTarget(revisionCapture, "revision:new-business")));
+RuntimeOrderHighlightService.Tick();
+Assert(revisionOverlay.m_CachedPtr == IntPtr.Zero && GameObject.Instantiated.Count == beforeBusinessReplacement,
+    "经营会话变化必须撤销旧框，且不能复用上一会话登记的 HUD 元素。");
+RuntimeOrderHighlightService.Dispose("target revision identity regression complete");
 
 var serviceSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeOrderHighlightService.cs");
 var traceSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs");
@@ -822,6 +962,33 @@ static RuntimeUiTargetSnapshot CreateNormalTarget(
     -1,
     -1,
     revision);
+
+/// <summary>仅替换配方展示内容，完整保留既有订单身份，模拟投影更新而非新订单。</summary>
+static RuntimeUiTargetSnapshot ChangeTargetContent(
+    RuntimeUiTargetSnapshot target,
+    string revision,
+    int recipeId,
+    int beverageId,
+    int[] ingredientIds,
+    int[] extraIngredientIds,
+    RuntimeTargetHighlightColor? color = null) => new(
+        target.Kind,
+        color ?? target.Color,
+        target.ListPinningEnabled,
+        target.RecipeVariantEnabled,
+        target.CookerHighlightEnabled,
+        target.SeatHighlightEnabled,
+        target.OrderHighlightEnabled,
+        target.OrderTraceId,
+        target.OrderKey,
+        target.OrderLifecycleSequence,
+        target.DeskCode,
+        recipeId,
+        ingredientIds,
+        extraIngredientIds,
+        beverageId,
+        target.CookerTypeId,
+        revision);
 
 static void AssertColor(Color actual, RuntimeTargetHighlightColor expected, string message)
 {

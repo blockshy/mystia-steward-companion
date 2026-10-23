@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 链接生产托管复用逻辑与真实 DTO；不引用 Unity、不创建游戏对象。 -->
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeSnapshotReadCache.cs" Link="RuntimeSnapshotReadCache.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeGuestImageIdentity.cs" Link="RuntimeGuestImageIdentity.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/DataRepository.cs" Link="DataRepository.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/Models.cs" Link="Models.cs" />
+  </ItemGroup>
+</Project>

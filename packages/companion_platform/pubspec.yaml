@@ -1,0 +1,13 @@
+name: companion_platform
+description: Mystia 客户端的原生窗口、身份和耐久存储边界。
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: '>=3.13.5 <3.14.0'
+dependencies:
+  flutter:
+    sdk: flutter
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  pigeon: 29.0.7

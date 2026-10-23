@@ -8,6 +8,9 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    // 扣料必须命中原生 int/bool 精确声明。此数组仅描述签名，不保存本次库存或原生对象。
+    private static readonly Type[] StorageOutParameterTypes = { typeof(int), typeof(bool) };
+
     /// <summary>
     /// 按配方 ID 读取最终料理 ID。
     /// </summary>
@@ -1754,7 +1757,7 @@ internal static partial class RuntimeOrderPreparationService
             return (false, "", OrderPreparationStepCodes.CookingPending);
         }
 
-        var message = $"{job.RecipeName} 已进入手动交接，但连续无法确认目标订单料理状态；为避免重复扣料开锅，已停止 job 并保留服务端安全栅栏，请人工确认：{diagnostic}";
+        var message = $"{job.RecipeName} 已进入手动交接，但连续无法确认目标订单料理状态；为避免重复扣料开锅，已停止该制作任务并等待人工确认，请检查游戏现场：{diagnostic}";
         RecordAutomationRuntimeEvent(
             OrderPreparationStepCodes.CookingManualHandoffUnreadable,
             job,
@@ -1922,15 +1925,11 @@ internal static partial class RuntimeOrderPreparationService
     {
         var type = FindType(RuntimeStorageTypeName)
             ?? throw new InvalidOperationException("RunTimeStorage type is not loaded.");
-        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .FirstOrDefault(candidate =>
-            {
-                if (!string.Equals(candidate.Name, methodName, StringComparison.Ordinal)) return false;
-                var parameters = candidate.GetParameters();
-                return parameters.Length == 2
-                    && parameters[0].ParameterType == typeof(int)
-                    && parameters[1].ParameterType == typeof(bool);
-            })
+        // 多个基础材料、加料及酒水共用有界声明缓存，仍按旧顺序选择首个精确签名。
+        // 不复用宽松 IConvertible 匹配；真实扣除仍在当前安全检查之后调用一次，异常不重试。
+        var method = InvocationMetadata.FindExactMethod(
+            type, methodName, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static,
+            StorageOutParameterTypes)
             ?? throw new MissingMethodException(RuntimeStorageTypeName, methodName);
         method.Invoke(null, new object?[] { itemId, false });
     }
@@ -1960,21 +1959,21 @@ internal static partial class RuntimeOrderPreparationService
         var type = FindType(MatchedCookComboTypeName);
         if (type == null) return null;
 
-        foreach (var constructor in type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
-        {
-            var parameters = constructor.GetParameters();
-            if (parameters.Length != 2) continue;
-            if (!parameters[0].ParameterType.IsInstanceOfType(recipe)) continue;
-
-            foreach (var modifiers in BuildIntArrayArgumentCandidates(parameters[1].ParameterType, extraIngredientIds))
+        // 仅缓存构造声明及参数类型。配方 wrapper、额外材料数组和生成的 combo 都属于本次动作，
+        // 每次仍按原构造器顺序、原数组候选顺序进行实时匹配，不能把上次命中绑定到新配方。
+        var constructor = InvocationMetadata.FindConstructor(
+            type, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance,
+            parameters =>
             {
-                var args = new object?[] { recipe, modifiers };
-                if (!CanUseParameters(parameters, args)) continue;
-                return constructor.Invoke(args);
-            }
-        }
-
-        return null;
+                if (parameters.Length != 2 || !parameters[0].ParameterType.IsInstanceOfType(recipe)) return null;
+                foreach (var modifiers in BuildIntArrayArgumentCandidates(parameters[1].ParameterType, extraIngredientIds))
+                {
+                    var values = new object?[] { recipe, modifiers };
+                    if (CanUseParameters(parameters, values)) return values;
+                }
+                return null;
+            }, out var arguments);
+        return constructor?.Invoke(arguments);
     }
 
     /// <summary>

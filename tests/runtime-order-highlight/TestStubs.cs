@@ -400,7 +400,12 @@ namespace NightScene.UI.GuestManagementUtility
             borderStyleImageForCurrent = image;
         }
 
-        public GuestsManager.OrderBase? ActiveOrder => _activeOrder;
+        // 计数精确属性访问，验证优化的是非活动注册读取次数；不能以总 Tick 次数替代。
+        public int ActiveOrderReadCount { get; set; }
+        public GuestsManager.OrderBase? ActiveOrder
+        {
+            get { ActiveOrderReadCount++; return _activeOrder; }
+        }
         public Image borderStyleImageForCurrent { get; }
         public bool current { get; set; }
         public int ChangeBorderStyleCalls { get; private set; }

@@ -1,6 +1,6 @@
 # 推荐引擎
 
-更新日期：2026-08-19
+更新日期：2026-10-23
 
 本文说明料理与酒水推荐的输入、候选管线和唯一主执行方案契约。运行时快照如何产生见
 [运行时数据提供器](runtime-provider.md)；自动化如何消费推荐见
@@ -11,7 +11,7 @@
 
 推荐引擎是纯数据决策层，负责：
 
-- 将静态料理、食材、酒水和稀客数据与当前运行时状态组合为 `RecommendationDataSet`。
+- 将完整游戏运行时料理、食材、酒水和客人目录与当前状态组合为推荐输入。
 - 对普客与稀客订单执行相同的硬约束检查，再生成可排序的料理、酒水和组合方案。
 - 为每笔订单发布有序的 `executionPlans`，并定义唯一主执行方案。
 - 把收藏、自定义推荐料理、已验证任务料理和用户排序偏好作为明确的优先级信号。
@@ -22,24 +22,29 @@
 
 ## 数据入口
 
-核心实现位于 `apps/companion/src/recommendation-engine/`：
+核心实现位于 `modules/companion-business/Domain/Recommendation/`：
 
-- `types.ts`：推荐输入和中间类型。
-- `tag-resolution.ts`、`dynamic-food-tags.ts`：运行时 Tag 解析。
-- `rare-orders.ts`、`normal-coverage.ts`：订单候选与覆盖计算。
-- `mission-recipe-priority.ts`：已验证任务料理优先信号。
-- `sort-profile.ts`：排序目标和预设。
-- `index.ts`：公共计算入口。
+- `RecommendationEngine.Tags.cs`：运行时与动态 Tag、压制和已验证任务料理信号。
+- `RecommendationEngine.Candidates.cs`、`RecommendationEngine.SearchState.cs`：稀客候选与有限宽度加料搜索。
+- `RecommendationEngine.Normal.cs`：普客覆盖推荐。
+- `RecommendationEngine.Plans.cs`、`RecommendationEngine.Sort.cs`：组合、预算和排序。
+- `RecommendationEngine.Koishi.cs`：恋的评分与预算计划纯函数。
+- `RecommendationJson.cs`：只读输入、独立输出值树及跨语言数值语义。
 
-页面和运行时消费侧位于：
+订单和特殊经营消费侧位于：
 
-- `apps/companion/src/companion/domain/service-recommendations.ts`
-- `apps/companion/src/companion/domain/primary-execution-plan.ts`
-- `apps/companion/src/companion/domain/normal-order-details.ts`
-- `apps/companion/src/companion/workers/order-recommendations.worker.ts`
-- `apps/companion/src/companion/workers/page-recommendations.worker.ts`
+- `modules/companion-business/Domain/Orders/`：稀客订单、阻塞诊断、展示行和普客详情。
+- `modules/companion-business/Domain/Support/`：目录入口、收藏、自定义配方、厨具与主方案策略。
+- `modules/companion-business/Domain/SpecialBusiness/`：特殊经营规则、评分与普客执行目标。
+- `modules/companion-business/Domain/GameUi/`：消费同一主方案生成游戏 UI 目标。
+- `modules/companion-business/Application/BusinessQueries.cs`：手动页面查询与订单输入装配。
+- `mods/bepinex/src/LocalApi/LocalApiServer.Business.cs`：后台宿主、结果版本和查询缓存。
 
-静态目录只是候选基础；解锁、库存、厨具、地点、订单 Tag、预算和当前经营上下文以运行时快照为准。快照或
+客户端推荐页位于 `apps/companion-flutter/lib/features/recommendations.dart`，由应用组合层发起查询；API 类型位于 `packages/companion_protocol/lib/`。页面只做设置编辑和显示过滤，不包含候选算法。手动推荐、收藏预览、经营订单和自动化都使用上述 C# 实现。
+
+“推荐 → 推荐偏好”统一编辑共享推荐配置。均衡、节约资源、利润、简单料理四项预设的完整九项目标固定，HTTP 校验拒绝预设名称与参数不一致的写入；只有显式 `custom` 模式允许自由调整。切换自定义沿用当前参数，切换预设原子替换为该预设的完整参数；旧版手动调整的数据仅在磁盘迁移时转换为自定义。模式标签用于表达用户选择，不改变既有评分计算和硬约束。
+
+解锁、库存、厨具、地点、订单 Tag、预算和当前经营上下文以运行时快照为准。快照或
 必要目录不完整时必须停止对应决策，不能用部分数据猜测可执行性。
 
 ## 候选管线
@@ -48,7 +53,7 @@
 
 1. 解析订单身份、所需料理/酒水 Tag 和当前上下文。
 2. 对料理与酒水执行解锁、库存、排除项、厨具、配方禁忌、预算等硬约束。
-3. 为料理选择合法加料，并按数量核算重复材料；库存 `-1` 仅表示无限库存，其他负数无效。
+3. 为料理选择合法加料；重复基础材料仍各占槽位并计入成本。候选资格沿用运行时可用 ID、禁用与排除集合，库存数量参与资源压力，不在迁移中增加另一套数量硬过滤；库存恰为 `-1` 才按无限量处理。
 4. 组合能完整覆盖当前订单的料理与酒水，形成 `executionPlans`。
 5. 在硬约束之后应用任务、收藏、自定义料理和用户排序权重。
 6. 将结果稳定排序，并把第一项确认为唯一主执行方案。
@@ -83,24 +88,46 @@
 两类数据有明确且独立的存储职责：
 
 - `favorites.json` 只保存料理和酒水收藏。
-- `custom-recipes.json` 只保存自定义推荐料理、启用状态和条目顺序。
+- `custom-recipes.json` 保存 version 2 的两套独立绑定、总启用状态、当前模式与条目顺序。`customer` 按稀客管理、`food` 按料理管理；两者每条记录都绑定具体稀客与可选点单标签，只有 `activeMode` 中的启用条目参与候选。料理模式不自动向未绑定稀客生效。
 
 自定义料理必须进入标准候选管线；不能作为另一路径直接注入自动化或游戏内列表。页面操作通过本地 API 的
 规范读写接口完成，原子存储、schema 和设备权威约束见 [本地 API](local-api.md)。
 
+模式切换保留另一模式全部数据；组内移动分别限定到同模式的稀客或料理。历史 version 1 明确迁入客人模式，保留已有绑定语义。`modeRevision` 防止切换前弹窗在切换往返后误写；它只保护编辑上下文，不改变推荐评分、材料/厨具限制或自动化执行许可。
+
 相关前端入口：
 
-- `apps/companion/src/companion/domain/custom-recipes.ts`
-- `apps/companion/src/companion/domain/favorites.ts`
-- `apps/companion/src/companion/domain/favorite-management.ts`
-- `apps/companion/src/companion/pages/ModCustomRecipesPanel.tsx`
-- `apps/companion/src/companion/pages/ModFavoritesPanel.tsx`
+- `apps/companion-flutter/lib/features/recommendations.dart`
+- `apps/companion-flutter/lib/features/custom_recipes.dart`
+- `packages/companion_client/lib/`
 
-## Worker 与并发
+## 后台计算与缓存
 
-高成本推荐在 Worker 中运行。数据集按语义签名缓存，而不是按对象引用或计数缓存；同计数但内容变化必须使
-签名变化。每个 Worker 只保留正在计算的请求和最新待处理请求，迟到结果必须按请求身份丢弃。离开相应页面或
-停用对应功能时，应停止轮询或终止不再需要的 Worker。
+高成本推荐在 Mod 后台业务宿主中运行，HTTP 线程登记有界查询意图并读取缓存。目录、库存、排除项、偏好、动态标签和特殊目标的任何语义变化都必须使对应候选缓存失效；不能仅按对象引用、数组数量或快照时间戳复用结果。纯候选复用不省略当前订单代次、预算、状态、权限及执行目标绑定。
+
+料理候选的私有键仅排除全链不读取的顶层 `requiredBeverageTag`，酒水候选仅排除 `requiredFoodTag`；真正计算仍接收完整原输入，最终配对键保留两侧需求。其它目录、上下文、客人、特殊目标和选项不顺便裁剪。搜索中的临时标签集合由单次调用独占复用，保留候选持有独立数组；新建料理候选稳定排序后直接转入输出数组，外部目录与材料节点仍复制。搜索宽度、结果数量、并列顺序与输入不变约束保持。
+
+手动页面还缓存最终配对和排序投影，键包含完整查询、目录、偏好、收藏和自定义料理；运行时部分使用完整派生集合、稀客候选上下文及普客直接读取的流行/厌恶/名店原值，去除不被页面求值消费的厨具实体忙闲和诊断文字。页面库存保留完整数量，不套用订单的压力归一化。页面、订单及候选共用 32 项/32 MiB 的有界缓存；最终投影优先保留，同级按最近使用顺序淘汰，中间候选不得驱逐最终投影，容量不足则不接纳该中间值。这样满桌轮转不会被较大的候选反复挤掉已经完成的方案。页面值只含料理/酒水展示行，不含快照版本、订单或执行许可。连续订单观察更新不会重复阻塞手动页面，库存等语义变化仍必须重算。
+
+订单投影先以本轮订单解析客人、需求、特殊规则、任务身份、自动化收藏策略和预算，再按这些完整纯计算输入复用结果。活动稀客集合只通过解析后的本桌预算参与键，其他客人的到店、资金和观察更新不会使全部订单失效。同需求订单可以共享纯方案，但输出始终重新附加本轮订单；主线程身份、代际及权限门禁不变。共享目录等输入每批只编码一次。
+
+稀客投影的共享键使用实际计算依赖：完整目录、候选上下文、自定义配方、评分、变体与行/方案上限、拒绝集合，以及诊断所需的摆放/可用/锁定厨具集合。原始厨具实例、忙闲、网格位置及未被规则读取的观察进度不参与纯方案键；它们仍参与当前帧失效、目标绑定与执行校验。特殊经营阶段、要求、任务、预算和偏好继续通过每单规则、排序、规划输入完整进入键。
+
+稀客最终投影中的食材数量仅影响加料资源压力：数量恰为 -1 或不小于 5 时压力均为零。只在该投影的私有键中合并这些等价数值，避免 20→19 这类扣料反复重算。原始快照、库存显示和动作检查仍使用实际数量；小于 5、缺失、非数值原样保留，食材可用集合、酒水数量、预算、厨具和其他规则仍完整参与失效判断。普通加料及自定义配方遵循相同压力公式，不能把这种复用推广成忽略库存。
+
+后台新输入通过单槽通知唤醒，连续变更只合并为一次“读取最新快照”，不会逐快照排队。每轮至少50ms，空闲时最长再等待250ms；发布与命令执行前仍核对完整输入版本。冷计算失效后可立即复用纯计算缓存处理最新输入，避免固定等待与高频快照错相而缩短当前结果的可读取时间窗。
+
+同一来源作用域内，完成时已经过期的成功计算仍可替换较旧的只读结果，然后继续处理最新输入；不能连续丢弃所有已完成结果。该发布保留来源版本，清空执行/高亮目标，HTTP 每次重新判定 current。经营及专注页直接随最新快照更新订单新增、移除和送达；只有精确身份唯一、完整需求相同的旧方案可以附加为参考，跨场景/配置/目录不得借用。此展示联结不计算推荐、不授予执行许可。
+
+新订单暂未取得方案时保留已知点单事实，方案区域使用共享占位；加载/参考状态汇总至页头，不能把新旧状态提示反复插入订单正文造成跳动。普通经营显示顺序固定由 C# 按点单时间生成，专注页的本机“稀客优先”只改变分组展示，不参与候选排序、执行先后或游戏辅助目标选择。协议与显示顺位见[本地 API](local-api.md)，具体组件布局见[伴随 UI](companion-ui.md)。
+
+配对资格以另一侧无硬失败候选的最低价格一次建立筛选器，保留未知预算、不付款及负价的原语义。排序期间只计算一次每候选的置顶、匹配和权重值；内部新建方案可转移独占节点，公共 JSON 接口仍输出独立值树。优化不减少候选搜索宽度、备选数量或展示字段。
+
+幽幽子二、三阶段及阻断说明的排序也只计算每个方案一次评价键，保持原评分降序、价格升序及同分稳定顺序。评价公式、完整候选集和最终80/32项上限不变；不在比较器里反复构造相同标签评价JSON，不把本次评分保存为下一次订单的许可。
+
+搜索内部使用不可变强类型中间状态，保留旧算法的 Beam 宽度 64、每配方最终 16 个候选、稳定顺序和两标签可达性代表。只为最终候选构造 JSON，不把每个扩展状态序列化再解析。重复排列去重必须保留原 Map 的首插位置与最后排列值，避免改变标签展示次序。
+
+客户端串行轮询带版本的查询结果；旧响应仅可标记为过期展示，服务异常不得触发本地计算。离开页面时停止对应页面查询；经营计算与自动化是否允许由宿主当前控制权和游戏状态决定。
 
 ## 维护规则
 
@@ -113,18 +140,26 @@
 
 ## 验证
 
-推荐算法与主执行方案：
+实际 C# 纯函数与完整订单对照：
 
-```bash
-corepack pnpm audit:recommendations
+```powershell
+dotnet build tests/csharp-recommendations/CSharpRecommendations.csproj -c Release
+dotnet tests/csharp-recommendations/bin/Release/net6.0/CSharpRecommendations.dll --custom-modes
+node tests/csharp-recommendations/differential.mjs
+dotnet build tests/csharp-business-orders/CSharpBusinessOrders.csproj -c Release
+node tests/csharp-business-orders/differential.mjs
+node tests/csharp-recommendations/client-boundary-audit.mjs
 ```
+
+`tests/reference-client` 固定改造前 main 的最小 TS 纯计算闭包；生产等价性由 `audit:business` 调用实际 C# 项目差分证明。规模性能另运行 `tests/csharp-business-orders/benchmark.mjs`，区分冷计算、缓存命中和库存/偏好改变后的重算，不能只报告热缓存速度。
+
+`tests/csharp-business-orders/arrival-cache.mjs` 用人工目录顺序测量冷计算、1/4/8 个相同需求订单、无关客人变化和库存变化，记录完整结果摘要、耗时与当前线程累计托管分配。该数字不是峰值内存或 Unity 帧耗时；各类不同需求仍可能各自冷计算，不能把同需求复用结果推广为真实游戏 FPS。
 
 收藏和自定义料理：
 
 ```bash
-corepack pnpm audit:custom-recipes
 dotnet run --project tests/local-api-storage/LocalApiStorageSmoke.csproj -c Release
 ```
 
-涉及前端展示时追加 `corepack pnpm audit:ui`；涉及自动化或游戏内 UI 时运行对应专题测试。完整验证分层见
+涉及前端展示时追加 Flutter Widget 与真实 HTTP 组合测试；涉及自动化或游戏内 UI 时运行对应专题测试。完整验证分层见
 [验证指南](validation-guide.md)。

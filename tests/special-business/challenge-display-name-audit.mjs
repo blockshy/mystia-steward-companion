@@ -9,7 +9,6 @@ const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'u
 const service = read('mods/bepinex/src/Save/RuntimeSpecialBusinessContextService.cs');
 const registry = read('mods/bepinex/src/Save/SpecialBusiness/SpecialBusinessContextRuleRegistry.cs');
 const overlay = read('mods/bepinex/src/Ui/StewardOverlayController.cs');
-const panels = read('apps/companion/src/companion/pages/service/ServiceContextPanels.tsx');
 
 assert.match(service, /Il2CppType\.From\(challengeEnumType, false\)/);
 assert.match(service, /Il2CppType\.Of<InspectorNameAttribute>\(false\)/);
@@ -49,8 +48,7 @@ for (const oldName of [
   assert.ok(!registry.includes(oldName), `Rule registry still contains the removed display name: ${oldName}`);
 }
 
-assert.match(panels, /const displayName = context\.displayName \|\| context\.challengeType/);
-assert.match(panels, /context\.challengeType !== displayName/);
+// 页面只展示服务端 displayName；Flutter 渲染由组件测试覆盖，保留此处原生名称来源检查。
 assert.match(overlay, /specialDisplayName: \{specialBusiness\?\.DisplayName/);
 assert.match(overlay, /specialSource: \{specialBusiness\?\.Source/);
 assert.match(overlay, /specialError: \{specialBusiness\?\.Error/);

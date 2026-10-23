@@ -42,12 +42,12 @@ console.log('Build artifact storage audit passed.');
 async function auditReportDryRunCleanAndProtection() {
   await withFixture(async (fixtureRoot) => {
     const managedPaths = [
-      'apps/companion/src-tauri/target/debug/cache.bin',
-      'apps/companion/src-tauri/gen/android/.gradle/cache.bin',
-      'apps/companion/src-tauri/gen/android/app/build/output.apk',
-      'apps/companion/src-tauri/gen/android/buildSrc/build/plugin.jar',
-      'apps/companion/dist/index.html',
-      'apps/companion/.vite/cache.bin',
+      'native/updater/target/debug/cache.bin',
+      'apps/companion-flutter/android/.gradle/cache.bin',
+      'apps/companion-flutter/build/app/output.apk',
+      'apps/companion-flutter/android/.kotlin/plugin.jar',
+      'apps/companion-flutter/build/windows/index.html',
+      'apps/companion-flutter/android/app/.cxx/cache.bin',
       'mods/bepinex/bin/Release/plugin.dll',
       'mods/bepinex/obj/project.assets.json',
     ];
@@ -62,8 +62,8 @@ async function auditReportDryRunCleanAndProtection() {
       ['temp/user-log.txt', 'user data'],
       ['node_modules/example/index.js', 'dependency'],
       ['.playwright-cli/chromium/browser', 'browser'],
-      ['apps/companion/src-tauri/gen/android/keystore.properties', 'secret'],
-      ['apps/companion/src-tauri/gen/android/release.jks', 'signing'],
+      ['apps/companion-flutter/android/keystore.properties', 'secret'],
+      ['apps/companion-flutter/android/release.jks', 'signing'],
     ]);
     for (const [relativePath, content] of protectedFiles) {
       await writeTextFile(fixtureRoot, relativePath, content);
@@ -72,7 +72,7 @@ async function auditReportDryRunCleanAndProtection() {
     const report = runCli(fixtureRoot, 'report');
     assertSuccess(report, 'report');
     assert.match(report.stdout, /Managed build artifacts: 8 bucket\(s\)/);
-    assert.match(report.stdout, /apps\/companion\/src-tauri\/target\/debug/);
+    assert.match(report.stdout, /native\/updater\/target\/debug/);
     assert.doesNotMatch(report.stdout, /mods\/bepinex\/dist/);
     for (const relativePath of managedPaths) {
       assert.equal(await exists(path.join(fixtureRoot, relativePath)), true, `Report changed ${relativePath}.`);
@@ -106,9 +106,9 @@ async function auditReportDryRunCleanAndProtection() {
 
 async function auditQuotaPruneUsesWholeOldestBuckets() {
   await withFixture(async (fixtureRoot) => {
-    const oldestBucket = 'apps/companion/src-tauri/target/debug';
-    const middleBucket = 'apps/companion/src-tauri/gen/android/app/build';
-    const newestBucket = 'apps/companion/src-tauri/target/release';
+    const oldestBucket = 'native/updater/target/debug';
+    const middleBucket = 'apps/companion-flutter/build/app';
+    const newestBucket = 'native/updater/target/release';
     await writeFixtureFile(fixtureRoot, `${oldestBucket}/old.bin`, 2 * MIB);
     await writeFixtureFile(fixtureRoot, `${middleBucket}/middle.bin`, 2 * MIB);
     await writeFixtureFile(fixtureRoot, `${newestBucket}/new.bin`, MIB);
@@ -124,7 +124,7 @@ async function auditQuotaPruneUsesWholeOldestBuckets() {
     const dryRun = runCli(fixtureRoot, 'prune', [...quotaOptions, '--dry-run']);
     assertSuccess(dryRun, 'quota prune --dry-run');
     assert.match(dryRun.stdout, /Would remove \[quota\].*target\/debug/);
-    assert.match(dryRun.stdout, /Would remove \[quota\].*android\/app\/build/);
+    assert.match(dryRun.stdout, /Would remove \[quota\].*build\/app/);
     assert.doesNotMatch(dryRun.stdout, /Would remove \[quota\].*target\/release/);
     assert.equal(await exists(path.join(fixtureRoot, oldestBucket)), true);
     assert.equal(await exists(path.join(fixtureRoot, middleBucket)), true);
@@ -160,9 +160,9 @@ async function auditExpiredBucketRemovalBelowQuota() {
 async function auditCategoryQuotasApplyBelowGlobalLimit() {
   await withFixture(async (fixtureRoot) => {
     await writeTextFile(fixtureRoot, 'tests/example/Example.csproj', '<Project />');
-    const androidBucket = 'apps/companion/src-tauri/gen/android/app/build';
+    const androidBucket = 'apps/companion-flutter/build/app';
     const dotnetBucket = 'tests/example/bin';
-    const cargoBucket = 'apps/companion/src-tauri/target/debug';
+    const cargoBucket = 'native/updater/target/debug';
     await writeFixtureFile(fixtureRoot, `${androidBucket}/output.apk`, 2 * MIB);
     await writeFixtureFile(fixtureRoot, `${dotnetBucket}/example.dll`, MIB);
     await writeFixtureFile(fixtureRoot, `${cargoBucket}/cache.bin`, MIB);
@@ -175,7 +175,7 @@ async function auditCategoryQuotasApplyBelowGlobalLimit() {
       '--max-age-days', '999',
     ]);
     assertSuccess(prune, 'category quota prune');
-    assert.match(prune.stdout, /Removing \[android-quota\].*android\/app\/build/);
+    assert.match(prune.stdout, /Removing \[android-quota\].*build\/app/);
     assert.match(prune.stdout, /Removing \[dotnet-quota\].*tests\/example\/bin/);
     assert.equal(await exists(path.join(fixtureRoot, androidBucket)), false);
     assert.equal(await exists(path.join(fixtureRoot, dotnetBucket)), false);
@@ -186,11 +186,11 @@ async function auditCategoryQuotasApplyBelowGlobalLimit() {
 async function auditFixtureRootSafety() {
   const unsafeRoot = await mkdtemp(path.join(os.tmpdir(), 'mystia-build-artifacts-unsafe-'));
   try {
-    await writeFixtureFile(unsafeRoot, 'apps/companion/src-tauri/target/debug/cache.bin', 1024);
+    await writeFixtureFile(unsafeRoot, 'native/updater/target/debug/cache.bin', 1024);
     const result = runCli(unsafeRoot, 'clean');
     assert.notEqual(result.status, 0, 'A custom root without the fixture sentinel must be rejected.');
     assert.match(result.stderr, /missing safety sentinel/);
-    assert.equal(await exists(path.join(unsafeRoot, 'apps/companion/src-tauri/target/debug/cache.bin')), true);
+    assert.equal(await exists(path.join(unsafeRoot, 'native/updater/target/debug/cache.bin')), true);
   } finally {
     await rm(unsafeRoot, { recursive: true, force: true });
   }
@@ -198,7 +198,7 @@ async function auditFixtureRootSafety() {
 
 async function auditPruneEnvironmentGate() {
   await withFixture(async (fixtureRoot) => {
-    const managedFile = 'apps/companion/src-tauri/target/debug/cache.bin';
+    const managedFile = 'native/updater/target/debug/cache.bin';
     await writeFixtureFile(fixtureRoot, managedFile, MIB);
 
     const skipped = runCli(
@@ -239,7 +239,7 @@ async function auditSymlinkRefusal() {
     const outsideRoot = await mkdtemp(path.join(os.tmpdir(), 'mystia-build-artifacts-outside-'));
     try {
       await writeTextFile(outsideRoot, 'keep.txt', 'outside');
-      const targetRoot = path.join(fixtureRoot, 'apps/companion/src-tauri/target');
+      const targetRoot = path.join(fixtureRoot, 'native/updater/target');
       await mkdir(targetRoot, { recursive: true });
       await symlink(outsideRoot, path.join(targetRoot, 'debug'), process.platform === 'win32' ? 'junction' : 'dir');
 
@@ -255,7 +255,7 @@ async function auditSymlinkRefusal() {
 
 async function auditExclusiveLock() {
   await withFixture(async (fixtureRoot) => {
-    await writeFixtureFile(fixtureRoot, 'apps/companion/src-tauri/target/debug/cache.bin', 1024);
+    await writeFixtureFile(fixtureRoot, 'native/updater/target/debug/cache.bin', 1024);
     const resolvedRoot = await realpath(fixtureRoot);
     const lockPath = lockPathForRoot(resolvedRoot);
     await writeFile(lockPath, JSON.stringify({
@@ -267,7 +267,7 @@ async function auditExclusiveLock() {
       const result = runCli(fixtureRoot, 'prune');
       assert.notEqual(result.status, 0, 'A concurrent prune/clean lock must be rejected.');
       assert.match(result.stderr, /Another artifact prune\/clean is running/);
-      assert.equal(await exists(path.join(fixtureRoot, 'apps/companion/src-tauri/target/debug/cache.bin')), true);
+      assert.equal(await exists(path.join(fixtureRoot, 'native/updater/target/debug/cache.bin')), true);
     } finally {
       await rm(lockPath, { force: true });
     }

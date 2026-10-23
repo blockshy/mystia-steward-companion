@@ -40,6 +40,8 @@ internal sealed class RareGuestInvitationEntry
     public string Status { get; set; } = "";
     public bool CanInvite { get; set; }
     public bool IsCurrentScene { get; set; }
+    /// <summary>仅说明当前地图的精确登记读取结果，不推断其它地图或实际可见性。</summary>
+    public string LocationStatus { get; set; } = "unavailable";
     public int KizunaLevel { get; set; } = -1;
     public List<string> SceneLabels { get; set; } = new();
     public List<string> SceneNames { get; set; } = new();
@@ -355,6 +357,7 @@ internal static class RuntimeRareGuestInvitationService
         Type? runtimeDaySceneType = null;
         Type? runTimePlayerDataType = null;
         object? trackedNpcs = null;
+        var locationReadFailure = "";
         if (scope == RareGuestInvitationScope.CurrentScene)
         {
             runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
@@ -375,6 +378,28 @@ internal static class RuntimeRareGuestInvitationService
                 valueType => IsClosedIl2CppDictionary(valueType, typeof(string), trackedNpcType),
                 $"Dictionary<String,{trackedNpcType.FullName ?? TrackedNpcTypeName}>");
         }
+        else
+        {
+            // 全部范围同样补读当前地图登记，但它只是展示信息：读取失败不能删除
+            // 可邀请候选，也不能套用当前地图的时间/可见性过滤或影响邀请写入资格。
+            try
+            {
+                runtimeDaySceneType = RuntimeReflectionUtility.FindType(RuntimeDaySceneTypeName);
+                var trackedNpcType = RuntimeReflectionUtility.FindType(TrackedNpcTypeName);
+                if (runtimeDaySceneType == null || trackedNpcType == null)
+                    throw new InvalidOperationException("Current tracked-NPC types are unavailable.");
+                trackedNpcs = ReadRequiredStaticDictionaryProperty(
+                    runtimeDaySceneType,
+                    "trackedNPCs",
+                    typeof(string),
+                    valueType => IsClosedIl2CppDictionary(valueType, typeof(string), trackedNpcType),
+                    $"Dictionary<String,{trackedNpcType.FullName ?? TrackedNpcTypeName}>");
+            }
+            catch (Exception ex)
+            {
+                locationReadFailure = ex.GetType().Name;
+            }
+        }
 
         var recordedSpecialNpcs = ReadRequiredStaticDictionaryProperty(
             albumType,
@@ -393,6 +418,7 @@ internal static class RuntimeRareGuestInvitationService
             recordedSpecialNpcs,
             currentMap,
             scope,
+            locationReadFailure,
             out var diagnostics);
         var source = scope == RareGuestInvitationScope.AllScenes
             ? "all-day-npcs-keyed"
@@ -568,10 +594,9 @@ internal static class RuntimeRareGuestInvitationService
         object recordedSpecialNpcs,
         DaySceneMapInfo currentMap,
         RareGuestInvitationScope scope,
+        string locationReadFailure,
         out string diagnostics)
     {
-        object? currentTrackedMap = null;
-        var currentTrackedMapFound = false;
         var remainActions = 0;
         if (scope == RareGuestInvitationScope.CurrentScene)
         {
@@ -580,20 +605,18 @@ internal static class RuntimeRareGuestInvitationService
                 throw new InvalidOperationException(
                     "Current-scene invitation candidates require initialized day-scene runtime types.");
             }
-
-            currentTrackedMapFound = TryGetRequiredDictionaryValue(
-                trackedNpcs,
-                currentMap.Label,
-                "RunTimeDayScene.trackedNPCs",
-                out currentTrackedMap);
-            if (currentTrackedMapFound && currentTrackedMap == null)
-            {
-                throw new InvalidOperationException(
-                    $"RunTimeDayScene.trackedNPCs['{currentMap.Label}'] returned null.");
-            }
-
-            remainActions = ReadRequiredStaticIntProperty(runtimeDaySceneType, "RemainActions");
         }
+        var locationRequired = scope == RareGuestInvitationScope.CurrentScene;
+        var locations = RuntimeRareGuestInvitationLocationSnapshot.Capture(() =>
+        {
+            if (trackedNpcs == null)
+                throw new InvalidOperationException("Current tracked-NPC dictionary is unavailable.");
+            var found = TryGetRequiredDictionaryValue(
+                trackedNpcs, currentMap.Label, "RunTimeDayScene.trackedNPCs", out var map);
+            return (found, map);
+        }, required: locationRequired);
+        if (scope == RareGuestInvitationScope.CurrentScene)
+            remainActions = ReadRequiredStaticIntProperty(runtimeDaySceneType!, "RemainActions");
 
         var candidates = new List<RuntimeRareGuestInvitationCandidate>();
         var dayNpcCount = 0;
@@ -604,6 +627,7 @@ internal static class RuntimeRareGuestInvitationService
         var kizunaCount = 0;
         var missingKizunaCount = 0;
         var availabilityErrorCount = 0;
+        var locationErrorCount = 0;
         var availabilityErrorSamples = new List<string>();
 
         foreach (var identity in mappedGuestSnapshot.Entries
@@ -677,22 +701,20 @@ internal static class RuntimeRareGuestInvitationService
                 continue;
             }
 
-            object? trackedNpc = null;
-            var trackedFound = currentTrackedMapFound
-                && TryGetRequiredDictionaryValue(
-                    currentTrackedMap!,
-                    identity.RuntimeStringId,
+            var location = locations.Locate(identity.RuntimeStringId, (map, key) =>
+            {
+                var found = TryGetRequiredDictionaryValue(
+                    map,
+                    key,
                     $"RunTimeDayScene.trackedNPCs['{currentMap.Label}']",
-                    out trackedNpc);
+                    out var npcEntry);
+                return (found, npcEntry);
+            }, required: locationRequired);
+            if (!location.IsKnown) locationErrorCount++;
+            var trackedNpc = location.TrackedNpc;
+            var trackedFound = location.IsCurrentScene;
             if (trackedFound)
             {
-                if (trackedNpc == null)
-                {
-                    throw new InvalidOperationException(
-                        $"RunTimeDayScene.trackedNPCs['{currentMap.Label}']"
-                        + $"['{identity.RuntimeStringId}'] returned null.");
-                }
-
                 trackedCount++;
             }
             else if (scope == RareGuestInvitationScope.CurrentScene)
@@ -771,7 +793,10 @@ internal static class RuntimeRareGuestInvitationService
                 RuntimeAvailable: runtimeAvailable,
                 AvailabilityReason: availabilityReason,
                 KizunaStateKnown: kizunaStateKnown,
-                KizunaLevel: kizunaLevel));
+                KizunaLevel: kizunaLevel)
+            {
+                LocationStatus = location.Status,
+            });
         }
 
         if (scope == RareGuestInvitationScope.CurrentScene
@@ -792,15 +817,16 @@ internal static class RuntimeRareGuestInvitationService
             .Select(candidate =>
                 $"{candidate.RuntimeName}:{candidate.RuntimeId}->{candidate.CanonicalGuestId}")
             .ToList();
-        var trackedMapStatus = scope == RareGuestInvitationScope.AllScenes
-            ? "not-read"
-            : currentTrackedMapFound ? "ready" : "missing";
+        var trackedMapStatus = !locations.IsKnown ? "unavailable"
+            : locations.Map != null ? "ready" : "missing";
         diagnostics =
             $"identities={mappedGuestSnapshot.Entries.Count}; dayNpcs={dayNpcCount}; "
             + $"missingDayNpcs={missingDayNpcCount}; "
             + $"runtimeNoDayDestinations={noDayDestinationCount}; "
             + $"trackedMap={trackedMapStatus}; "
             + $"tracked={trackedCount}; missingTracked={missingTrackedCount}; "
+            + $"locationReadFailures={locationErrorCount}; "
+            + $"locationReadError={(locationReadFailure.Length > 0 ? locationReadFailure : locations.Error)}; "
             + $"availabilityErrors={availabilityErrorCount}; "
             + $"runtimeKizuna={kizunaCount}; runtimeMissingKizuna={missingKizunaCount}; "
             + $"runtimeCandidates={candidates.Count}; candidates={canonicalCandidates.Count}; "
@@ -1447,6 +1473,7 @@ internal static class RuntimeRareGuestInvitationService
             Status = status,
             CanInvite = canInvite,
             IsCurrentScene = candidate.IsCurrentScene,
+            LocationStatus = candidate.LocationStatus,
             KizunaLevel = kizunaLevel,
             SceneLabels = candidate.SceneLabels.ToList(),
             SceneNames = candidate.SceneNames.ToList(),

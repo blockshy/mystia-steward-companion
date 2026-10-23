@@ -10,6 +10,7 @@ try
     VerifyPatchTargets();
     VerifyDualTargetClaimsAndColorRoundTrip();
     VerifyRuntimeUiTargetPublicationLease();
+    VerifyTargetPublicationDiagnosticsDoNotBlockReaders();
     VerifyCookingRefreshHoldsExactTargetPublicationLease();
     VerifyStorageRefreshHoldsExactTargetPublicationLease();
     VerifySharedListItemUsesSingleOwnershipAndBaseline();
@@ -32,6 +33,7 @@ try
     VerifyExactRecipeVariantRowHighlighting();
     VerifyEnabledEmptyTargetClearsVisuals();
     VerifyLifecycleGenerationGuards();
+    VerifyFinishedOrderRevokesEverySurface();
     Console.WriteLine("PASS: scoped pinning and pinned-list highlighting propagate through Harmony without mutating IL2CPP lists.");
     return 0;
 }
@@ -39,6 +41,75 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+static void VerifyFinishedOrderRevokesEverySurface()
+{
+    // 保留同桌不同 lifecycle 的两类订单，证明撤销依据是完整身份而不是桌号。
+    var business = RuntimeNightBusinessLifecycle.Generation;
+    RuntimeUiTargetSnapshot Target(RuntimeUiTargetKind kind, long lifecycle)
+        => new(kind, RuntimeTargetHighlightColor.DefaultRare,
+            listPinningEnabled: true, recipeVariantEnabled: false,
+            cookerHighlightEnabled: true, seatHighlightEnabled: true, orderHighlightEnabled: true,
+            orderTraceId: kind == RuntimeUiTargetKind.Rare ? $"R-{lifecycle}" : $"N-{lifecycle}",
+            orderKey: kind == RuntimeUiTargetKind.Rare ? "" : "ptr:abc",
+            orderLifecycleSequence: lifecycle, deskCode: 2, recipeId: 10,
+            ingredientIds: new[] { 1 }, extraIngredientIds: Array.Empty<int>(),
+            beverageId: 2, cookerTypeId: 3, targetRevision: $"identity-{lifecycle}");
+    var rare = Target(RuntimeUiTargetKind.Rare, 501);
+    var normal = Target(RuntimeUiTargetKind.Normal, 502);
+    var currentLifecycles = new HashSet<long> { 501, 502 };
+    RuntimeUiTargetOrderResolver.Validate = target => currentLifecycles.Contains(target.OrderLifecycleSequence);
+    try
+    {
+        Time.realtimeSinceStartup = 300f;
+        RuntimeUiPinningService.UpdateTargets(business, new[] { rare, normal });
+        var initial = RuntimeUiPinningService.ReadTargetSet();
+        var before = RuntimeUiTargetOrderResolver.Calls;
+        RuntimeUiPinningService.Tick();
+        AssertEqual(before + 2, RuntimeUiTargetOrderResolver.Calls, "新发布须立即核验两个订单。");
+        RuntimeUiPinningService.Tick();
+        AssertEqual(before + 2, RuntimeUiTargetOrderResolver.Calls, "未变输入不应每帧重复枚举 capture。");
+        Time.realtimeSinceStartup = 300.3f;
+        RuntimeUiPinningService.Tick();
+        AssertEqual(before + 4, RuntimeUiTargetOrderResolver.Calls, "250ms 健康兜底必须重新验证。");
+
+        currentLifecycles.Remove(501);
+        SpecialOrderRuntimeCapture.ChangeVersion++;
+        RuntimeUiPinningService.Tick();
+        var retained = RuntimeUiPinningService.ReadTargetSet();
+        AssertTrue(retained.Generation > initial.Generation && retained.Targets.Count == 1,
+            "结束的稀客订单须立即撤回，不能等待下一轮耗时方案计算。");
+        AssertEqual(RuntimeUiTargetKind.Normal, retained.Targets[0].Kind, "同桌合法普客目标不能被一并清掉。");
+        AssertEqual(normal.OrderTraceId, RuntimeOrderHighlightService.LastOrderTraceId, "HUD 未同步保留普客。");
+        AssertEqual(normal.OrderTraceId, RuntimeThrowDeliverOrderHighlightService.LastOrderTraceId, "抛送未同步保留普客。");
+        AssertTrue(RuntimeSeatHighlightService.LastEnabled && RuntimeCookerHighlightService.LastEnabled,
+            "合法另一订单仍需要座位与厨具高亮。");
+
+        currentLifecycles.Clear();
+        currentLifecycles.Add(503); // 同桌新订单绝不能继承 502 的旧目标。
+        NormalOrderRuntimeCapture.ChangeVersion++;
+        RuntimeUiPinningService.Tick();
+        AssertEqual(0, RuntimeUiPinningService.ReadTargetSet().Targets.Count, "同桌新 lifecycle 被错误当成旧订单。");
+        AssertFalse(RuntimeCookerHighlightService.LastEnabled, "订单结束后厨具仍在高亮。");
+        AssertFalse(RuntimeSeatHighlightService.LastEnabled, "订单结束后座位仍在高亮。");
+        AssertFalse(RuntimeOrderHighlightService.LastEnabled, "订单结束后 HUD 未撤回。");
+        AssertFalse(RuntimeThrowDeliverOrderHighlightService.LastEnabled, "订单结束后抛送未撤回。");
+
+        // 后台旧计算再次发布相同历史对象也须在下一次消费时被拒绝，不能由旧响应恢复。
+        RuntimeUiPinningService.UpdateTargets(business, new[] { normal });
+        RuntimeUiPinningService.Tick();
+        AssertEqual(0, RuntimeUiPinningService.ReadTargetSet().Targets.Count, "旧响应恢复了已失效目标。");
+        RuntimeUiPinningService.UpdateTargets(business, new[] { Target(RuntimeUiTargetKind.Normal, 503) });
+        RuntimeUiPinningService.Tick();
+        AssertEqual(503L, RuntimeUiPinningService.ReadTargetSet().Targets.Single().OrderLifecycleSequence,
+            "下一订单具备新完整身份后应正常恢复高亮。");
+    }
+    finally
+    {
+        RuntimeUiTargetOrderResolver.Validate = null;
+        RuntimeUiPinningService.UpdateTargets(business, Array.Empty<RuntimeUiTargetSnapshot>());
+    }
 }
 
 static void VerifyDualTargetClaimsAndColorRoundTrip()
@@ -333,6 +404,119 @@ static void VerifyRuntimeUiTargetPublicationLease()
             businessGeneration,
             out _),
         "A prior business generation acquired a publication lease after the lifecycle advanced.");
+}
+
+/// <summary>
+/// 用可阻塞的日志接收器复现后台发布后同步写盘：日志尚未返回时，另一线程仍必须可以
+/// 推进真实 Tick、读取完整代次并取得精确目标许可。旧实现会在同一发布锁上等到日志解除。
+/// 测试始终在 finally 放行并回收工作线程，不通过缩短安全门禁或忽略异常使断言通过。
+/// </summary>
+static void VerifyTargetPublicationDiagnosticsDoNotBlockReaders()
+{
+    void Publish(string revision) => PublishRareTarget(
+        RuntimeNightBusinessLifecycle.Generation,
+        listPinningEnabled: true, recipeVariantEnabled: false, cookerHighlightEnabled: true,
+        seatHighlightEnabled: true, orderHighlightEnabled: true, recipeId: 201, beverageId: 202,
+        ingredientIds: new[] { 203 }, extraIngredientIds: Array.Empty<int>(), cookerTypeId: 1,
+        deskCode: 2, orderTraceId: "R-9401", targetRevision: revision);
+
+    foreach (var scenario in new[] { "publish", "authority", "boundary", "warning", "status" })
+    {
+        RuntimeUiPinningService.Abandon("isolated diagnostic concurrency probe");
+        Publish("diagnostic-before-" + scenario);
+        var previous = RuntimeUiPinningService.ReadTargetSet();
+        var session = previous.SessionGeneration;
+        using var logEntered = new ManualResetEventSlim();
+        using var releaseLog = new ManualResetEventSlim();
+        using var readerFinished = new ManualResetEventSlim();
+        Exception? publisherFailure = null;
+        Exception? readerFailure = null;
+        var publisherId = 0;
+        var readerCompletedBeforeRelease = false;
+        var entered = false;
+        Thread? reader = null;
+        void BlockPublisherLog(string message)
+        {
+            if (Environment.CurrentManagedThreadId != Volatile.Read(ref publisherId)) return;
+            logEntered.Set();
+            if (!releaseLog.Wait(TimeSpan.FromSeconds(5)))
+                throw new TimeoutException("诊断测试未在截止前释放日志接收器。");
+        }
+        ManualLogSource.BeforeInformationWrite = BlockPublisherLog;
+        ManualLogSource.BeforeWarningWrite = BlockPublisherLog;
+        if (scenario == "status") RuntimeCookerHighlightService.BeforeStatusRead = () => BlockPublisherLog("status");
+        var publisher = new Thread(() =>
+        {
+            Volatile.Write(ref publisherId, Environment.CurrentManagedThreadId);
+            try
+            {
+                if (scenario == "authority")
+                    RuntimeUiPinningService.ClearTargetsForAuthorityTransition(session, "diagnostic authority probe");
+                else if (scenario == "boundary")
+                    RuntimeUiPinningService.ClearTargetsForBusinessBoundary(session, "diagnostic boundary probe");
+                else
+                {
+                    RuntimeOrderHighlightService.ThrowOnUpdate = scenario == "warning";
+                    // 同值调用不发布新代，但依旧返回详细 Status；模拟视觉状态读取等待，
+                    // 验证原来的同值早退也不再持目标锁跨入视觉服务锁。
+                    Publish((scenario == "status" ? "diagnostic-before-" : "diagnostic-after-") + scenario);
+                }
+            }
+            catch (Exception ex) { publisherFailure = ex; }
+        });
+        try
+        {
+            publisher.Start();
+            entered = logEntered.Wait(TimeSpan.FromSeconds(2));
+            if (entered)
+            {
+                reader = new Thread(() =>
+                {
+                    try
+                    {
+                        // 这是生产 Tick 和生产许可实现，不是反射探测某个锁字段是否释放。
+                        RuntimeUiPinningService.Tick();
+                        var current = RuntimeUiPinningService.ReadTargetSet();
+                        AssertTrue((scenario == "status" ? current.Generation == previous.Generation : current.Generation > previous.Generation)
+                            && current.SessionGeneration == session,
+                            scenario + ": 日志阻塞期间没有完整发布新目标代次。");
+                        AssertEqual(scenario is "authority" or "boundary" ? 0 : 1, current.Targets.Count,
+                            scenario + ": 日志阻塞期间看到了部分目标集合。");
+                        if (scenario != "status")
+                            AssertFalse(RuntimeUiPinningService.TryAcquireTargetPublicationLease(previous, out _),
+                                scenario + ": 旧目标在日志阻塞期间仍获得精确许可。");
+                        AssertTrue(RuntimeUiPinningService.TryAcquireTargetPublicationLease(current, out var lease),
+                            scenario + ": 新目标在日志阻塞期间不能取得精确许可。");
+                        lease.Dispose();
+                        if (scenario == "authority")
+                        {
+                            AssertTrue(ReferenceEquals(previous, RuntimeUiPinningService.ReadSurfaceRefreshTargetSet()),
+                                "切主屏障仍须保留原呈现目标，不能为解锁日志恢复旧执行目标。");
+                        }
+                    }
+                    catch (Exception ex) { readerFailure = ex; }
+                    finally { readerFinished.Set(); }
+                });
+                reader.Start();
+                readerCompletedBeforeRelease = readerFinished.Wait(TimeSpan.FromSeconds(2));
+            }
+        }
+        finally
+        {
+            releaseLog.Set();
+            publisher.Join(TimeSpan.FromSeconds(5));
+            reader?.Join(TimeSpan.FromSeconds(5));
+            ManualLogSource.BeforeInformationWrite = null;
+            ManualLogSource.BeforeWarningWrite = null;
+            RuntimeCookerHighlightService.BeforeStatusRead = null;
+            RuntimeOrderHighlightService.ThrowOnUpdate = false;
+        }
+        AssertTrue(entered, scenario + ": 发布未到达受控日志接收器。");
+        AssertTrue(readerCompletedBeforeRelease, scenario + ": 同步日志仍持有目标发布锁，阻止 Tick/许可前进。");
+        AssertFalse(publisher.IsAlive || reader?.IsAlive == true, scenario + ": 并发探针线程没有结束。");
+        if (publisherFailure != null) throw new InvalidOperationException(scenario + ": 发布线程失败。", publisherFailure);
+        if (readerFailure != null) throw new InvalidOperationException(scenario + ": 读取线程失败。", readerFailure);
+    }
 }
 
 static void VerifyCookingRefreshHoldsExactTargetPublicationLease()

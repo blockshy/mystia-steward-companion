@@ -1,6 +1,6 @@
 # 任务系统
 
-更新日期：2026-08-19
+更新日期：2026-10-23
 
 本文说明任务的只读运行时投影、伴随窗口状态和任务料理优先信号。运行时反射和数据完整性的一般原则见
 [运行时数据提供器](runtime-provider.md)，诊断文件边界见 [可观测性](observability.md)。
@@ -74,20 +74,13 @@ receiver/presentation 等门禁才能发布。
 
 前端读取入口为：
 
-- `apps/companion/src/companion/hooks/useTrackedMissions.ts`
-- `apps/companion/src/companion/hooks/useAvailableMissions.ts`
-- `apps/companion/src/companion/pages/ModMissionListPanel.tsx`
-- `apps/companion/src/companion/tracked-missions.ts`
-- `apps/companion/src/companion/available-missions.ts`
-- `apps/companion/src/companion/mission-presentation.ts`
+- `apps/companion-flutter/lib/features/tools.dart`
+- `apps/companion-flutter/lib/app/live_workbench_model.dart`
 
-任务列表模块默认关闭，并把启用状态保存在当前客户端的 localStorage。只有模块开启且“扩展功能 -> 任务列表”
-可见时才读取和轮询两个端点；关闭或离开页面时取消请求。这个开关只控制列表流量，不关闭后端共享的被动任务
-捕获，也不关闭任务料理优先信号。
+新客户端在“扩展 → 任务”启用“任务列表”本机模块后，分别打开追踪任务或可接取任务；只轮询当前可见资源。停用或离开页面停止轮询并拒绝迟到结果。
+页面可见性不关闭后端共享的被动任务捕获，也不关闭任务料理优先信号。
 
-页面按 label 合并两份投影；同 label 已成为活动任务时，活动任务覆盖可接取行，完成原生
-`triggering -> tracked` 交接。筛选页签固定为“全部 / 可接取 / 可完成 / 进行中 / 待确认”，并使用稳定排序。
-任务标题、角色名、相关场景和 receiver 等展示信息来自同一严格 presentation reader，不能由 label 文本猜测。
+两份任务投影保持独立，页面以规范任务身份显示标题、目标与完成状态；不能由 label 文本猜测是否完成。
 
 ## ServeInWork 任务料理
 
@@ -129,7 +122,7 @@ dotnet run --project tests/runtime-mission-recipe-priority/RuntimeMissionRecipeP
 
 ```bash
 corepack pnpm audit:runtime-missions
-corepack pnpm audit:runtime-missions:ui
+node scripts/flutter-workspace.mjs --sdk-root <锁定SDK绝对路径> --task test
 ```
 
 完整验证分层见 [验证指南](validation-guide.md)。

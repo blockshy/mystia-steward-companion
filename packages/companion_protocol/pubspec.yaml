@@ -1,0 +1,6 @@
+name: companion_protocol
+description: Mystia 伴随客户端的纯 Dart 线路契约与严格值校验。
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: '>=3.13.5 <4.0.0'

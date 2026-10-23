@@ -1,24 +1,24 @@
 using System.Diagnostics;
-using System.Net.Sockets;
-using System.Text;
 using BepInEx.Logging;
 
 namespace MystiaStewardCompanion.Plugin;
 
 internal static class CompanionProcessLauncher
 {
-    private const int ControlPort = 32146;
-    private const string ControlShow = "mystia-steward-companion:show";
-    private const string ControlToggle = "mystia-steward-companion:toggle";
-    private const string ControlExit = "mystia-steward-companion:exit";
+    private static string _expectedExecutablePath = "";
+    private const string ControlShow = "show";
+    private const string ControlToggle = "toggle";
+    private const string ControlExit = "exit";
     private static readonly TimeSpan ControlReadyTimeout = TimeSpan.FromSeconds(8);
     private static readonly object LifecycleLock = new();
+    private static readonly CompanionConnectionToken ConnectionToken = new();
     private static int _generation;
     private static bool _stopping;
     private static bool _launchPending;
 
     public static void BeginSession()
     {
+        ConnectionToken.Reset();
         lock (LifecycleLock)
         {
             _generation += 1;
@@ -26,6 +26,9 @@ internal static class CompanionProcessLauncher
             _launchPending = false;
         }
     }
+
+    /// <summary>只更新后续启动/激活所用凭据，不额外弹出窗口或重放 show/toggle 操作。</summary>
+    public static void UpdateConnectionToken(string token) => ConnectionToken.Set(token);
 
     public static void TryAutoLaunch(StewardPluginConfig config, ManualLogSource log, string localApiToken)
     {
@@ -105,8 +108,10 @@ internal static class CompanionProcessLauncher
             generation = _generation;
         }
 
+        var executablePath = ResolveExecutablePath(config.CompanionExecutablePath.Value);
+        lock (LifecycleLock) _expectedExecutablePath = executablePath;
         return new CompanionLaunchOptions(
-            config.CompanionExecutablePath.Value,
+            executablePath,
             BuildLocalApiEndpoint(config.LocalApiPort.Value),
             localApiToken.Trim(),
             log,
@@ -124,25 +129,24 @@ internal static class CompanionProcessLauncher
                 return false;
             }
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = executablePath,
-                WorkingDirectory = Path.GetDirectoryName(executablePath) ?? "",
-                UseShellExecute = false,
-            };
+            // 游戏由 Steam 启动时会携带其环境标记；管家是独立工具，只调整子进程环境副本。
+            // 参数继续通过 ArgumentList 传递，不经 shell，也不把连接凭据写入日志或环境。
+            var startInfo = CompanionProcessEnvironment.CreateStartInfo(
+                executablePath, Path.GetDirectoryName(executablePath) ?? "");
             startInfo.ArgumentList.Add($"--api={options.ApiEndpoint}");
             startInfo.ArgumentList.Add($"--game-pid={Process.GetCurrentProcess().Id}");
-            if (!string.IsNullOrWhiteSpace(options.LocalApiToken))
+            var started = ConnectionToken.Use(options.LocalApiToken, token =>
             {
-                startInfo.ArgumentList.Add($"--token={options.LocalApiToken}");
-            }
-
-            lock (LifecycleLock)
-            {
-                if (_stopping || options.Generation != _generation) return false;
-                using var process = Process.Start(startInfo)
-                    ?? throw new InvalidOperationException("Companion process could not be started.");
-            }
+                lock (LifecycleLock)
+                {
+                    if (_stopping || options.Generation != _generation) return false;
+                    if (!string.IsNullOrWhiteSpace(token)) startInfo.ArgumentList.Add($"--token={token}");
+                    using var process = Process.Start(startInfo)
+                        ?? throw new InvalidOperationException("Companion process could not be started.");
+                    return true;
+                }
+            });
+            if (!started) return false;
             options.Log.LogInfo($"Companion launch/focus requested: {executablePath}");
             return true;
         }
@@ -168,50 +172,17 @@ internal static class CompanionProcessLauncher
         }
     }
 
+    /// <summary>新版控制客户端先验证目标进程，再发送凭据；退出须等到同一进程真正终止。</summary>
     private static bool SendControlMessage(string message, string apiEndpoint, string localApiToken)
     {
-        try
-        {
-            using var client = new TcpClient();
-            if (!client.ConnectAsync("127.0.0.1", ControlPort).Wait(TimeSpan.FromMilliseconds(180)))
-            {
-                return false;
-            }
-
-            var bytes = Encoding.UTF8.GetBytes(BuildControlMessage(message, apiEndpoint, localApiToken));
-            using var stream = client.GetStream();
-            stream.Write(bytes, 0, bytes.Length);
-            stream.Flush();
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
+        string executablePath;
+        lock (LifecycleLock) executablePath = _expectedExecutablePath;
+        // 已排队的激活不能在改密回执之后再次发送捕获的旧凭据；退出消息没有连接参数。
+        if (message == ControlExit)
+            return CompanionControlClient.TrySend(message, "", "", Process.GetCurrentProcess().Id, executablePath);
+        return ConnectionToken.Use(localApiToken, token => CompanionControlClient.TrySend(message, apiEndpoint, token,
+            Process.GetCurrentProcess().Id, executablePath));
     }
-
-    private static string BuildControlMessage(string message, string apiEndpoint, string localApiToken)
-    {
-        var builder = new StringBuilder()
-            .AppendLine(message)
-            .Append("--game-pid=")
-            .AppendLine(Process.GetCurrentProcess().Id.ToString());
-
-        if (!string.IsNullOrWhiteSpace(apiEndpoint))
-        {
-            builder
-                .Append("--api=")
-                .AppendLine(apiEndpoint);
-        }
-
-        if (!string.IsNullOrWhiteSpace(localApiToken))
-        {
-            builder.Append("--token=").AppendLine(localApiToken.Trim());
-        }
-
-        return builder.ToString();
-    }
-
     private static string BuildLocalApiEndpoint(int configuredPort)
     {
         var port = Math.Clamp(configuredPort, 1024, 65535);
@@ -266,12 +237,10 @@ internal static class CompanionProcessLauncher
         var candidates = OperatingSystem.IsWindows()
             ? new[]
             {
-                "mystia-steward-companion.exe",
                 Path.Combine("companion", "mystia-steward-companion.exe"),
             }
             : new[]
             {
-                "mystia-steward-companion",
                 Path.Combine("companion", "mystia-steward-companion"),
             };
 

@@ -1,252 +1,66 @@
 #requires -Version 7.0
-
 <#
 .SYNOPSIS
-    构建本地发布包所需的前端、Tauri 窗口、独立 updater、BepInEx 插件和可选 Android APK。
-
+构建 Flutter Windows、独立 updater、三个 C# DLL 和可选正式签名 Android APK。
 .DESCRIPTION
-    该脚本是 Windows 本地发布流程的构建入口。它会先检查 Unity/BepInEx 引用 DLL，
-    再按参数选择安装依赖、运行预检、构建前端/Tauri、构建插件并调用 package-release.ps1 打包。
-    如传入 -BuildAndroidApk，会额外调用签名 APK 构建脚本，并把 APK 放在 dist 根目录。
-    脚本不会创建 Git tag 或 GitHub Release；上传发布由 publish-release.ps1 负责。
+所有 SDK 均按根锁校验；Windows 包先在暂存区全量验证，再替换 dist。不会安装游戏、
+创建标签或发布 Release。Flutter SDK 必须明确指定，无法从 PATH 悄悄选择其他版本。
 #>
+[CmdletBinding()]
 param(
-    [string]$Configuration = "Release",
+    [string]$Configuration = 'Release',
+    [string]$FlutterSdkRoot = $env:MYSTIA_FLUTTER_SDK_ROOT,
+    [string]$ReferenceDir = $env:MYSTIA_REFERENCE_DIR,
     [switch]$SkipInstall,
-    [Alias("SkipWebBuild")]
-    [switch]$SkipFrontendBuild,
-    [switch]$SkipTauriBuild,
+    [switch]$SkipFlutterBuild,
     [switch]$SkipPackage,
     [switch]$BuildAndroidApk,
-    [switch]$NoFrozenLockfile,
-    [ValidateRange(1, 1024)]
-    [int]$BuildCacheLimitGiB = 12,
-    [ValidateRange(1, 1024)]
-    [int]$BuildCacheTargetGiB = 8,
-    [switch]$SkipBuildCacheCleanup,
-    [string]$ReferenceDir = $env:MYSTIA_REFERENCE_DIR
+    [ValidateRange(1, 1024)][int]$BuildCacheLimitGiB = 12,
+    [ValidateRange(1, 1024)][int]$BuildCacheTargetGiB = 8,
+    [switch]$SkipBuildCacheCleanup
 )
-
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 Set-StrictMode -Version Latest
-
-$ToolDir = $PSScriptRoot
-$RootDir = (Resolve-Path (Join-Path $ToolDir "..")).Path
-$RepoRoot = (Resolve-Path (Join-Path $RootDir "../..")).Path
-$ProjectPath = Join-Path $RootDir "MystiaStewardCompanion.BepInEx.csproj"
-$PreflightScript = Join-Path $ToolDir "preflight.ps1"
-$PackageScript = Join-Path $ToolDir "package-release.ps1"
-$BuildArtifactManager = Join-Path $RepoRoot "scripts/manage-build-artifacts.mjs"
-$ToolchainCheckScript = Join-Path $RepoRoot "scripts/check-build-toolchain.mjs"
-$EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
-    Join-Path $RootDir "References"
-} else {
-    (Resolve-Path -LiteralPath $ReferenceDir).Path
+$repository = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../..'))
+if (-not $FlutterSdkRoot) { throw '必须提供 -FlutterSdkRoot 或 MYSTIA_FLUTTER_SDK_ROOT。' }
+if (-not $ReferenceDir) { $ReferenceDir = Join-Path $repository 'mods/bepinex/References' }
+function Invoke-Checked([string]$Command, [string[]]$Arguments) {
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "构建命令失败，退出码 $LASTEXITCODE ：$Command" }
 }
-
-function Write-Step {
-    param([Parameter(Mandatory = $true)][string]$Title)
-
-    Write-Host ""
-    Write-Host "==> $Title" -ForegroundColor Cyan
-}
-
-function Invoke-Checked {
-    param(
-        [Parameter(Mandatory = $true)][string]$Title,
-        [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
-    )
-
-    Write-Step $Title
-    Write-Host "    $FilePath $($Arguments -join ' ')"
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE`: $FilePath $($Arguments -join ' ')"
-    }
-}
-
-function Get-PnpmCommand {
-    <#
-    .SYNOPSIS
-        取得仓库唯一允许的 Corepack pnpm 入口。
-
-    .DESCRIPTION
-        只通过 Corepack 调用 pnpm，保证包管理器版本和完整性哈希遵循 packageManager 字段。
-        不接受全局 pnpm 回退。
-    #>
-    $Corepack = Get-Command "corepack" -ErrorAction SilentlyContinue
-    if ($null -eq $Corepack) {
-        throw "corepack was not found. Install the exact Node.js and Corepack versions declared in toolchain.lock.json, then run: corepack enable"
-    }
-
-    return @{
-        FilePath = $Corepack.Source
-        Prefix = @("pnpm")
-    }
-}
-
-function Invoke-Pnpm {
-    param(
-        [Parameter(Mandatory = $true)][string]$Title,
-        [Parameter(Mandatory = $true)][string[]]$Arguments
-    )
-
-    $Command = Get-PnpmCommand
-    Invoke-Checked -Title $Title -FilePath $Command.FilePath -Arguments @($Command.Prefix + $Arguments)
-}
-
-function Invoke-BuildCachePrune {
-    param([Parameter(Mandatory = $true)][string]$Title)
-
-    if (-not (Test-Path -LiteralPath $BuildArtifactManager -PathType Leaf)) {
-        throw "Build artifact manager was not found: $BuildArtifactManager"
-    }
-
-    $Node = Get-Command "node" -ErrorAction SilentlyContinue
-    if ($null -eq $Node) {
-        throw "node was not found. Install the exact Node.js version declared in toolchain.lock.json."
-    }
-
-    Invoke-Checked `
-        -Title $Title `
-        -FilePath $Node.Source `
-        -Arguments @(
-            $BuildArtifactManager,
-            "prune",
-            "--limit-gib",
-            $BuildCacheLimitGiB.ToString(),
-            "--target-gib",
-            $BuildCacheTargetGiB.ToString()
-        )
-}
-
-function Invoke-AndroidApkBuild {
-    $PreviousLimit = $env:MYSTIA_BUILD_CACHE_LIMIT_GIB
-    $PreviousTarget = $env:MYSTIA_BUILD_CACHE_TARGET_GIB
-    $PreviousSkipCleanup = $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP
-
-    try {
-        $env:MYSTIA_BUILD_CACHE_LIMIT_GIB = $BuildCacheLimitGiB.ToString()
-        $env:MYSTIA_BUILD_CACHE_TARGET_GIB = $BuildCacheTargetGiB.ToString()
-        # -SkipPackage means the caller intentionally keeps raw Tauri outputs for later use.
-        $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = if ($SkipBuildCacheCleanup -or $SkipPackage) { "1" } else { "0" }
-        Invoke-Pnpm -Title "Build signed Android APK" -Arguments @("tauri:android:apk:signed")
-    }
-    finally {
-        if ($null -eq $PreviousLimit) {
-            Remove-Item Env:MYSTIA_BUILD_CACHE_LIMIT_GIB -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:MYSTIA_BUILD_CACHE_LIMIT_GIB = $PreviousLimit
-        }
-
-        if ($null -eq $PreviousTarget) {
-            Remove-Item Env:MYSTIA_BUILD_CACHE_TARGET_GIB -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:MYSTIA_BUILD_CACHE_TARGET_GIB = $PreviousTarget
-        }
-
-        if ($null -eq $PreviousSkipCleanup) {
-            Remove-Item Env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP -ErrorAction SilentlyContinue
-        }
-        else {
-            $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = $PreviousSkipCleanup
-        }
-    }
-}
-
-if ($BuildCacheTargetGiB -ge $BuildCacheLimitGiB) {
-    throw "BuildCacheTargetGiB must be less than BuildCacheLimitGiB. Actual: target=$BuildCacheTargetGiB, limit=$BuildCacheLimitGiB"
-}
-
-$PreviousBuildCacheSkipEnvironment = $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP
-$env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = if ($SkipBuildCacheCleanup) { "1" } else { "0" }
-
-Push-Location $RepoRoot
+Push-Location -LiteralPath $repository
 try {
-    $Node = Get-Command "node" -ErrorAction SilentlyContinue
-    if ($null -eq $Node) {
-        throw "node was not found. Install the exact Node.js version declared in toolchain.lock.json."
+    Invoke-Checked 'node' @('scripts/check-build-toolchain.mjs', 'full')
+    if (-not $SkipBuildCacheCleanup) {
+        Invoke-Checked 'node' @('scripts/manage-build-artifacts.mjs', 'prune', '--limit-gib', $BuildCacheLimitGiB.ToString(), '--target-gib', $BuildCacheTargetGiB.ToString())
     }
-
-    Invoke-Checked `
-        -Title "Validate locked build toolchain" `
-        -FilePath $Node.Source `
-        -Arguments @($ToolchainCheckScript, "full")
-
-    # A new Tauri build does not depend on a reused frontend build, so it is safe to prune stale buckets first.
-    if (-not $SkipBuildCacheCleanup -and -not $SkipTauriBuild) {
-        Invoke-BuildCachePrune -Title "Prune stale build artifacts before compilation"
-    }
-
-    if (-not $SkipInstall) {
-        $InstallArgs = @("install")
-        if (-not $NoFrozenLockfile) {
-            $InstallArgs += "--frozen-lockfile"
-        }
-
-        Invoke-Pnpm -Title "Install companion frontend dependencies" -Arguments $InstallArgs
-    }
-
-    Write-Step "Run Mod preflight"
-    & $PreflightScript -ReferenceDir $EffectiveReferenceDir
-
-    if (-not $SkipFrontendBuild) {
-        Invoke-Pnpm -Title "Build companion frontend" -Arguments @("build")
-    }
-
-    if (-not $SkipTauriBuild) {
-        Invoke-Pnpm -Title "Build companion window" -Arguments @("tauri:build")
-
-        $Cargo = Get-Command "cargo" -ErrorAction SilentlyContinue
-        if ($null -eq $Cargo) {
-            throw "cargo was not found. Install the exact Rust toolchain declared in toolchain.lock.json."
-        }
-
-        $UpdaterManifest = Join-Path $RepoRoot "apps/companion/src-tauri/Cargo.toml"
-        Invoke-Checked `
-            -Title "Build companion updater" `
-            -FilePath $Cargo.Source `
-            -Arguments @("build", "--manifest-path", $UpdaterManifest, "--release", "--bin", "mystia-steward-companion-updater")
-    }
-
-    $Dotnet = Get-Command "dotnet" -ErrorAction SilentlyContinue
-    if ($null -eq $Dotnet) {
-        throw "dotnet was not found. Install the exact .NET SDK declared in toolchain.lock.json."
-    }
-
-    $DotnetBuildArgs = @("build", $ProjectPath, "-c", $Configuration, "/p:ReferenceDir=$EffectiveReferenceDir")
-
-    Invoke-Checked `
-        -Title "Build BepInEx plugin" `
-        -FilePath $Dotnet.Source `
-        -Arguments $DotnetBuildArgs
-
-    if (-not $SkipPackage) {
-        Write-Step "Create release package"
-        & $PackageScript -Configuration $Configuration
-    }
-
+    & (Join-Path $PSScriptRoot 'preflight.ps1') -ReferenceDir $ReferenceDir
+    if ($LASTEXITCODE -ne 0) { throw 'BepInEx 引用预检失败。' }
+    $flutter = @('scripts/flutter-workspace.mjs', '--sdk-root', $FlutterSdkRoot, '--task')
+    if (-not $SkipInstall) { Invoke-Checked 'node' ($flutter + 'get') }
+    # 格式检查不修改源码；Pigeon 在独占临时目录重新生成三端接口并逐字节核验。
+    # 避免本机构建成功却交付无法从锁定定义重现的原生通道文件。
+    Invoke-Checked 'node' ($flutter + 'format-check')
+    Invoke-Checked 'node' ($flutter + 'generated-check')
+    Invoke-Checked 'node' @('tests/build-artifacts/windows-runtime-audit.mjs')
+    # 真实 HTTP 测试链接当前 Mod 源码，必须在严格参考包预检后生成宿主，不允许拿旧DLL充数。
+    Invoke-Checked 'dotnet' @('build', 'tests/flutter-contracts/host/FlutterContractsHost.csproj', '-c', 'Release', "-p:ReferenceDir=$ReferenceDir", '-p:NuGetAudit=false')
+    Invoke-Checked 'node' ($flutter + 'verify')
+    Invoke-Checked 'node' ($flutter + 'contracts-test')
+    if (-not $SkipFlutterBuild) { Invoke-Checked 'node' ($flutter + 'build-windows') }
+    Invoke-Checked 'cargo' @('test', '--locked', '--manifest-path', 'native/updater/Cargo.toml')
+    Invoke-Checked 'cargo' @('build', '--locked', '--manifest-path', 'native/updater/Cargo.toml', '--release')
+    Invoke-Checked 'dotnet' @('run', '--project', 'tests/csharp-business-package/CSharpBusinessPackageSmoke.csproj', '-c', 'Release', '-p:NuGetAudit=false')
+    $cargoRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repository 'native/updater/target' }
+    # 三种语言读取同一个临时目录，验证真实二进制校验器的一致性；不会执行任何夹具载荷。
+    Invoke-Checked 'node' @('tests/csharp-business-package/package-manifest-audit.mjs', '--rust', (Join-Path $cargoRoot 'release/mystia-steward-companion-updater.exe'), '--dotnet', 'tests/csharp-business-package/bin/Release/net6.0/CSharpBusinessPackageSmoke.dll')
+    Invoke-Checked 'dotnet' @('build', 'mods/bepinex/MystiaStewardCompanion.BepInEx.csproj', '-c', $Configuration, "-p:ReferenceDir=$ReferenceDir", '-p:NuGetAudit=false')
+    if (-not $SkipPackage) { & (Join-Path $PSScriptRoot 'package-release.ps1') -Configuration $Configuration }
     if ($BuildAndroidApk) {
-        Invoke-AndroidApkBuild
+        # 签名材料仅由调用方或 CI 提供。签名指纹/ABI/applicationId/版本逐项验证后才进入 dist。
+        $previousSdk = $env:MYSTIA_FLUTTER_SDK_ROOT
+        try { $env:MYSTIA_FLUTTER_SDK_ROOT = $FlutterSdkRoot; Invoke-Checked 'node' @('scripts/build-android-signed-apk.mjs') }
+        finally { $env:MYSTIA_FLUTTER_SDK_ROOT = $previousSdk }
     }
-
-    if (-not $SkipBuildCacheCleanup -and -not $SkipPackage) {
-        Invoke-BuildCachePrune -Title "Enforce build cache limit after packaging"
-    }
-}
-finally {
-    Pop-Location
-    if ($null -eq $PreviousBuildCacheSkipEnvironment) {
-        Remove-Item Env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP -ErrorAction SilentlyContinue
-    }
-    else {
-        $env:MYSTIA_SKIP_BUILD_CACHE_CLEANUP = $PreviousBuildCacheSkipEnvironment
-    }
-}
-
-Write-Host ""
-Write-Host "Build completed." -ForegroundColor Green
+} finally { Pop-Location }

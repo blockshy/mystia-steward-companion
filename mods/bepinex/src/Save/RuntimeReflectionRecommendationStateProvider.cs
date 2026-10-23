@@ -135,6 +135,15 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         };
 
         var state = Measure("state.fromSave", () => RecommendationState.FromSave(_repository, parsed));
+        // Controller 已按当前日间/准备/夜间生命周期限制本读取入口，且上方库存、料理与
+        // 玩家数据均已成功读取。现在才访问图鉴，避免将尚未初始化或上一存档的静态列表
+        // 当作当前解锁事实。附加图鉴失败只保持未知，不能影响原有库存与候选算法。
+        Measure("album.beverages", () =>
+        {
+            if (!RuntimeBeverageUnlockReader.TryRead(out var unlockedIds)) return;
+            state.UnlockedBeverageIds.UnionWith(unlockedIds);
+            state.BeverageUnlockReadReady = true;
+        });
         if (_includePlacedCookers)
         {
             Measure("cookerSnapshot", () => RuntimeCookerSnapshotService.ApplyTo(state));

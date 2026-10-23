@@ -1,0 +1,20 @@
+/** Flutter 正式发布入口的边界审计：保留既有两级环境审批、不可变来源和七资产协议。 */
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('../../', import.meta.url));
+const read = name => readFileSync(path.join(root,name),'utf8');
+const workflow=read('.github/workflows/release.yml');
+for(const token of ['permissions: {}','workflow_dispatch:','environment: official-release-build','environment: official-release','persist-credentials: false','cancel-in-progress: false','native/updater/Cargo.toml','apps/companion-flutter/pubspec.yaml','scripts/install-locked-flutter.mjs','flutter:android:apk:signed','mystia-steward-companion-companion-windows-x64.zip','attestations: write']) assert.ok(workflow.includes(token), `缺少发布保护/新入口：${token}`);
+assert.ok(!/apps\/companion\/src-tauri|tauri:|windows-x64\.exe/u.test(workflow),'正式工作流不得引用旧客户端');
+for(const line of workflow.split(/\r?\n/u).filter(line=>/uses: /u.test(line))) assert.match(line,/uses: [\w./-]+@[a-f0-9]{40}(?:\s|$)/u, '第三方action必须固定完整提交');
+const packageJson=JSON.parse(read('package.json'));
+assert.ok(Object.keys(packageJson.scripts).every(name=>!name.startsWith('tauri:')));
+assert.match(packageJson.scripts.build,/flutter-workspace/u);
+assert.match(read('mods/bepinex/tools/build-release.ps1'),/cargo' @\('test', '--locked'/u);
+assert.match(read('mods/bepinex/tools/package-release.ps1'),/package-manifest\.json/u);
+assert.match(read('mods/bepinex/tools/release-common.ps1'),/companion-windows-x64\.zip/u);
+const version=/^version:\s*([^+\s]+)\+([1-9][0-9]*)$/mu.exec(read('apps/companion-flutter/pubspec.yaml'));
+assert.equal(version?.[1],packageJson.version); assert.ok(Number(version?.[2])>1003001);
+console.log('PASS Flutter产线入口、完整Windows ZIP、锁定action、双环境审批、Android版本连续性。');

@@ -16,6 +16,9 @@
 
   <ItemGroup>
     <Compile Remove="tools/**/*.cs" />
+    <!-- 业务程序集与游戏适配程序集独立构建，发布时仅携带这两项明确的项目依赖。 -->
+    <ProjectReference Include="../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
+    <ProjectReference Include="../../modules/companion-contracts/MystiaStewardCompanion.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

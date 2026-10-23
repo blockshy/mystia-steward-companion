@@ -16,6 +16,36 @@ public sealed class StewardPluginConfig
     private StewardPluginConfig()
     {
     }
+    private ConfigFile _configFile = null!;
+
+    /// <summary>
+    /// 连接设置作为一份表单统一保存，避免逐字段自动 Save 产生部分内存生效。
+    /// 文件系统保存失败时恢复旧内存值；不声称已经回滚可能完成的磁盘写入，调用方必须明确报错。
+    /// Local API 的管理写锁串行保护调用，故暂时关闭自动 Save 不与其它管理表单交错。
+    /// </summary>
+    internal void SaveLocalApiConnection(bool enabled, string host, string token)
+    {
+        var previousEnabled = LocalApiLanEnabled.Value;
+        var previousHost = LocalApiLanHost.Value;
+        var previousToken = LocalApiToken.Value;
+        var autoSave = _configFile.SaveOnConfigSet;
+        _configFile.SaveOnConfigSet = false;
+        try
+        {
+            LocalApiLanEnabled.Value = enabled;
+            LocalApiLanHost.Value = host;
+            LocalApiToken.Value = token;
+            _configFile.Save();
+        }
+        catch
+        {
+            LocalApiLanEnabled.Value = previousEnabled;
+            LocalApiLanHost.Value = previousHost;
+            LocalApiToken.Value = previousToken;
+            throw;
+        }
+        finally { _configFile.SaveOnConfigSet = autoSave; }
+    }
 
     public ConfigEntry<KeyCode> ToggleKey { get; private init; } = null!;
     public ConfigEntry<KeyCode> ControllerToggleKey { get; private init; } = null!;
@@ -55,6 +85,7 @@ public sealed class StewardPluginConfig
     {
         return new StewardPluginConfig
         {
+            _configFile = config,
             ToggleKey = config.Bind("Hotkeys", "ToggleKey", KeyCode.F8, "Switch focus between the game and the mystia-steward-companion companion window."),
             ControllerToggleKey = config.Bind("Hotkeys", "ControllerToggleKey", KeyCode.JoystickButton9, "Switch focus between the game and companion window with a controller. Default JoystickButton9 is commonly RS Click."),
             AutoRefreshRuntime = config.Bind("Runtime", "AutoRefreshRuntime", true, "Refresh recommendations from live game runtime data."),
@@ -65,14 +96,14 @@ public sealed class StewardPluginConfig
             LocalApiLanEnabled = config.Bind("LocalApi", "AllowLanConnections", false, "Allow trusted private-network devices to connect. The loopback listener always remains enabled."),
             LocalApiLanHost = config.Bind("LocalApi", "LanHost", "auto", "LAN bind host. Use auto to listen on detected private IPv4 addresses, or set a specific private IPv4 address."),
             LocalApiPort = config.Bind("LocalApi", "Port", 32145, "Local API port for the external companion UI."),
-            LocalApiToken = config.Bind("LocalApi", "Token", "", "Internal local API token. Empty lets the plugin generate one on next launch."),
+            LocalApiToken = config.Bind("LocalApi", "Token", "", "Local API password: 8–128 visible ASCII characters, without whitespace. Empty lets the plugin generate a random token on next launch."),
             CompanionAutoLaunch = config.Bind("Companion", "AutoLaunch", true, "Launch the external companion window when the plugin loads if the executable exists."),
-            CompanionExecutablePath = config.Bind("Companion", "ExecutablePath", "", "Optional companion executable path. Empty searches beside the plugin DLL."),
+            CompanionExecutablePath = config.Bind("Companion", "ExecutablePath", "", "Optional Flutter companion executable path. Empty selects companion/mystia-steward-companion.exe inside the complete plugin package."),
             SetConsoleUtf8 = config.Bind("Ui", "SetConsoleUtf8", true, "Set the Windows console code page and .NET console encoding to UTF-8 after the plugin loads."),
             ShowBepInExConsoleOnStartup = config.Bind("Diagnostics", "ShowBepInExConsoleOnStartup", false, "Show the BepInEx console window when the plugin loads for local troubleshooting. Disabled by default."),
             EnableAggregateModLog = config.Bind("Diagnostics", "EnableAggregateModLog", false, "Write a troubleshooting aggregate log that captures all BepInEx log sources while enabled."),
             AggregateModLogPath = config.Bind("Diagnostics", "AggregateModLogPath", "", "Optional aggregate log path. Empty uses BepInEx/config/MystiaStewardCompanion/aggregate-mod.log."),
-            AggregateModLogMaxFileCount = config.Bind("Diagnostics", "AggregateModLogMaxFileCount", AggregateModLogService.DefaultMaxFileCount, "Maximum aggregate log files to keep, including the active file. Default 30 keeps about 300 MB because each file rotates at 10 MB."),
+            AggregateModLogMaxFileCount = config.Bind("Diagnostics", "AggregateModLogMaxFileCount", AggregateModLogService.DefaultMaxFileCount, "Aggregate log files to keep: 1–30, including the active file. Default 30 keeps about 300 MB because each file rotates at 10 MB."),
             UpdatesEnabled = config.Bind("Updates", "Enabled", true, "Allow the plugin to check GitHub Releases for mystia-steward-companion updates."),
             UpdatesAutoCheck = config.Bind("Updates", "AutoCheck", true, "Check for updates automatically when the local API starts."),
             UpdatesCheckIntervalHours = config.Bind("Updates", "CheckIntervalHours", 24, "Minimum hours between automatic update checks."),

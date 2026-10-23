@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderHighlightService.cs" Link="RuntimeOrderHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeInactiveVisualSweep.cs" Link="RuntimeInactiveVisualSweep.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs" Link="RuntimeOrderTraceIdService.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetOrderResolver.cs" Link="RuntimeUiTargetOrderResolver.cs" />

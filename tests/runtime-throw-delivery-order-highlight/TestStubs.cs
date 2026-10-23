@@ -152,7 +152,25 @@ namespace UnityEngine
         }
 
         public static Action? AfterInstantiate { get; set; }
+        // 明确模拟 Unity 帧尾销毁，而不是把 Destroy 误当成即时移出原生层级。
+        // 仅专项用例打开此开关，默认仍保留既有测试的即时销毁行为。
+        public static bool DeferDestroy { get; set; }
+        private static readonly List<Object> DeferredDestruction = new();
         public static void Destroy(Object target)
+        {
+            if (DeferDestroy)
+            {
+                DeferredDestruction.Add(target);
+                return;
+            }
+            DestroyImmediately(target);
+        }
+        public static void FlushDeferredDestruction()
+        {
+            foreach (var target in DeferredDestruction) DestroyImmediately(target);
+            DeferredDestruction.Clear();
+        }
+        private static void DestroyImmediately(Object target)
         {
             if (target is GameObject gameObject)
             {
@@ -817,6 +835,8 @@ namespace NightScene.UI.HUDUtility
         public System.Collections.Generic.List<int> PoolDeskOrder { get; } = new();
         public bool IncludeImages { get; set; } = true;
         public bool UseValidBackground { get; set; } = true;
+        // 游戏逻辑池可在同帧重开时复用原按钮；用例明确选择复用，避免新建按钮掩盖残留子节点。
+        public bool ReuseBuiltButtonsOnOpen { get; set; }
         public System.Action? BeforeOriginalClose { get; set; }
         public int OriginalCloseCalls { get; private set; }
         public IReadOnlyDictionary<int, GameObject> BuiltButtons => _builtButtons;
@@ -824,6 +844,7 @@ namespace NightScene.UI.HUDUtility
 
         public virtual void OnPanelOpen()
         {
+            if (ReuseBuiltButtonsOnOpen && _builtButtons.Count > 0) return;
             m_Data.Clear();
             m_BtnInstances.Clear();
             m_Group.CleanChildren();

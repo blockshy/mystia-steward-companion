@@ -8,6 +8,9 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    // 仅缓存有界的反射元数据；实例、参数、原生身份与生命周期检查始终在本次主线程动作中读取。
+    private static readonly RuntimeInvocationMetadataCache InvocationMetadata = new();
+
     /// <summary>
     /// 安全调用实例方法，失败时返回 <c>null</c>。
     /// </summary>
@@ -442,9 +445,8 @@ internal static partial class RuntimeOrderPreparationService
         var utilityValue = RuntimeReflectionUtility.InvokeStaticMethod(type, methodName, args);
         if (utilityValue != null) return utilityValue;
 
-        var method = type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args))
+        var method = InvocationMetadata.FindMethod(type, methodName,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, args)
             ?? throw new MissingMethodException(typeName, methodName);
         return method.Invoke(null, args);
     }
@@ -454,9 +456,8 @@ internal static partial class RuntimeOrderPreparationService
     /// </summary>
     private static object? InvokeInstance(object target, string methodName, object?[] args)
     {
-        var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args))
+        var method = InvocationMetadata.FindMethod(target.GetType(), methodName,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, args)
             ?? throw new MissingMethodException(target.GetType().FullName, methodName);
         return method.Invoke(target, args);
     }
@@ -469,9 +470,8 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     private static bool TryInvokeInstance(object target, string methodName, object?[] args)
     {
-        var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
-            .FirstOrDefault(candidate => string.Equals(candidate.Name, methodName, StringComparison.Ordinal)
-                && CanUseParameters(candidate.GetParameters(), args));
+        var method = InvocationMetadata.FindMethod(target.GetType(), methodName,
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, args);
         if (method == null) return false;
 
         try
@@ -493,25 +493,8 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     private static Type? FindType(string fullName)
     {
-        var direct = Type.GetType(fullName, false);
-        if (direct != null) return direct;
-
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            Type? type;
-            try
-            {
-                type = assembly.GetType(fullName, false);
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (type != null) return type;
-        }
-
-        return null;
+        // 共用工具按相同顺序查找并且只缓存成功 Type，晚加载程序集仍能在下一次查询恢复。
+        return RuntimeReflectionUtility.FindType(fullName);
     }
 
     /// <summary>
@@ -522,29 +505,7 @@ internal static partial class RuntimeOrderPreparationService
     /// </remarks>
     private static bool CanUseParameters(ParameterInfo[] parameters, object?[] args)
     {
-        if (parameters.Length != args.Length) return false;
-        for (var i = 0; i < parameters.Length; i++)
-        {
-            var arg = args[i];
-            var parameterType = parameters[i].ParameterType;
-            if (parameterType.IsByRef)
-            {
-                parameterType = parameterType.GetElementType() ?? parameterType;
-            }
-
-            if (arg == null)
-            {
-                if (parameterType.IsValueType) return false;
-                continue;
-            }
-
-            var argType = arg.GetType();
-            if (parameterType.IsAssignableFrom(argType)) continue;
-            if (parameterType.IsPrimitive && arg is IConvertible) continue;
-            return false;
-        }
-
-        return true;
+        return RuntimeInvocationMetadataCache.CanUseParameters(parameters, args);
     }
 
     private static object? GetDefaultValue(Type type)

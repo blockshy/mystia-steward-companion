@@ -13,19 +13,20 @@ public sealed class RuntimeNormalOrderSnapshotService
     private readonly IReadOnlyDictionary<int, Recipe> _recipesById;
     private readonly IReadOnlyDictionary<int, Beverage> _beveragesById;
     private readonly IReadOnlyDictionary<int, NormalCustomer> _normalCustomersById;
+    private readonly IReadOnlyDictionary<int, string> _normalGuestImageNames;
+    private readonly IReadOnlyDictionary<int, string> _rareGuestImageNames;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
+    private readonly RuntimeSnapshotReadCache _readCache = new();
 
     public RuntimeNormalOrderSnapshotService(DataRepository repository)
     {
-        _recipesById = repository.Recipes
-            .GroupBy(recipe => recipe.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        _beveragesById = repository.Beverages
-            .GroupBy(beverage => beverage.Id)
-            .ToDictionary(group => group.Key, group => group.First());
-        _normalCustomersById = repository.NormalCustomers
-            .GroupBy(customer => customer.Id)
-            .ToDictionary(group => group.Key, group => group.First());
+        // 仓库随目录刷新整体替换；索引只属于该仓库，不按可变目录 ID 全局缓存。
+        _recipesById = repository.RecipesById;
+        _beveragesById = repository.BeveragesById;
+        _normalCustomersById = repository.NormalCustomersById;
+        // 唯一身份索引在仓库构造时生成；采集服务周期性重建也只复用纯托管索引。
+        _normalGuestImageNames = repository.NormalGuestImageNamesById;
+        _rareGuestImageNames = repository.RareGuestImageNamesById;
     }
 
     public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
@@ -33,6 +34,7 @@ public sealed class RuntimeNormalOrderSnapshotService
     public NormalBusinessContext Load()
     {
         _performanceMs.Clear();
+        _readCache.Clear();
         var errors = new List<string>();
         var source = new List<string>();
         var runtimeCapturedOrders = new List<NormalBusinessOrder>();
@@ -45,10 +47,14 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
         catch (Exception ex)
         {
+            // ToList 失败时本次捕获结果不会提交；同步丢弃部分成功键，避免后续可视
+            // 来源被错误当成“已经保留”而跳过。其它读取失败仍由各来源独立报告。
+            _readCache.Clear();
             source.Add("RuntimeCapture=err");
             errors.Add($"RuntimeCapture: {ex.Message}");
         }
         var runtimeCaptureReady = NormalOrderRuntimeCapture.IsBusinessReady;
+        _readCache.NormalCaptureIsAuthoritative = runtimeCaptureReady;
         source.Add($"RuntimeCaptureReady={runtimeCaptureReady}");
 
         var visibleOrders = new List<NormalBusinessOrder>();
@@ -187,6 +193,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             .Take(2)
             .ToArray();
         var orderLifecycleSequence = lifecycleSequences.Length == 1 ? lifecycleSequences[0] : -1;
+        var guestImage = RuntimeGuestImageIdentityReader.Merge(orders.Select(order =>
+            new RuntimeGuestImageIdentity(order.GuestImageKind, order.GuestImageId, order.GuestName)));
         return new NormalBusinessOrder
         {
             TraceId = first.TraceId,
@@ -197,6 +205,8 @@ public sealed class RuntimeNormalOrderSnapshotService
                 .Select(order => order.GuestId)
                 .FirstOrDefault(value => value.HasValue),
             RuntimeGuestId = specialBusinessRoleSource?.RuntimeGuestId,
+            GuestImageKind = guestImage.Kind,
+            GuestImageId = guestImage.Id,
             GuestName = guestName,
             SpecialBusinessRole = specialBusinessRoleSource?.SpecialBusinessRole ?? "",
             SpecialBusinessRoleLabel = specialBusinessRoleSource?.SpecialBusinessRoleLabel ?? "",
@@ -260,6 +270,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             RuntimeGuestId = order.RuntimeGuestId,
+            GuestImageKind = order.GuestImageKind,
+            GuestImageId = order.GuestImageId,
             GuestName = order.GuestName,
             SpecialBusinessRole = order.SpecialBusinessRole,
             SpecialBusinessRoleLabel = order.SpecialBusinessRoleLabel,
@@ -288,6 +300,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             DeskCode = order.DeskCode,
             GuestId = order.GuestId,
             RuntimeGuestId = order.RuntimeGuestId,
+            GuestImageKind = order.GuestImageKind,
+            GuestImageId = order.GuestImageId,
             GuestName = order.GuestName,
             SpecialBusinessRole = order.SpecialBusinessRole,
             SpecialBusinessRoleLabel = order.SpecialBusinessRoleLabel,
@@ -334,7 +348,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         foreach (var order in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.InvokeStaticMethod(orderControllerType, "GetShowInUIOrders")))
         {
-            var parsed = ReadNormalOrder(order, null, "OrderController");
+            var parsed = ReadVisibleNormalOrder(order, "OrderController");
             if (parsed != null) yield return parsed;
         }
 
@@ -345,7 +359,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         foreach (var element in RuntimeReflectionUtility.EnumerateObjects(RuntimeReflectionUtility.GetMemberValue(controller, "m_Orders")))
         {
             var order = RuntimeReflectionUtility.GetMemberValue(RuntimeReflectionUtility.NormalizeKeyValueValue(element), "ActiveOrder");
-            var parsed = ReadNormalOrder(order, null, "OrderControllerElement");
+            var parsed = ReadVisibleNormalOrder(order, "OrderControllerElement");
             if (parsed != null) yield return parsed;
         }
     }
@@ -358,9 +372,20 @@ public sealed class RuntimeNormalOrderSnapshotService
         foreach (var element in RuntimeReflectionUtility.FindUnityObjects(orderingElementType))
         {
             var order = RuntimeReflectionUtility.GetMemberValue(element, "ActiveOrder");
-            var parsed = ReadNormalOrder(order, null, "HUD");
+            var parsed = ReadVisibleNormalOrder(order, "HUD");
             if (parsed != null) yield return parsed;
         }
+    }
+
+    /// <summary>
+    /// 三个可视来源均没有可执行控制器，先按精确原生指针复用本次已读 DTO。全量可视
+    /// 来源仍照常枚举，未绑定、未知指针或读取失败的订单不会被当成已处理而丢弃。
+    /// 带控制器和生命周期的捕获路径始终直接读取，不经过可视缓存提升执行权限。
+    /// </summary>
+    private NormalBusinessOrder? ReadVisibleNormalOrder(object? order, string source)
+    {
+        RuntimeReflectionUtility.TryReadNativeObjectPointer(order, out var pointer);
+        return _readCache.ReadVisibleNormal(pointer, source, () => ReadNormalOrder(order, null, source));
     }
 
     private IEnumerable<NormalBusinessOrder> ReadRuntimeCapturedOrders()
@@ -372,7 +397,12 @@ public sealed class RuntimeNormalOrderSnapshotService
                 captured.ControllerObject,
                 $"RuntimeCapture:{captured.CaptureSource}",
                 captured.OrderLifecycleSequence);
-            if (parsed != null) yield return parsed;
+            if (parsed == null) continue;
+            if (RuntimeReflectionUtility.TryReadNativeObjectPointer(captured.OrderObject, out var pointer))
+            {
+                _readCache.RememberCapturedNormal(pointer);
+            }
+            yield return parsed;
         }
     }
 
@@ -411,13 +441,14 @@ public sealed class RuntimeNormalOrderSnapshotService
         var guest = SafeGet(readableOrder, "Guest") ?? SafeInvoke(readableOrder, "get_Guest");
         var orderingGuest = SafeGet(controller, "OrderingGuest");
         var guestId = ReadGuestId(guest) ?? ReadGuestId(orderingGuest);
-        var normalCustomer = guestId.HasValue && _normalCustomersById.TryGetValue(guestId.Value, out var customer)
-            ? customer
-            : null;
+        var guestImage = RuntimeGuestImageIdentityReader.Resolve(guest, orderingGuest,
+            _normalGuestImageNames, _rareGuestImageNames, RuntimeReflectionUtility.TryCastRuntimeObject,
+            RuntimeReflectionUtility.GetMemberValue);
+        // 普通订单只描述点单形状，不能把同数字 ID 的稀客偏好误读为普客客群偏好。
+        var normalCustomer = RuntimeGuestImageIdentityReader.ResolveNormalCustomer(guestImage, _normalCustomersById);
         var orderKey = BuildRuntimeOrderKey(readableOrder);
         var deskCode = RuntimeReflectionUtility.ToInt(SafeGet(readableOrder, "DeskCode"), -1);
-        var guestName = ResolveNormalGuestName(guest)
-            ?? ResolveNormalGuestName(orderingGuest)
+        var guestName = (guestImage.Kind.Length > 0 ? guestImage.Name : null)
             ?? ReadTextLikeValue(guest)
             ?? ReadTextLikeValue(orderingGuest)
             ?? classification.RoleLabel
@@ -430,6 +461,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             DeskCode = deskCode,
             GuestId = guestId,
             RuntimeGuestId = classification.RuntimeGuestId,
+            GuestImageKind = guestImage.Kind,
+            GuestImageId = guestImage.Id,
             GuestName = guestName,
             SpecialBusinessRole = classification.Role ?? "",
             SpecialBusinessRoleLabel = classification.RoleLabel ?? "",
@@ -609,14 +642,6 @@ public sealed class RuntimeNormalOrderSnapshotService
         if (value is long longValue) return (int)longValue;
         if (value is short shortValue) return shortValue;
         return int.TryParse(value.ToString(), out var parsed) ? parsed : null;
-    }
-
-    private string? ResolveNormalGuestName(object? guest)
-    {
-        var guestId = ReadGuestId(guest);
-        if (!guestId.HasValue) return null;
-
-        return _normalCustomersById.TryGetValue(guestId.Value, out var customer) ? customer.Name : null;
     }
 
     private Recipe? ResolveRecipeByFoodId(int foodId)

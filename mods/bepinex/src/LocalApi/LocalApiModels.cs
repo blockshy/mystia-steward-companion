@@ -131,6 +131,17 @@ internal sealed class AutomationCookingJobSnapshot
 
 internal sealed class RecommendationStateSnapshot
 {
+    /// <summary>
+    /// 当前数量来自已完成的真实库存读取。经营候选的 AllAvailable 兜底也可包含
+    /// 数量99，因此 RuntimeLoaded 或字典非空均不能替代这个独立来源事实。
+    /// </summary>
+    public bool InventoryReadReady { get; init; }
+    /// <summary>
+    /// 当前运行态酒水图鉴已完整读取。false 表示未知，而不是全部未解锁；它不改变
+    /// AvailableBeverageIds 的库存候选语义。列表始终复制，不能引用可变运行态集合。
+    /// </summary>
+    public bool BeverageUnlockReadReady { get; init; }
+    public List<int> UnlockedBeverageIds { get; init; } = new();
     public List<int> AvailableRecipeIds { get; init; } = new();
     public List<int> AvailableBeverageIds { get; init; } = new();
     public List<int> AvailableIngredientIds { get; init; } = new();
@@ -148,10 +159,15 @@ internal sealed class RecommendationStateSnapshot
     public string? PopularHateFoodTag { get; init; }
     public bool FamousShopEnabled { get; init; }
 
-    public static RecommendationStateSnapshot From(RecommendationState state)
+    public static RecommendationStateSnapshot From(RecommendationState state, bool inventoryReadReady = false)
     {
         return new RecommendationStateSnapshot
         {
+            InventoryReadReady = inventoryReadReady,
+            BeverageUnlockReadReady = inventoryReadReady && state.BeverageUnlockReadReady,
+            UnlockedBeverageIds = inventoryReadReady && state.BeverageUnlockReadReady
+                ? state.UnlockedBeverageIds.OrderBy(id => id).ToList()
+                : new List<int>(),
             AvailableRecipeIds = state.AvailableRecipeIds.OrderBy(id => id).ToList(),
             AvailableBeverageIds = state.AvailableBeverageIds.OrderBy(id => id).ToList(),
             AvailableIngredientIds = state.AvailableIngredientIds.OrderBy(id => id).ToList(),

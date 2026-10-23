@@ -31,6 +31,7 @@ internal static class RuntimeOrderHighlightService
     private static readonly object VisualRoot = new();
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
     private static readonly Dictionary<nint, RegisteredElement> RegisteredElements = new();
+    private static readonly RuntimeInactiveVisualSweep InactiveElementSweep = new(HealthCheckIntervalSeconds);
     private static readonly ConcurrentDictionary<Type, ImageAccessors> ImageAccessorCache = new();
     private static readonly string[] RequiredPatchKeys =
     {
@@ -138,15 +139,15 @@ internal static class RuntimeOrderHighlightService
                 _appliedTargetGeneration = desired.Generation;
             }
 
-            var orderTargets = desired.Targets.Where(target => target.OrderHighlightEnabled).ToArray();
+            var orderTargets = desired.OrderHighlightTargets;
             var desiredEnabled = lifecycle.IsActive
                 && desired.SessionGeneration == lifecycle.Generation
-                && orderTargets.Length > 0
+                && orderTargets.Count > 0
                 && IsBusinessReady(lifecycle.Generation);
             if (!desiredEnabled)
             {
                 DestroyAllActiveVisualsLocked();
-                _state = orderTargets.Length == 0
+                _state = orderTargets.Count == 0
                     ? "disabled"
                     : !lifecycle.IsActive
                         ? "waiting: night business inactive"
@@ -157,15 +158,30 @@ internal static class RuntimeOrderHighlightService
             }
 
             var now = Time.realtimeSinceStartup;
+            // 未显示高亮的注册元素不需要逐帧跨 IL2CPP 反射读取 ActiveOrder；每 250ms
+            // 清理一次即可。正在显示的元素仍在下面每帧校验，绑定候选也保留即时核验。
+            // 先清理再着色，保证重绑或代次失效的对象不会多获得一帧脉冲颜色。
+            if (InactiveElementSweep.IsDue(now, desired.Generation, desired.SessionGeneration))
+                PruneInactiveElementsLocked();
             foreach (var (kind, active) in ActiveVisuals.ToList())
             {
                 if (!desired.TryGetTarget(kind, out var target)
                     || !target.OrderHighlightEnabled
-                    || !active.Target.HasSameValues(target)
+                    || !HasSameVisualOrderIdentity(active.Target, target)
                     || active.SessionGeneration != desired.SessionGeneration)
                 {
                     DestroyActiveVisualLocked(kind);
                     NextAttemptAt[kind] = 0f;
+                    continue;
+                }
+
+                if (!TryValidateRegisteredElementLocked(active.Element, out var identityFailure))
+                {
+                    RemoveRegisteredElementLocked(active.Element.ElementPointer, destroyActiveVisual: true);
+                    // 与完整健康检查使用同一重试门闩，保留这次真实失效原因，避免同帧
+                    // 再尝试绑定后用“没有候选”覆盖诊断。新建/退出 Hook 仍会清除该门闩。
+                    NextAttemptAt[kind] = now + RetryIntervalSeconds;
+                    SetFailureLocked($"{kind} active identity invalid: {identityFailure}");
                     continue;
                 }
 
@@ -190,7 +206,6 @@ internal static class RuntimeOrderHighlightService
                 SetFailureLocked($"{kind} pulse failed: {pulseFailure}");
             }
 
-            PruneStaleElementsLocked();
             var resolved = new List<ResolvedTargetElement>();
             foreach (var target in orderTargets)
             {
@@ -259,8 +274,8 @@ internal static class RuntimeOrderHighlightService
             if (latest.Generation != desired.Generation) return;
             if (ActiveVisuals.Count > 0)
             {
-                _state = $"active:{ActiveVisuals.Count}/{orderTargets.Length}";
-                if (ActiveVisuals.Count == orderTargets.Length) _lastFailure = "";
+                _state = $"active:{ActiveVisuals.Count}/{orderTargets.Count}";
+                if (ActiveVisuals.Count == orderTargets.Count) _lastFailure = "";
             }
         }
     }
@@ -1267,10 +1282,15 @@ internal static class RuntimeOrderHighlightService
         return matches.Length == 1 ? matches[0] : null;
     }
 
-    private static void PruneStaleElementsLocked()
+    private static void PruneInactiveElementsLocked()
     {
+        // 活动项由 Tick 的逐帧路径独立核验、撤销并记录失效原因；批量维护不能先移除它，
+        // 否则虽已销毁旧视觉，却会跳过该原因和重试门闩，让诊断退化为“没有候选”。
+        var rare = ActiveVisuals.TryGetValue(RuntimeUiTargetKind.Rare, out var rareVisual) ? rareVisual.Element : null;
+        var normal = ActiveVisuals.TryGetValue(RuntimeUiTargetKind.Normal, out var normalVisual) ? normalVisual.Element : null;
         foreach (var registration in RegisteredElements.Values.ToList())
         {
+            if (ReferenceEquals(registration, rare) || ReferenceEquals(registration, normal)) continue;
             if (TryValidateRegisteredElementLocked(registration, out _)) continue;
             RemoveRegisteredElementLocked(registration.ElementPointer, destroyActiveVisual: true);
         }
@@ -1290,15 +1310,29 @@ internal static class RuntimeOrderHighlightService
 
     private static void ReconcileTargetSetChangeLocked(RuntimeUiTargetSetSnapshot targetSet)
     {
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         foreach (var (kind, active) in ActiveVisuals.ToList())
         {
-            if (targetSet.SessionGeneration != active.SessionGeneration
+            if (!lifecycle.IsActive
+                || lifecycle.Generation != targetSet.SessionGeneration
+                || targetSet.SessionGeneration != active.SessionGeneration
                 || !targetSet.TryGetTarget(kind, out var target)
                 || !target.OrderHighlightEnabled
-                || !active.Target.HasSameValues(target))
+                || !HasSameVisualOrderIdentity(active.Target, target))
             {
                 DestroyActiveVisualLocked(kind);
                 NextAttemptAt[kind] = 0f;
+                continue;
+            }
+
+            // 发布代次变动时，菜品、酒水完成状态或配方修订不影响同一订单边框的几何。
+            // 复用前仍立即重新解析唯一 capture，并核对订单/控制器指针与生命周期；
+            // 不能只凭相同桌号或旧托管目标保留视觉，也不等下一次 250ms 健康检查。
+            if (!TryValidateActiveVisualLocked(active, target, out var identityFailure))
+            {
+                DestroyActiveVisualLocked(kind);
+                NextAttemptAt[kind] = 0f;
+                SetFailureLocked($"{kind} target update identity invalid: {identityFailure}");
                 continue;
             }
 
@@ -1317,6 +1351,31 @@ internal static class RuntimeOrderHighlightService
         {
             if (!ActiveVisuals.ContainsKey(target.Kind)) NextAttemptAt[target.Kind] = 0f;
         }
+    }
+
+    /// <summary>
+    /// 比较订单视觉的完整托管身份，不把料理、加料、酒水或颜色的展示变化当成订单重绑。
+    /// </summary>
+    /// <remarks>
+    /// 这里只判断是否有资格进一步复核原生绑定，绝不代替当前 capture/HUD 的指针核验。
+    /// 会话代次、权限撤回及 OrderHighlightEnabled 仍由调用方和本比较共同拒绝；
+    /// 每帧 HUD ActiveOrder 检查、250ms 完整健康检查及目标变更时的立即完整检查保持独立。
+    /// </remarks>
+    private static bool HasSameVisualOrderIdentity(RuntimeUiTargetSnapshot previous, RuntimeUiTargetSnapshot current)
+    {
+        return previous.OrderHighlightEnabled
+            && current.OrderHighlightEnabled
+            && previous.Kind == current.Kind
+            && previous.OrderLifecycleSequence > 0
+            && previous.OrderLifecycleSequence == current.OrderLifecycleSequence
+            && previous.DeskCode >= 0
+            && previous.DeskCode == current.DeskCode
+            && previous.OrderTraceId.Length > 0
+            && string.Equals(previous.OrderTraceId, current.OrderTraceId, StringComparison.Ordinal)
+            && string.Equals(previous.OrderKey, current.OrderKey, StringComparison.Ordinal)
+            && (current.Kind == RuntimeUiTargetKind.Rare
+                ? current.OrderKey.Length == 0
+                : current.Kind == RuntimeUiTargetKind.Normal && current.OrderKey.Length > 0);
     }
 
     private static bool HasOrderHighlightTargets(RuntimeUiTargetSetSnapshot targetSet)

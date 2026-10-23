@@ -1,6 +1,6 @@
 # 运行时订单生命周期
 
-更新日期：2026-08-19
+更新日期：2026-10-23
 
 本文档只定义普客与稀客订单从原生创建绑定到终态退休的权威身份、Hook 和业务投影。运行时目录与场景读取见 [运行时 Provider](runtime-provider.md)，订单后续副作用见 [自动化运行时](automation-runtime.md)，特殊经营的命名例外见[特殊经营实现](special-business-implementation.md)。
 
@@ -59,6 +59,8 @@
 - nullable 原始酒水 Tag ID
 
 Tag ID 是 signed 原生身份，`0`、`-1` 等合法值必须原样保留；读取失败使用缺失状态，不能与任意数值折叠。canonical 稀客 ID 只用于推荐和特殊规则，不替代订单匹配身份。
+
+客户端桌号显示为 `DeskCode + 1`；显示值不写回订单身份。头像的 `guestImageKind` / `guestImageId` 是独立展示字段，按已验证的真实客人类型选择图片：稀客复制体可以产生 `NormalOrder`，不能因此强制使用普客头像或改成稀客执行通道。图片身份如何解析见[游戏图像资源](game-media.md)。
 
 展示文本只能由完整运行时 signed Tag map 查询。映射缺失时有界记录并拒绝业务投影；禁止调用 `GetOrderFoodText`、`GetOrderBevText`、override 委托、`SpecialGuest.Get*TagText`、`ToString()`，也不生成 `#id` 文本。
 

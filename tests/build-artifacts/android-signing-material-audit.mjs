@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import {
   lstatSync,
   mkdirSync,
@@ -11,6 +12,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   cleanupAndroidSigningMaterial,
   decodeCanonicalBase64,
@@ -26,12 +28,13 @@ import {
 
 const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'mystia-android-signing-audit-'));
 const androidGradle = readFileSync(
-  new URL('../../apps/companion/src-tauri/gen/android/app/build.gradle.kts', import.meta.url),
+  new URL('../../apps/companion-flutter/android/app/build.gradle.kts', import.meta.url),
   'utf8',
 );
 
 try {
   auditGradleSigningContract();
+  auditMissingSigningConfigFails();
   auditArgumentContract();
   auditCanonicalBase64();
   auditPropertyEscaping();
@@ -55,6 +58,19 @@ function auditGradleSigningContract() {
   );
   assert.doesNotMatch(androidGradle, /FileInputStream/u);
   assert.doesNotMatch(androidGradle, /getProperty\("password"\)/u);
+}
+
+function auditMissingSigningConfigFails() {
+  // 通过真实导出预检运行独立进程，明确不存在的配置必须失败；不读取本机正式配置或密钥。
+  const moduleUrl = new URL('../../scripts/build-android-signed-apk.mjs', import.meta.url).href;
+  const check = `import { assertSigningConfig } from ${JSON.stringify(moduleUrl)}; assertSigningConfig();`;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', check], {
+    cwd: fileURLToPath(new URL('../..', import.meta.url)), encoding: 'utf8', windowsHide: true,
+    env: { ...process.env, MYSTIA_ANDROID_KEYSTORE_PROPERTIES: path.join(fixtureRoot, 'missing-keystore.properties') },
+  });
+  assert.equal(result.error, undefined);
+  assert.notEqual(result.status, 0, 'Missing configuration must never yield an unsigned successful release.');
+  assert.match(result.stderr, /Missing Android signing config/u);
 }
 
 function auditArgumentContract() {

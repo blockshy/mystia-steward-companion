@@ -1,2 +1,10 @@
-# Tauri rewrites this manifest with LF line endings when synchronizing managed features.
-apps/companion/src-tauri/Cargo.toml text eol=lf
+# 构建锁、发布脚本和 Flutter 配置使用 LF，跨 Windows/Linux 的原始字节摘要保持一致。
+native/updater/Cargo.toml text eol=lf
+native/updater/Cargo.lock text eol=lf
+toolchain.lock.json text eol=lf
+apps/companion-flutter/pubspec.yaml text eol=lf
+apps/companion-flutter/pubspec.lock text eol=lf
+apps/companion-flutter/** text=auto eol=lf
+packages/** text=auto eol=lf
+tests/flutter-contracts/** text=auto eol=lf
+*.sh text eol=lf

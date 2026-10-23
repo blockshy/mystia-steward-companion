@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using MystiaStewardCompanion.Core;
+using MystiaStewardCompanion.GameMedia;
 using MystiaStewardCompanion.LocalApi;
 using MystiaStewardCompanion.Plugin;
 using MystiaStewardCompanion.Save;
@@ -46,6 +47,10 @@ internal sealed class StewardOverlayController
     private NightBusinessContext? _businessContext;
     private NormalBusinessContext? _normalBusinessContext;
     private LocalApiServer? _localApiServer;
+    private GameMediaService? _gameMediaService;
+    private RuntimeGameMediaStartupProbe? _gameMediaStartupProbe;
+    private RuntimeDataCatalog? _gameMediaCatalog;
+    private float _nextGameMediaCatalogCheckAt;
     private readonly object _inventoryEditLock = new();
     // 后台 HTTP 线程提交的库存编辑请求，统一在 Unity 主线程处理。
     private readonly Queue<PendingInventoryEdit> _pendingInventoryEdits = new();
@@ -80,6 +85,8 @@ internal sealed class StewardOverlayController
     private float _nextRuntimeDataCatalogRefreshAt;
     private float _nextAutomationCookingJobProcessAt;
     private float _nextActiveBusinessSnapshotRefreshAt;
+    // 只复用此控制器的托管方法委托，避免周期门禁本身每帧分配闭包；不缓存游戏可读性。
+    private Func<bool>? _activeBusinessSnapshotReadProbe;
     private float _nextNormalBusinessRefreshAt;
     private float _nextStableBusinessContextRescanAt;
     private long _businessContextSpecialOrderVersion = long.MinValue;
@@ -109,7 +116,11 @@ internal sealed class StewardOverlayController
     private string _lastRuntimeCatalogLogStatus = "";
     private string _lastLocalApiSnapshotContentSignature = "";
     private string _localApiSnapshotDirtyReason = "";
-    private string _lastLocalApiSnapshotDiagnosticSignature = "";
+    private readonly RuntimeSnapshotDiagnosticGate _snapshotDiagnosticGate = new();
+    private readonly RuntimePerformanceDiagnostics _performanceDiagnostics = new();
+    private readonly RuntimeUpdateGapSampler _updateGapSampler = new();
+    private readonly RuntimeFrameStallDiagnostics _frameStallDiagnostics = new();
+    private bool _performanceDiagnosticsEnabled;
     private LocalApiSnapshotDirtyDomain _localApiSnapshotDirtyDomains = LocalApiSnapshotDirtyDomain.None;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> _performanceUpdatedAt = new(StringComparer.Ordinal);
@@ -136,9 +147,12 @@ internal sealed class StewardOverlayController
     /// </summary>
     private sealed class PendingInventoryEdit : MainThreadCommand<RuntimeInventoryEditResult>
     {
+        public LocalApiWritePermit Permit { get; init; } = null!;
         public string ItemType { get; init; } = "";
         public int ItemId { get; init; }
         public int Quantity { get; init; }
+        // 只跨线程传递托管数值前提；不能在 API 线程读游戏库存或提前确认比较结果。
+        public int? ExpectedQuantity { get; init; }
     }
 
     /// <summary>
@@ -146,6 +160,7 @@ internal sealed class StewardOverlayController
     /// </summary>
     private sealed class PendingInventoryBulkEdit : MainThreadCommand<RuntimeInventoryBulkEditResult>
     {
+        public LocalApiWritePermit Permit { get; init; } = null!;
         public string ItemType { get; init; } = "";
         public IReadOnlyList<int> ItemIds { get; init; } = Array.Empty<int>();
         public int Quantity { get; init; }
@@ -169,6 +184,8 @@ internal sealed class StewardOverlayController
     /// </summary>
     private sealed class PendingRareGuestInvitation : MainThreadCommand<RareGuestInvitationResult>
     {
+        // 只读 List 不需要许可；InviteOne/InviteAll 必须带入 API 已校验的原请求许可。
+        public LocalApiWritePermit? Permit { get; init; }
         public RareGuestInvitationAction Action { get; init; }
         public int GuestId { get; init; } = -1;
         public string Scope { get; init; } = "";
@@ -224,7 +241,25 @@ internal sealed class StewardOverlayController
         RuntimeNightBusinessAutomationGate.Refresh();
         _activeSceneName = GetActiveSceneName();
         LoadRepository();
+        // 图片缓存是运行期用户数据，不进入安装载荷；与客户端是否启动、是否拥有租约无关。
+        var pluginDirectory = Path.GetDirectoryName(typeof(MystiaStewardCompanionPlugin).Assembly.Location)
+            ?? throw new InvalidOperationException("无法确定插件图片缓存目录。");
+        var mediaStore = new GameMediaStore(Path.Combine(pluginDirectory, "user-data", "game-media"));
+        // 首次安装仍等待真实目录提图；已有缓存只在主菜单依赖/许可证据明确后后台验证一次。
+        // 图片 ready 不构造 RuntimeDataCatalog，业务运行时和自动化门禁继续使用自己的真实快照。
+        _gameMediaStartupProbe = mediaStore.HasCacheCandidate
+            ? new RuntimeGameMediaStartupProbe((reason, count) => ReportGameMediaIdentity("startup", reason, count)) : null;
+        _gameMediaService = new GameMediaService(mediaStore, _gameMediaStartupProbe?.Completion);
+        // 服务仅在固定作业转换点、资源锁外发布纯托管诊断；不读取 Unity，不逐帧写日志。
+        // 日志由既有聚合服务负责开关、容量与异常隔离，事件本身不能成为业务就绪判断。
+        _gameMediaService.Diagnostic += diagnostic => AggregateModLogService.AppendSection(
+            "game-media", "Game image cache",
+            $"marker: MSC-GAME-MEDIA v1; event={diagnostic.Event}; phase={diagnostic.Phase}; " +
+            $"completed={diagnostic.Completed}; total={diagnostic.Total}; generation={diagnostic.Generation ?? "none"}; " +
+            $"cacheHit={(diagnostic.CacheHit.HasValue ? (diagnostic.CacheHit.Value ? "true" : "false") : "unknown")}; " +
+            $"reason={diagnostic.Reason ?? "none"}");
         _localApiToken = EnsureLocalApiToken(config);
+        CompanionProcessLauncher.UpdateConnectionToken(_localApiToken);
         StartLocalApi();
         RefreshBusinessContext(false);
         RefreshRuntimeState(false);
@@ -244,11 +279,73 @@ internal sealed class StewardOverlayController
     public void Update()
     {
         if (_disposed || _config == null) return;
+        // 开关每帧读取一次。关闭后不计时、不格式化、不保留旧窗口；重新开启从当前时刻计数。
+        var enabled = AggregateModLogService.Enabled;
+        if (enabled != _performanceDiagnosticsEnabled)
+        {
+            _performanceDiagnosticsEnabled = enabled;
+            // Update 是拥有窗口的 Unity 主线程入口；仅在开关转换时创建一次方法委托。
+            // 静态转发按线程和本实例归属隔离，不把后台耗时混进主线程帧关联。
+            if (enabled) RuntimePerformanceDiagnostics.BindStageRecorder(this, RecordServiceDiagnosticStage);
+            else RuntimePerformanceDiagnostics.ClearStageRecorder(this);
+            _performanceDiagnostics.Reset(Time.realtimeSinceStartup);
+            _updateGapSampler.Reset();
+            _frameStallDiagnostics.Reset();
+            _snapshotDiagnosticGate.Reset();
+        }
+        var started = BeginDiagnosticStage();
+        var allocatedAtStart = _performanceDiagnosticsEnabled ? GC.GetAllocatedBytesForCurrentThread() : 0;
+        if (_performanceDiagnosticsEnabled)
+        {
+            // 只读取现成会话状态与 CLR 计数。GC 差值属于整个 CLR 进程，不能当成
+            // Unity 原生 GC 或此 Mod 独占的停顿证据，也不能因此触发强制回收。
+            _frameStallDiagnostics.BeginFrame(started, Stopwatch.Frequency, _activeSceneName,
+                RuntimeNightBusinessLifecycle.Snapshot.Generation, _runtimeLoaded && Time.timeScale > 0f,
+                GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+        }
+        try { UpdateCore(); }
+        finally
+        {
+            EndDiagnosticStage("main.update", started);
+            if (_performanceDiagnosticsEnabled
+                && _updateGapSampler.Observe(started, Stopwatch.Frequency, _activeSceneName,
+                    RuntimeNightBusinessLifecycle.Snapshot.Generation,
+                    _runtimeLoaded && Time.timeScale > 0f, out var gapMs))
+            {
+                _performanceDiagnostics.Record("frame.updateGap", gapMs);
+            }
+            var diagnosticStarted = BeginDiagnosticStage();
+            try { FlushPerformanceDiagnostics(); }
+            finally
+            {
+                EndDiagnosticStage("diagnostics.flush", diagnosticStarted);
+                // 保留原 main.update 核心阶段便于与历史窗口比较；逐帧关联另记录包含
+                // 诊断格式化及同步写盘的完整入口，避免日志本身的停顿落在计时之外。
+                if (_performanceDiagnosticsEnabled)
+                    _frameStallDiagnostics.RecordUpdate(
+                        (Stopwatch.GetTimestamp() - started) * 1000d / Stopwatch.Frequency,
+                        GC.GetAllocatedBytesForCurrentThread() - allocatedAtStart);
+            }
+        }
+    }
+
+    private void UpdateCore()
+    {
+        if (_disposed || _config == null) return;
+        var phaseStarted = BeginDiagnosticStage();
         ProcessNightBusinessLifecycleChange();
         RefreshOnSceneChange();
+        EndDiagnosticStage("main.lifecycle", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
+        TickGameMedia();
+        EndDiagnosticStage("main.gameMedia", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         ProcessNightBusinessAutomationGateChange();
         RuntimeScheduledEventDiagnosticCapture.Tick(_mainThreadId);
+        EndDiagnosticStage("main.runtimeGates", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         ProcessPendingAvailableMissionReads();
+        EndDiagnosticStage("main.availableMissions", phaseStarted);
         if (ShouldGateNightBusinessRuntime())
         {
             ProcessToggleInput();
@@ -256,14 +353,29 @@ internal sealed class StewardOverlayController
             return;
         }
 
+        phaseStarted = BeginDiagnosticStage();
         RefreshOnRuntimeSceneReadinessChange();
+        EndDiagnosticStage("main.sceneReadiness", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         ProcessPendingInventoryEdits();
         ProcessPendingInventoryBulkEdits();
+        EndDiagnosticStage("main.inventoryEdits", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         ProcessPendingOrderPreparations();
+        EndDiagnosticStage("main.orderPreparations", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         ProcessPendingRareGuestInvitations();
+        EndDiagnosticStage("main.invitations", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         ProcessAutomationCookingJobs();
+        EndDiagnosticStage("main.automationJobs", phaseStarted);
+        phaseStarted = BeginDiagnosticStage();
         RefreshBusinessContextOnOrderCaptureChange();
+        EndDiagnosticStage("capture.versionRefresh", phaseStarted);
+        var periodicStarted = BeginDiagnosticStage();
         MarkActiveBusinessSnapshotDirtyIfDue();
+        EndDiagnosticStage("snapshot.activePollDue", periodicStarted);
+        EndDiagnosticStage("main.orderCaptureRefresh", phaseStarted);
 
         ProcessToggleInput();
 
@@ -304,6 +416,42 @@ internal sealed class StewardOverlayController
             "Night business is ending; runtime reads and automation have stopped."));
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.Scene | LocalApiSnapshotDirtyDomain.All, "night business closing", force: true);
     }
+
+    /// <summary>
+    /// 即使关闭普通自动刷新或尚未连接客户端，也独立推进首次资源初始化。
+    /// 尚无目录时只沿用已有场景/运行时就绪检查和五秒目录重试，绝不扫描场景对象。
+    /// 提取器每帧最多读取一个精确目录实体；磁盘和摘要核验由纯托管后台任务负责。
+    /// </summary>
+    private void TickGameMedia()
+    {
+        if (_gameMediaService == null) return;
+        _gameMediaStartupProbe?.Tick();
+        if (!_runtimeDataCatalog.IsComplete && Time.realtimeSinceStartup >= _nextGameMediaCatalogCheckAt)
+        {
+            // 连就绪探针也放在重试节流内，避免启动等待期间每帧重新访问原生单例。
+            _nextGameMediaCatalogCheckAt = Time.realtimeSinceStartup + RuntimeDataCatalogRetrySeconds;
+            if (!ShouldGateNightBusinessRuntime()
+                && CanReadRuntimeStateInCurrentScene(_activeSceneName, out _)
+                && RuntimeReflectionRecommendationStateProvider.CanReadRuntimeState(out _))
+                TryRefreshRuntimeDataCatalog();
+        }
+        if (_runtimeDataCatalog.IsComplete && !ReferenceEquals(_gameMediaCatalog, _runtimeDataCatalog))
+        {
+            _gameMediaCatalog = _runtimeDataCatalog;
+            _gameMediaService.Configure(new RuntimeGameMediaExtractor(_runtimeDataCatalog,
+                (reason, count) => ReportGameMediaIdentity("catalog", reason, count)));
+        }
+        _gameMediaService.Tick();
+    }
+
+    /// <summary>
+    /// 每次来源探测仅终结时记录一条诊断。原因码由图片模块固定提供，不输出平台许可内容、
+    /// 路径或异常正文；后台来源核验可直接调用线程安全的聚合日志，不回调 Unity 主线程。
+    /// </summary>
+    private static void ReportGameMediaIdentity(string stage, string reason, int bundleCount)
+        => AggregateModLogService.AppendSection("game-media", "Game image source identity",
+            $"marker: MSC-GAME-MEDIA-SOURCE v1; stage={stage}; reason={reason}; " +
+            $"bundles={bundleCount}; limit={GameMediaSourceIdentity.MaximumBundleFiles}");
 
     private void CancelPendingNightBusinessCommands(NightBusinessLifecycleSnapshot lifecycle)
     {
@@ -569,12 +717,40 @@ internal sealed class StewardOverlayController
     public void LateUpdate()
     {
         if (_disposed || ShouldGateNightBusinessRuntime()) return;
+        var totalStarted = BeginDiagnosticStage();
+        var allocatedAtStart = _performanceDiagnosticsEnabled ? GC.GetAllocatedBytesForCurrentThread() : 0;
+        try { LateUpdateCore(); }
+        finally
+        {
+            EndDiagnosticStage("main.lateUpdate", totalStarted);
+            if (_performanceDiagnosticsEnabled)
+                _frameStallDiagnostics.RecordLateUpdate(
+                    (Stopwatch.GetTimestamp() - totalStarted) * 1000d / Stopwatch.Frequency,
+                    GC.GetAllocatedBytesForCurrentThread() - allocatedAtStart);
+        }
+    }
+
+    /// <summary>视觉服务顺序保持不变；完整范围的计时与分配由外层 finally 保证收尾。</summary>
+    private void LateUpdateCore()
+    {
+        var started = BeginDiagnosticStage();
         RuntimeUiPinningService.Tick();
+        EndDiagnosticStage("ui.pinning", started);
+        started = BeginDiagnosticStage();
         RuntimeCookerHighlightService.Tick();
+        EndDiagnosticStage("ui.cookerHighlight", started);
+        started = BeginDiagnosticStage();
         RuntimeSeatHighlightService.Tick();
+        EndDiagnosticStage("ui.seatHighlight", started);
+        started = BeginDiagnosticStage();
         RuntimeOrderHighlightService.Tick();
+        EndDiagnosticStage("ui.orderHighlight", started);
+        started = BeginDiagnosticStage();
         RuntimeThrowDeliverOrderHighlightService.Tick();
+        EndDiagnosticStage("ui.throwDeliverHighlight", started);
+        started = BeginDiagnosticStage();
         RuntimePinnedListHighlightService.Tick();
+        EndDiagnosticStage("ui.pinnedListHighlight", started);
     }
 
     /// <summary>
@@ -585,6 +761,8 @@ internal sealed class StewardOverlayController
         if (_disposed) return;
 
         _disposed = true;
+        RuntimePerformanceDiagnostics.ClearStageRecorder(this);
+        _gameMediaService?.Dispose();
         CompanionProcessLauncher.TryNotifyExit(_log);
         var disposedException = new ObjectDisposedException(nameof(StewardOverlayController));
         CancelPendingMainThreadCommands(_pendingInventoryEdits, _inventoryEditLock, disposedException);
@@ -957,7 +1135,6 @@ internal sealed class StewardOverlayController
                 UpdateBepInExConsoleVisibility,
                 GetLocalApiConnectionConfig,
                 UpdateLocalApiConnectionConfig,
-                RegenerateLocalApiToken,
                 OpenLocalApiLogFolder,
                 EditInventoryFromLocalApi,
                 EditInventoryBulkFromLocalApi,
@@ -976,7 +1153,8 @@ internal sealed class StewardOverlayController
                 favoriteStore,
                 customRecipeStore,
                 deviceAuthorityStore,
-                _log);
+                _log,
+                _gameMediaService);
             _localApiServer.Start();
         }
         catch (Exception ex)
@@ -1072,7 +1250,15 @@ internal sealed class StewardOverlayController
                 RuntimeUiPinningStatus = RuntimeUiPinningService.Status,
                 RecommendationState = Measure(
                     "snapshot.recommendationState",
-                    () => publishedState == null ? null : RecommendationStateSnapshot.From(publishedState)),
+                    () => publishedState == null ? null : RecommendationStateSnapshot.From(
+                        publishedState,
+                        // 目录/场景就绪并不证明库存读取成功。只有当前发布的正是实际
+                        // 读取状态，且最近读取没有失败，才允许库存页使用其中的数量。
+                        // AllAvailable 仅供经营候选展示，不能使合成99成为可写库存事实。
+                        inventoryReadReady: ReferenceEquals(publishedState, _state)
+                            && _runtimeLoaded
+                            && _lastRuntimeReadUtc != DateTime.MinValue
+                            && string.IsNullOrEmpty(_lastRuntimeErrorMessage))),
                 NightBusiness = publishedNightBusiness,
                 SpecialBusiness = specialBusiness,
                 NormalBusiness = nightRuntimeGated
@@ -1124,45 +1310,51 @@ internal sealed class StewardOverlayController
         string signature,
         LocalApiSnapshot snapshot)
     {
-        if (!AggregateModLogService.Enabled) return;
+        if (!AggregateModLogService.Enabled)
+        {
+            _snapshotDiagnosticGate.Reset();
+            return;
+        }
 
         try
         {
             var normalCount = snapshot.NormalBusiness?.Orders.Count ?? -1;
             var rareCount = snapshot.NightBusiness?.Orders.Count ?? -1;
+            // 在场稀客与有效订单来自不同采集链；分别记录数量和源状态，避免仅凭订单正常
+            // 就把客人列表读取失败误判为空场景。这里只扩展已有聚合诊断，不触发额外游戏读取。
+            var rareGuestCount = snapshot.NightBusiness?.ActiveRareGuests.Count ?? -1;
             var specialBusiness = snapshot.SpecialBusiness;
             var specialActive = specialBusiness?.Active == true;
-            var diagnosticSignature = string.Join(
+            // 错误和恢复必须即时可见；订单内容、发布原因、源诊断中的累计计数不能成为
+            // 即时日志的触发键。它们仍在五秒汇总的最新完整快照内，未变化计数不会丢失。
+            var healthState = string.Join(
                 "|",
-                outcome,
-                dirtyDomains,
-                dirtyReason,
-                signature,
                 snapshot.ActiveSceneName,
                 snapshot.RuntimeLoaded,
                 snapshot.RuntimeSceneReadinessStatus,
                 snapshot.RuntimeDataComplete,
-                snapshot.RuntimeDataSource,
-                snapshot.RuntimeDataStatus,
-                normalCount,
-                rareCount,
+                _lastRuntimeErrorMessage,
+                snapshot.NightBusiness?.ActiveRareGuestsReadComplete,
+                snapshot.NightBusiness?.Error ?? "",
+                snapshot.NormalBusiness?.Error ?? "",
+                snapshot.NightBusinessAutomationAllowed,
+                snapshot.NightBusinessAutomationBlockReason,
                 specialActive,
                 specialBusiness?.ChallengeType ?? "",
                 specialBusiness?.Phase ?? "",
-                specialBusiness?.DisplayName ?? "",
-                specialBusiness?.Source ?? "",
                 specialBusiness?.Error ?? "");
-            if (string.Equals(diagnosticSignature, _lastLocalApiSnapshotDiagnosticSignature, StringComparison.Ordinal))
+            if (!_snapshotDiagnosticGate.ShouldWrite(
+                    Time.realtimeSinceStartup, healthState, outcome, out var windowSummary))
             {
                 return;
             }
 
-            _lastLocalApiSnapshotDiagnosticSignature = diagnosticSignature;
             AggregateModLogService.AppendSection(
                 "snapshot",
                 "Local API Snapshot",
                 string.Join(
                     Environment.NewLine,
+                    windowSummary,
                     $"outcome: {outcome}",
                     $"dirty: {dirtyDomains}",
                     $"reason: {dirtyReason}",
@@ -1174,6 +1366,10 @@ internal sealed class StewardOverlayController
                     $"runtimeDataSource: {snapshot.RuntimeDataSource}",
                     $"runtimeDataStatus: {snapshot.RuntimeDataStatus}",
                     $"nightOrders: {rareCount}",
+                    $"nightGuests: {rareGuestCount}",
+                    $"nightGuestsReadComplete: {snapshot.NightBusiness?.ActiveRareGuestsReadComplete == true}",
+                    $"nightSource: {snapshot.NightBusiness?.Source ?? ""}",
+                    $"nightError: {snapshot.NightBusiness?.Error ?? ""}",
                     $"normalOrders: {normalCount}",
                     $"specialActive: {specialActive}",
                     $"special: {specialBusiness?.ChallengeType ?? ""} {specialBusiness?.Phase ?? ""}",
@@ -1225,16 +1421,19 @@ internal sealed class StewardOverlayController
     {
         if (ShouldGateNightBusinessRuntime()) return;
         if (_localApiServer == null || _config == null || !_config.AutoRefreshRuntime.Value) return;
-        if (!CanReadNormalBusinessSnapshot() && !HasActiveNightBusinessContext(_businessContext)) return;
-
         var now = Time.realtimeSinceStartup;
-        if (now < _nextActiveBusinessSnapshotRefreshAt) return;
-
-        _nextActiveBusinessSnapshotRefreshAt = now + ActiveBusinessSnapshotRefreshSeconds;
+        // 这里仅标记既有周期快照为脏，不承担订单身份、场景撤销或写权限核验。未到原有
+        // 750ms 截止时间时，不能先执行内部含主菜单查找的可读性探针。Hook 版本检查仍在
+        // 上面的 RefreshBusinessContextOnOrderCaptureChange 每帧运行，事件刷新不经此门禁。
+        if (!RuntimePeriodicSnapshotRefresh.TrySchedule(now, ref _nextActiveBusinessSnapshotRefreshAt,
+                ActiveBusinessSnapshotRefreshSeconds, _activeBusinessSnapshotReadProbe ??= CanReadActiveBusinessSnapshot)) return;
         MarkLocalApiSnapshotDirty(
             LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.SpecialBusiness | LocalApiSnapshotDirtyDomain.Automation,
             "active business refresh");
     }
+
+    private bool CanReadActiveBusinessSnapshot() =>
+        CanReadNormalBusinessSnapshot() || HasActiveNightBusinessContext(_businessContext);
 
     private void MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain domains, string reason, bool force = false)
     {
@@ -1423,6 +1622,10 @@ internal sealed class StewardOverlayController
             return;
         }
 
+        AppendValue(builder, snapshot.InventoryReadReady);
+        // 图鉴就绪/收录变化也必须改变快照签名，保证相同库存数量下客户端仍能收到更新。
+        AppendValue(builder, snapshot.BeverageUnlockReadReady);
+        AppendInts(builder, snapshot.UnlockedBeverageIds);
         AppendInts(builder, snapshot.AvailableRecipeIds);
         AppendInts(builder, snapshot.AvailableBeverageIds);
         AppendInts(builder, snapshot.AvailableIngredientIds);
@@ -1465,6 +1668,8 @@ internal sealed class StewardOverlayController
         AppendValue(builder, context.PlaceLabel);
         AppendValue(builder, context.Source);
         AppendValue(builder, context.Error);
+        // 完整性变化同样属于可见状态；即使名单未变，也必须让客户端收到“未知/完整”的切换。
+        AppendValue(builder, context.ActiveRareGuestsReadComplete);
         foreach (var guest in context.ActiveRareGuests
                      .OrderBy(guest => guest.DeskCode)
                      .ThenBy(guest => guest.GuestId ?? -1)
@@ -1710,6 +1915,11 @@ internal sealed class StewardOverlayController
         var milliseconds = Math.Round(elapsed.TotalMilliseconds, 2);
         _performanceMs[key] = milliseconds;
         _performanceUpdatedAt[key] = Time.realtimeSinceStartup;
+        if (_performanceDiagnosticsEnabled)
+        {
+            _performanceDiagnostics.Record(key, elapsed.TotalMilliseconds);
+            _frameStallDiagnostics.RecordStage(key, elapsed.TotalMilliseconds);
+        }
     }
 
     private Dictionary<string, double> BuildPerformanceSnapshot()
@@ -1730,6 +1940,61 @@ internal sealed class StewardOverlayController
             var key = $"{prefix}{entry.Key}";
             _performanceMs[key] = entry.Value;
             _performanceUpdatedAt[key] = updatedAt;
+            if (_performanceDiagnosticsEnabled) _performanceDiagnostics.Record(key, entry.Value);
+        }
+    }
+
+    /// <summary>
+    /// 高频入口仅取高精度时钟，不创建 Stopwatch/闭包。测量值只进有界托管窗口，
+    /// 不修改发布脏标记，不让逐帧计时本身制造新的快照发布。
+    /// </summary>
+    private long BeginDiagnosticStage() => _performanceDiagnosticsEnabled ? Stopwatch.GetTimestamp() : 0;
+
+    private void EndDiagnosticStage(string key, long started)
+    {
+        if (!_performanceDiagnosticsEnabled || started == 0) return;
+        var milliseconds = (Stopwatch.GetTimestamp() - started) * 1000d / Stopwatch.Frequency;
+        _performanceDiagnostics.Record(key, milliseconds);
+        // 总量由专用字段保存；这里只保留当前帧最大的业务子阶段，不相加嵌套耗时。
+        if (key != "main.update" && key != "main.lateUpdate")
+            _frameStallDiagnostics.RecordStage(key, milliseconds);
+    }
+
+    /// <summary>服务内部同步子阶段沿用同一有界窗口，保留嵌套耗时不相加的帧关联规则。</summary>
+    private void RecordServiceDiagnosticStage(string key, double milliseconds)
+    {
+        if (_disposed || !_performanceDiagnosticsEnabled) return;
+        _performanceDiagnostics.Record(key, milliseconds);
+        _frameStallDiagnostics.RecordStage(key, milliseconds);
+    }
+
+    private void FlushPerformanceDiagnostics()
+    {
+        if (!_performanceDiagnosticsEnabled) return;
+        try
+        {
+            if (_performanceDiagnostics.TryDrain(Time.realtimeSinceStartup, out var report))
+            {
+                // 只读取已有托管快照补上下文，禁止为性能日志再遍历 IL2CPP 订单或查找场景对象。
+                // 阶段存在嵌套（例如 snapshot.publish 包含 serialize），不可相加当作帧总耗时。
+                var gate = RuntimeNightBusinessAutomationGate.Snapshot;
+                AggregateModLogService.AppendSection("performance", "Main-thread performance window",
+                    string.Join(Environment.NewLine, report,
+                        $"scene: {_activeSceneName}",
+                        $"normalOrders: {_normalBusinessContext?.Orders.Count ?? -1}",
+                        $"rareOrders: {_businessContext?.Orders.Count ?? -1}",
+                        $"support: runtimeLoaded={_runtimeLoaded}; runtimeAvailable={gate.RuntimeAvailable}; automationAllowed={gate.Allowed}; reason={gate.BlockReason}",
+                        $"uiTargets: {RuntimeUiPinningService.Status}",
+                        "scope: Mod main-thread stages only; nested stages must not be summed; not game FPS"));
+            }
+            // 与阶段窗口独立使用 Stopwatch 时基；保留八条最慢入口间隔及前一帧数据，
+            // 避免把五秒窗口内不同帧、不同阶段的最大值错误地拼成同一次卡顿。
+            if (_frameStallDiagnostics.TryDrain(Stopwatch.GetTimestamp(), Stopwatch.Frequency, out var frameReport))
+                AggregateModLogService.AppendSection("performance", "Correlated frame stalls", frameReport);
+        }
+        catch
+        {
+            // 用户诊断辅助失败不能改变游戏、授权或自动化执行路径。
         }
     }
 
@@ -1997,7 +2262,9 @@ internal sealed class StewardOverlayController
         }
     }
 
-    private LocalApiConnectionConfigDto GetLocalApiConnectionConfig()
+    private LocalApiConnectionConfigDto GetLocalApiConnectionConfig() => GetLocalApiConnectionConfigWithWarning(null);
+
+    private LocalApiConnectionConfigDto GetLocalApiConnectionConfigWithWarning(string? warning)
     {
         var port = Math.Clamp(_config?.LocalApiPort.Value ?? 32145, 1024, 65535);
         return new LocalApiConnectionConfigDto
@@ -2010,7 +2277,8 @@ internal sealed class StewardOverlayController
             Port = port,
             Token = _localApiToken,
             LanEndpoints = _localApiServer?.LanEndpoints ?? Array.Empty<LocalApiLanEndpointDto>(),
-            LanError = string.IsNullOrWhiteSpace(_localApiServer?.LanError) ? null : _localApiServer?.LanError,
+            AvailableLanEndpoints = _localApiServer?.AvailableLanEndpoints ?? Array.Empty<LocalApiLanEndpointDto>(),
+            LanError = warning ?? (string.IsNullOrWhiteSpace(_localApiServer?.LanError) ? null : _localApiServer?.LanError),
         };
     }
 
@@ -2025,26 +2293,33 @@ internal sealed class StewardOverlayController
             };
         }
 
-        if (update.LanEnabled.HasValue) _config.LocalApiLanEnabled.Value = update.LanEnabled.Value;
-        if (update.LanBindHost != null) _config.LocalApiLanHost.Value = NormalizeLocalApiLanHost(update.LanBindHost);
-        _localApiServer?.ApplyLanSettings(_config.LocalApiLanEnabled.Value, _config.LocalApiLanHost.Value);
-        return GetLocalApiConnectionConfig();
-    }
-
-    private LocalApiConnectionConfigDto RegenerateLocalApiToken()
-    {
-        if (_config == null)
+        // 所有字段先一起验证，拒绝地址/密码时不产生任何部分配置变更。
+        LocalApiConnectionPolicy.Validate(update, _localApiServer?.AvailableLanEndpoints ?? Array.Empty<LocalApiLanEndpointDto>());
+        var nextEnabled = update.LanEnabled ?? _config.LocalApiLanEnabled.Value;
+        var nextHost = update.LanBindHost ?? _config.LocalApiLanHost.Value;
+        var nextToken = update.Token ?? _localApiToken;
+        if (nextEnabled) LocalApiConnectionPolicy.Validate(new LocalApiConnectionConfigUpdate { LanBindHost = nextHost },
+            _localApiServer?.AvailableLanEndpoints ?? Array.Empty<LocalApiLanEndpointDto>());
+        try { _config.SaveLocalApiConnection(nextEnabled, nextHost, nextToken); }
+        catch (Exception)
         {
-            return new LocalApiConnectionConfigDto
-            {
-                Ok = false,
-                Error = "configuration is not available",
-            };
+            // 不回显配置异常（可能包含路径或输入），也不把未知磁盘结果描述成成功回滚。
+            return new LocalApiConnectionConfigDto { Ok = false,
+                Error = "设置保存结果未能确认，磁盘配置可能已改变；本次运行连接未切换。请重新读取服务配置，不要重复提交。" };
         }
-
-        _localApiToken = GenerateLocalApiToken();
-        _config.LocalApiToken.Value = _localApiToken;
-        _localApiServer?.SetToken(_localApiToken);
+        if (update.Token != null)
+        {
+            _localApiToken = update.Token;
+            _localApiServer?.SetToken(update.Token);
+            CompanionProcessLauncher.UpdateConnectionToken(update.Token);
+        }
+        // 保持回环监听与本次 HTTP 连接，成功回执携带新凭据供当前客户端串行接续。
+        try { _localApiServer?.ApplyLanSettings(nextEnabled, nextHost); }
+        catch (Exception)
+        {
+            // 已保存且密码已切换时必须返回真实新凭据；LAN 启动失败不能伪装整份表单未应用。
+            return GetLocalApiConnectionConfigWithWarning("连接设置已保存，但局域网监听未能启动；本机连接仍可使用，请重新读取状态。");
+        }
         return GetLocalApiConnectionConfig();
     }
 
@@ -2143,19 +2418,22 @@ internal sealed class StewardOverlayController
     /// 若当前线程不是 Unity 主线程，会将请求入队并阻塞等待主线程在 <see cref="Update"/> 中执行。
     /// 超时会返回给 HTTP 调用方，避免后台请求无限挂起。
     /// </remarks>
-    private RuntimeInventoryEditResult EditInventoryFromLocalApi(string itemType, int itemId, int quantity)
+    private RuntimeInventoryEditResult EditInventoryFromLocalApi(string itemType, int itemId, int quantity,
+        int? expectedQuantity, LocalApiWritePermit permit)
     {
         ThrowIfNightBusinessRuntimeUnavailable();
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyInventoryEdit(itemType, itemId, quantity);
+            return permit.Execute(() => ApplyInventoryEdit(itemType, itemId, quantity, expectedQuantity));
         }
 
         using var pending = new PendingInventoryEdit
         {
+            Permit = permit,
             ItemType = itemType,
             ItemId = itemId,
             Quantity = quantity,
+            ExpectedQuantity = expectedQuantity,
         };
         lock (_inventoryEditLock)
         {
@@ -2179,16 +2457,17 @@ internal sealed class StewardOverlayController
     /// <remarks>
     /// 批量操作可能触发多次运行时库存写入，因此等待时间比单项编辑略长。
     /// </remarks>
-    private RuntimeInventoryBulkEditResult EditInventoryBulkFromLocalApi(string itemType, IReadOnlyList<int> itemIds, int quantity)
+    private RuntimeInventoryBulkEditResult EditInventoryBulkFromLocalApi(string itemType, IReadOnlyList<int> itemIds, int quantity, LocalApiWritePermit permit)
     {
         ThrowIfNightBusinessRuntimeUnavailable();
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyInventoryBulkEdit(itemType, itemIds, quantity);
+            return permit.Execute(() => ApplyInventoryBulkEdit(itemType, itemIds, quantity));
         }
 
         using var pending = new PendingInventoryBulkEdit
         {
+            Permit = permit,
             ItemType = itemType,
             ItemIds = itemIds.ToArray(),
             Quantity = quantity,
@@ -2617,13 +2896,14 @@ internal sealed class StewardOverlayController
     private RareGuestInvitationResult InviteAllRareGuestsFromLocalApi(
         string scope,
         string kizunaLevels,
-        RareGuestInvitationWriteExpectation writeExpectation)
+        RareGuestInvitationWriteExpectation writeExpectation,
+        LocalApiWritePermit permit)
     {
         return RunRareGuestInvitationFromLocalApi(
             RareGuestInvitationAction.InviteAll,
             scope: scope,
             kizunaLevels: kizunaLevels,
-            writeExpectation: writeExpectation);
+            writeExpectation: writeExpectation, permit: permit);
     }
 
     private RareGuestInvitationResult ListRareGuestInvitationsFromLocalApi(string scope, string kizunaLevels)
@@ -2634,13 +2914,14 @@ internal sealed class StewardOverlayController
     private RareGuestInvitationResult InviteRareGuestFromLocalApi(
         int guestId,
         string scope,
-        RareGuestInvitationWriteExpectation writeExpectation)
+        RareGuestInvitationWriteExpectation writeExpectation,
+        LocalApiWritePermit permit)
     {
         return RunRareGuestInvitationFromLocalApi(
             RareGuestInvitationAction.InviteOne,
             guestId,
             scope,
-            writeExpectation: writeExpectation);
+            writeExpectation: writeExpectation, permit: permit);
     }
 
     /// <summary>
@@ -2654,7 +2935,8 @@ internal sealed class StewardOverlayController
         int guestId = -1,
         string scope = "",
         string kizunaLevels = "",
-        RareGuestInvitationWriteExpectation writeExpectation = default)
+        RareGuestInvitationWriteExpectation writeExpectation = default,
+        LocalApiWritePermit? permit = null)
     {
         if (ShouldGateNightBusinessRuntime())
         {
@@ -2671,16 +2953,12 @@ internal sealed class StewardOverlayController
 
         if (Thread.CurrentThread.ManagedThreadId == _mainThreadId)
         {
-            return ApplyRareGuestInvitation(
-                action,
-                guestId,
-                scope,
-                kizunaLevels,
-                writeExpectation);
+            return ApplyAuthorizedRareGuestInvitation(action, guestId, scope, kizunaLevels, writeExpectation, permit);
         }
 
         using var pending = new PendingRareGuestInvitation
         {
+            Permit = permit,
             Action = action,
             GuestId = guestId,
             Scope = scope,
@@ -2731,7 +3009,7 @@ internal sealed class StewardOverlayController
             {
                 ThrowIfDisposed();
                 if (ShouldGateNightBusinessRuntime()) return false;
-                if (request.AutomationEpoch != currentEpoch)
+                if (request.AutomationEpoch != currentEpoch || request.IsBusinessInputCurrent?.Invoke() == false)
                 {
                     return false;
                 }
@@ -2759,7 +3037,7 @@ internal sealed class StewardOverlayController
 
         return _automationCommandFence.RunExclusive(currentEpoch =>
         {
-            if (request.AutomationEpoch != currentEpoch)
+            if (request.AutomationEpoch != currentEpoch || request.IsBusinessInputCurrent?.Invoke() == false)
             {
                 return BuildSupersededOrderResult(request);
             }
@@ -2776,7 +3054,7 @@ internal sealed class StewardOverlayController
 
     private static OrderPreparationResult BuildSupersededOrderResult(OrderPreparationRequest request)
     {
-        var result = BuildUnavailableOrderResult(request, "该自动化命令已被更新的配置或控制权代际作废，未执行任何游戏操作。");
+        var result = BuildUnavailableOrderResult(request, "自动化请求对应的配置或运行状态已变化，本次未执行任何游戏操作。");
         result.Automation.Outcome = "cancelled";
         result.Automation.Stage = "command";
         result.Automation.ReasonCode = "automation-command-superseded";
@@ -2788,19 +3066,35 @@ internal sealed class StewardOverlayController
     /// </summary>
     private OrderPreparationResult ApplyOrderPreparation(OrderPreparationRequest request)
     {
-        if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
+        if (!CanRunTimedNightBusinessOrderAction(out var reason, out var reasonCode))
         {
             return BuildUnavailableOrderResult(request, reason, reasonCode);
         }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
-        var result = RuntimeOrderPreparationService.Prepare(request);
+        var started = BeginDiagnosticStage();
+        OrderPreparationResult result;
+        // 记录完整运行时服务调用，包含其内部 GetExecutionGuard、反射与原生动作；
+        // 此数值不能解释为纯原生函数耗时。异常仍按原路径传播，只在 finally 保留耗时。
+        try { result = RuntimeOrderPreparationService.Prepare(request); }
+        finally { EndDiagnosticStage("action.rare.prepare", started); }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;
         _status = result.Ok
             ? L("已准备下一笔稀客订单。", "Next rare-customer order prepared.")
             : L($"准备下一笔稀客订单未完成：{result.Error}", $"Preparing next rare-customer order did not finish: {result.Error}");
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.Automation, "rare order prepared");
         return result;
+    }
+
+    /// <summary>
+    /// 单独观测控制器原有场景/会话入口检查。只包裹原方法，不复用或缓存检查结果；
+    /// 队列代次、写权限和服务内部执行门禁仍在各自原位置逐次验证。
+    /// </summary>
+    private bool CanRunTimedNightBusinessOrderAction(out string reason, out string reasonCode)
+    {
+        var started = BeginDiagnosticStage();
+        try { return CanRunNightBusinessOrderAction(out reason, out reasonCode); }
+        finally { EndDiagnosticStage("action.gate", started); }
     }
 
     /// <summary>
@@ -2901,36 +3195,47 @@ internal sealed class StewardOverlayController
 
     private OrderPreparationResult ApplyOrderCompletion(OrderPreparationRequest request)
     {
-        if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
+        if (!CanRunTimedNightBusinessOrderAction(out var reason, out var reasonCode))
         {
             return BuildUnavailableOrderResult(request, reason, reasonCode);
         }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
-        var result = RuntimeOrderPreparationService.CompleteFirst(request);
+        var started = BeginDiagnosticStage();
+        OrderPreparationResult result;
+        try { result = RuntimeOrderPreparationService.CompleteFirst(request); }
+        finally { EndDiagnosticStage("action.rare.complete", started); }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;
         _status = result.Ok
             ? L("已完成当前第一笔稀客订单。", "First rare-customer order completed.")
             : L($"完成当前第一笔稀客订单失败：{result.Error}", $"Completing first rare-customer order failed: {result.Error}");
-        RefreshBusinessContext(false, force: true);
+        // 结果失败/等待时也保留原有强制刷新；本轮仅拆分计时，不改变其执行条件。
+        started = BeginDiagnosticStage();
+        try { RefreshBusinessContext(false, force: true); }
+        finally { EndDiagnosticStage("action.refresh.rare", started); }
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.RareBusiness | LocalApiSnapshotDirtyDomain.Automation, "rare order completed");
         return result;
     }
 
     private OrderPreparationResult ApplyNormalOrderCompletion(OrderPreparationRequest request)
     {
-        if (!CanRunNightBusinessOrderAction(out var reason, out var reasonCode))
+        if (!CanRunTimedNightBusinessOrderAction(out var reason, out var reasonCode))
         {
             return BuildUnavailableOrderResult(request, reason, reasonCode);
         }
 
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
-        var result = RuntimeOrderPreparationService.CompleteNormalFirst(request);
+        var started = BeginDiagnosticStage();
+        OrderPreparationResult result;
+        try { result = RuntimeOrderPreparationService.CompleteNormalFirst(request); }
+        finally { EndDiagnosticStage("action.normal.complete", started); }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;
         _status = result.Ok
             ? L("已处理当前第一笔普客订单。", "First normal-customer order handled.")
             : L($"处理当前第一笔普客订单未完成：{result.Error}", $"Handling first normal-customer order did not finish: {result.Error}");
-        RefreshNormalBusinessContext(force: true);
+        started = BeginDiagnosticStage();
+        try { RefreshNormalBusinessContext(force: true); }
+        finally { EndDiagnosticStage("action.refresh.normal", started); }
         MarkLocalApiSnapshotDirty(LocalApiSnapshotDirtyDomain.NormalBusiness | LocalApiSnapshotDirtyDomain.Automation, "normal order action completed");
         return result;
     }
@@ -2955,7 +3260,7 @@ internal sealed class StewardOverlayController
             {
                 var pending = _pendingOrderPreparations.Count == 0 ? null : _pendingOrderPreparations.Dequeue();
                 if (pending == null) return 0;
-                if (pending.AutomationEpoch != currentEpoch)
+                if (pending.AutomationEpoch != currentEpoch || pending.Request.IsBusinessInputCurrent?.Invoke() == false)
                 {
                     pending.Cancel(new OperationCanceledException("Automation command was superseded before main-thread execution."));
                     return 1;
@@ -3030,12 +3335,12 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Complete(ApplyRareGuestInvitation(
+                pending.Complete(ApplyAuthorizedRareGuestInvitation(
                     pending.Action,
                     pending.GuestId,
                     pending.Scope,
                     pending.KizunaLevels,
-                    pending.WriteExpectation));
+                    pending.WriteExpectation, pending.Permit));
             }
             catch (Exception ex)
             {
@@ -3049,6 +3354,17 @@ internal sealed class StewardOverlayController
     /// <summary>
     /// 执行稀客邀请列表读取或邀请动作。
     /// </summary>
+    private RareGuestInvitationResult ApplyAuthorizedRareGuestInvitation(
+        RareGuestInvitationAction action, int guestId, string scope, string kizunaLevels,
+        RareGuestInvitationWriteExpectation expectation, LocalApiWritePermit? permit)
+    {
+        if (action == RareGuestInvitationAction.List)
+            return ApplyRareGuestInvitation(action, guestId, scope, kizunaLevels, expectation);
+        if (permit == null) throw new InvalidOperationException("稀客邀请缺少已验证的主设备写入许可。");
+        // 主线程内在同一权威锁下复核并写入；切主不能插入检查与实际邀请之间。
+        return permit.Execute(() => ApplyRareGuestInvitation(action, guestId, scope, kizunaLevels, expectation));
+    }
+
     private RareGuestInvitationResult ApplyRareGuestInvitation(
         RareGuestInvitationAction action,
         int guestId,
@@ -3172,7 +3488,9 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Complete(ApplyInventoryEdit(pending.ItemType, pending.ItemId, pending.Quantity));
+                // 等待主线程期间允许切主；实际写入必须重新核验原请求的设备和修订。
+                pending.Complete(pending.Permit.Execute(() => ApplyInventoryEdit(
+                    pending.ItemType, pending.ItemId, pending.Quantity, pending.ExpectedQuantity)));
             }
             catch (Exception ex)
             {
@@ -3201,7 +3519,7 @@ internal sealed class StewardOverlayController
 
             try
             {
-                pending.Complete(ApplyInventoryBulkEdit(pending.ItemType, pending.ItemIds, pending.Quantity));
+                pending.Complete(pending.Permit.Execute(() => ApplyInventoryBulkEdit(pending.ItemType, pending.ItemIds, pending.Quantity)));
             }
             catch (Exception ex)
             {
@@ -3215,9 +3533,10 @@ internal sealed class StewardOverlayController
     /// <summary>
     /// 在主线程执行库存数量写入，并刷新依赖库存的运行时快照。
     /// </summary>
-    private RuntimeInventoryEditResult ApplyInventoryEdit(string itemType, int itemId, int quantity)
+    private RuntimeInventoryEditResult ApplyInventoryEdit(string itemType, int itemId, int quantity,
+        int? expectedQuantity)
     {
-        var result = RuntimeInventoryEditor.SetQuantity(itemType, itemId, quantity);
+        var result = RuntimeInventoryEditor.SetQuantity(itemType, itemId, quantity, expectedQuantity);
         _status = result.Error == null
             ? L(
                 $"库存已修改：{result.ItemType} #{result.ItemId} {result.PreviousQuantity} -> {result.Quantity}",
@@ -3428,6 +3747,9 @@ internal sealed class StewardOverlayController
             var hash = 17;
             hash = HashIds(hash, state.AvailableRecipeIds);
             hash = HashIds(hash, state.AvailableBeverageIds);
+            // 运行态去重不能吞掉单独的图鉴变化；这两个字段仅发布展示事实，不修改候选集。
+            hash = (hash * 31) + (state.BeverageUnlockReadReady ? 1 : 0);
+            hash = HashIds(hash, state.UnlockedBeverageIds);
             hash = HashIds(hash, state.AvailableIngredientIds);
             foreach (var item in state.OwnedIngredientQty.OrderBy(item => item.Key))
             {
@@ -3498,8 +3820,8 @@ internal sealed class StewardOverlayController
     /// </remarks>
     private static string EnsureLocalApiToken(StewardPluginConfig config)
     {
-        var token = config.LocalApiToken.Value.Trim();
-        if (IsUsableLocalApiToken(token)) return token;
+        var token = config.LocalApiToken.Value;
+        if (LocalApiConnectionPolicy.IsUsableToken(token)) return token;
 
         token = GenerateLocalApiToken();
         config.LocalApiToken.Value = token;
@@ -3509,18 +3831,6 @@ internal sealed class StewardOverlayController
     private static string GenerateLocalApiToken()
     {
         return Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
-    }
-
-    private static bool IsUsableLocalApiToken(string token)
-    {
-        return token.Length >= 32 && token.All(character => !char.IsControl(character) && !char.IsWhiteSpace(character));
-    }
-
-    private static string NormalizeLocalApiLanHost(string value)
-    {
-        var normalized = value.Trim();
-        if (string.IsNullOrWhiteSpace(normalized)) return "auto";
-        return string.Equals(normalized, "auto", StringComparison.OrdinalIgnoreCase) ? "auto" : normalized;
     }
 
     private static void OpenDirectory(string directory)

@@ -1,0 +1,10 @@
+name: flutter_contracts_tests
+description: 纯 Dart 客户端与真实 C# HTTP 宿主的离线契约验收。
+publish_to: none
+environment:
+  sdk: '>=3.13.5 <4.0.0'
+dependencies:
+  companion_client:
+    path: ../../packages/companion_client
+  companion_protocol:
+    path: ../../packages/companion_protocol

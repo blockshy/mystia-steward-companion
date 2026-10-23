@@ -20,6 +20,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 与生产共享唯一评分预设定义，存储校验测试不另抄一份权重表。 -->
+    <ProjectReference Include="../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
     <Reference Include="BepInEx.Core">
       <HintPath>$(ReferenceDir)/BepInEx.Core.dll</HintPath>
       <Private>true</Private>

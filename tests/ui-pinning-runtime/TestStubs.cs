@@ -55,6 +55,11 @@ namespace BepInEx.Logging
 
         public static bool InformationLoggedWhileUnsafe { get; private set; }
 
+        // 仅离线探针使用：在真实服务调用日志接收器时阻塞，模拟同步文件写盘。
+        // 回调在测试日志自己的锁外执行，避免把测试桩锁误当成产品目标发布锁。
+        public static Action<string>? BeforeInformationWrite { get; set; }
+        public static Action<string>? BeforeWarningWrite { get; set; }
+
         public static string[] SnapshotInformationMessages()
         {
             lock (SyncRoot) return InformationMessages.ToArray();
@@ -67,6 +72,7 @@ namespace BepInEx.Logging
 
         public void LogInfo(object value)
         {
+            BeforeInformationWrite?.Invoke(value?.ToString() ?? "");
             var unsafeWrite = InformationLogUnsafeProbe?.Invoke() == true;
             lock (SyncRoot)
             {
@@ -78,6 +84,7 @@ namespace BepInEx.Logging
 
         public void LogWarning(object value)
         {
+            BeforeWarningWrite?.Invoke(value?.ToString() ?? "");
             lock (SyncRoot) WarningCount += 1;
         }
     }
@@ -85,6 +92,37 @@ namespace BepInEx.Logging
 
 namespace MystiaStewardCompanion.Save
 {
+    internal static class SpecialOrderRuntimeCapture
+    {
+        public static long ChangeVersion { get; set; }
+    }
+
+    internal static class NormalOrderRuntimeCapture
+    {
+        public static long ChangeVersion { get; set; }
+    }
+
+    internal readonly record struct RuntimeUiTargetOrderBinding(long Lifecycle);
+
+    /// <summary>
+    /// 中央消费边界的只读来源探针。真实 resolver 的 trace/key/原生双指针校验由
+    /// runtime-order-highlight 专项覆盖；这里注入其成功/失效结果，验证四表面一起撤回。
+    /// </summary>
+    internal static class RuntimeUiTargetOrderResolver
+    {
+        public static Func<RuntimeUiTargetSnapshot, bool>? Validate { get; set; }
+        public static int Calls { get; private set; }
+        public static bool TryResolveCurrentCapture(RuntimeUiTargetSnapshot target, TimeSpan maxAge,
+            out RuntimeUiTargetOrderBinding? binding, out string failure)
+        {
+            Calls++;
+            var valid = Validate?.Invoke(target) ?? true;
+            binding = valid ? new RuntimeUiTargetOrderBinding(target.OrderLifecycleSequence) : null;
+            failure = valid ? "" : "exact order capture no longer exists";
+            return valid;
+        }
+    }
+
     internal static class RuntimeNightBusinessLifecycle
     {
         private static readonly NightBusinessLifecycleTracker Tracker = new();
@@ -168,7 +206,11 @@ namespace MystiaStewardCompanion.Save
 
     internal static class RuntimeCookerHighlightService
     {
-        public static string Status => LastEnabled ? "active" : "disabled";
+        public static Action? BeforeStatusRead { get; set; }
+        public static string Status
+        {
+            get { BeforeStatusRead?.Invoke(); return LastEnabled ? "active" : "disabled"; }
+        }
 
         public static bool LastEnabled { get; private set; }
 

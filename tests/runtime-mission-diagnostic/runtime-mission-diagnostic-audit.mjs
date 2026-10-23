@@ -51,12 +51,6 @@ const models = readSource(
 const overlay = readSource(
   'mods/bepinex/src/Ui/StewardOverlayController.cs',
 );
-const recommendationService = readSource(
-  'apps/companion/src/companion/domain/service-recommendations.ts',
-);
-const primaryExecutionPlan = readSource(
-  'apps/companion/src/companion/domain/primary-execution-plan.ts',
-);
 
 for (const required of [
   '"allNPCs"',
@@ -903,27 +897,7 @@ assert.ok(
     && overlay.includes('AppendValue(builder, missionPriority.BusinessGeneration);'),
   'The verified priority must enter the signed night-business snapshot.',
 );
-assert.ok(
-  recommendationService.includes(
-    'const sortContext = buildMissionRecipeSortContext(',
-  )
-    && recommendationService.includes(
-      'serializeMissionRecipePriority(order.missionRecipePriority)',
-    )
-    && recommendationService.includes(
-      'const executionPlans = normalizePrimaryExecutionPlans(',
-    )
-    && recommendationService.includes(
-      'const primaryRows = projectPrimaryExecutionPlanRows(',
-    )
-    && primaryExecutionPlan.includes(
-      'const missionIndex = normalizedPlans.findIndex(',
-    )
-    && primaryExecutionPlan.includes(
-      'return movePlanToFront(normalizedPlans, missionIndex);',
-    ),
-  'Mission recipe priority must flow through the shared primary plan used downstream.',
-);
+// 推荐优先级已迁入 C#，其行为由 csharp-recommendations/business-orders 完整 JSON 差分覆盖。
 
 console.log(
   'PASS: runtime mission diagnostics use one passive load seed, two bounded controlled '

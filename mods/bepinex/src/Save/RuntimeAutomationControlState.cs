@@ -70,7 +70,18 @@ internal static class RuntimeAutomationControlState
     private static long _leaseAuthorityRevision;
     private static DateTime _leaseExpiresAtUtc;
     private static string _leaseBlockReasonCode = "automation-authority-unavailable";
-    private static string _leaseBlockMessage = "自动化主设备控制权尚未就绪。";
+    private static string _leaseBlockMessage = "主设备连接与自动化配置尚未就绪。";
+    private static Func<bool>? _resourceReady;
+
+    /// <summary>
+    /// 持续料理的送达/评价同样受图片初始化门禁约束。只持有纯托管只读函数，不保存 Unity 对象；
+    /// 调用方必须保证函数不反向取得本类锁，资源服务也不得在自身锁内发布状态事件。
+    /// null 仅供没有资源服务的隔离宿主沿用既有行为，生产始终传入真实服务。
+    /// </summary>
+    internal static void ConfigureResourceReadiness(Func<bool>? resourceReady)
+    {
+        lock (SyncRoot) _resourceReady = resourceReady;
+    }
 
     public static void PublishAuthority(
         JsonElement activeProfile,
@@ -188,12 +199,16 @@ internal static class RuntimeAutomationControlState
         bool forceStageConfiguration,
         DateTime nowUtc)
     {
+        if (_resourceReady?.Invoke() == false)
+            return SuspendAuthority("game-media-not-ready",
+                "游戏图片正在初始化或重新读取；已开始的料理保留在原厨具，等待图片、主设备连接与配置就绪。",
+                deliveryConfigured: false, completionConfigured: false);
         var profile = _profile;
         if (profile == null || _authorityRevision <= 0)
         {
             return SuspendAuthority(
                 "automation-profile-unavailable",
-                "尚未取得主设备的生效自动化配置；已开始的料理会保留在原厨具，等待权威配置就绪。",
+                "尚未取得主设备的自动化配置；已开始的料理会保留在原厨具，等待配置同步完成。",
                 deliveryConfigured: false,
                 completionConfigured: false);
         }
@@ -218,7 +233,7 @@ internal static class RuntimeAutomationControlState
                     ? "automation-authority-unavailable"
                     : _leaseBlockReasonCode,
                 string.IsNullOrWhiteSpace(_leaseBlockMessage)
-                    ? "自动化主设备控制权正在切换；已开始的料理会保留在原厨具，取得新控制权后继续。"
+                    ? "正在同步自动化主设备；已开始的料理会保留在原厨具，恢复同步后继续。"
                     : _leaseBlockMessage,
                 deliveryConfigured,
                 completionConfigured);
@@ -228,7 +243,7 @@ internal static class RuntimeAutomationControlState
         {
             return SuspendAuthority(
                 "automation-lease-expired",
-                "主设备自动化租约已过期；已开始的料理会保留在原厨具，续约成功后继续。",
+                "主设备的自动化状态未及时更新，已暂停；已开始的料理会保留在原厨具，恢复同步后继续。",
                 deliveryConfigured,
                 completionConfigured);
         }

@@ -3,10 +3,25 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertFlutterVersion, validateFlutterLock } from '../../scripts/flutter-toolchain.mjs';
+import { validateWindowsIdentity, validateWindowsLock } from '../../scripts/flutter-windows-toolchain.mjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const toolchain = JSON.parse(await readFile(path.join(repoRoot, 'toolchain.lock.json'), 'utf8'));
 const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'));
+// 模拟 SDK 的机器身份报告，逐字段验证漂移均失败；不运行/下载外部 SDK。
+validateFlutterLock(toolchain.flutter); validateWindowsLock(toolchain.flutterWindows);
+const flutterIdentity = {frameworkVersion:toolchain.flutter.version,channel:'stable',frameworkRevision:toolchain.flutter.frameworkRevision,
+  engineRevision:toolchain.flutter.engineRevision,dartSdkVersion:toolchain.flutter.dartVersion};
+assertFlutterVersion(flutterIdentity,toolchain.flutter);
+for(const field of Object.keys(flutterIdentity)) assert.throws(()=>assertFlutterVersion({...flutterIdentity,[field]:'wrong'},toolchain.flutter));
+for(const profile of toolchain.flutterWindows.profiles) {
+  const identity={visualStudioVersion:profile.visualStudio,generator:profile.generator,platform:'x64',msvcToolsVersion:profile.msvcTools.minInclusive,
+    compilerVersion:profile.compiler.minInclusive,cmakeVersion:profile.cmake.minInclusive,windowsSdkVersion:profile.windowsSdk,vcRuntimeVersion:profile.vcRuntime};
+  validateWindowsIdentity(identity,toolchain.flutterWindows);
+  for(const field of ['msvcToolsVersion','compilerVersion','cmakeVersion','windowsSdkVersion','vcRuntimeVersion'])
+    assert.throws(()=>validateWindowsIdentity({...identity,[field]:'999.0.0'},toolchain.flutterWindows));
+}
 const [
   gitAttributes,
   androidGradle,
@@ -23,9 +38,9 @@ const [
   preflightBash,
 ] = await Promise.all([
   readFile(path.join(repoRoot, '.gitattributes'), 'utf8'),
-  readFile(path.join(repoRoot, 'apps/companion/src-tauri/gen/android/app/build.gradle.kts'), 'utf8'),
+  readFile(path.join(repoRoot, 'apps/companion-flutter/android/app/build.gradle.kts'), 'utf8'),
   readFile(
-    path.join(repoRoot, 'apps/companion/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties'),
+    path.join(repoRoot, 'apps/companion-flutter/android/gradle/wrapper/gradle-wrapper.properties'),
     'utf8',
   ),
   readFile(path.join(repoRoot, 'scripts/check-build-toolchain.mjs'), 'utf8'),
@@ -42,7 +57,7 @@ const [
 
 assert.match(
   gitAttributes,
-  /^apps\/companion\/src-tauri\/Cargo\.toml text eol=lf$/mu,
+  /^native\/updater\/Cargo\.toml text eol=lf$/mu,
   'Tauri Cargo.toml must remain LF on Windows because the Tauri CLI rewrites the manifest.',
 );
 
@@ -75,7 +90,7 @@ assert.match(globalPackageManagerCheck.stderr, /must be invoked through Corepack
 
 assert.equal(packageJson.scripts['toolchain:check'], 'node scripts/check-build-toolchain.mjs full');
 assert.equal(packageJson.scripts['test:dotnet6-harmony'], 'node scripts/run-dotnet6-harmony-smoke.mjs all');
-assert.equal(toolchain.schemaVersion, 3);
+assert.equal(toolchain.schemaVersion, 6);
 assert.equal(
   toolchain.corepackIntegrity,
   'sha512-9BuIGHDFE7Zieor1CeRsvt7X7AJFEuJ6OnbSbsVprq83ChDFoBh1wP98NeUS9FT3ZwlzFllPElXcz/OiDf0YGw==',
@@ -111,7 +126,8 @@ assert.deepEqual(toolchain.releaseToolArchives, {
 assert.deepEqual(toolchain.android, {
   jdkDistribution: 'temurin',
   jdkVendor: 'Eclipse Adoptium',
-  jdkVersion: '21.0.4',
+  jdkVersion: '21.0.12.1',
+  jdkReleaseSemver: '21.0.12.1+1',
   compileSdk: 36,
   targetSdk: 36,
   gradle: '8.14.3',
@@ -119,7 +135,6 @@ assert.deepEqual(toolchain.android, {
   buildTools: '35.0.0',
   ndkPackage: '30.0.14904198',
   ndkRevision: '30.0.14904198-beta1',
-  rustTargets: ['aarch64-linux-android', 'armv7-linux-androideabi'],
   signingCertificateSha256: '1540b609d5cd54e06a8429bb0aaa2cc4b511e055565fdac93acf206c1791d1fb',
 });
 assert.match(
@@ -255,38 +270,12 @@ const corepackExistingRootCheck = spawnSync(
 );
 assert.notEqual(corepackExistingRootCheck.status, 0, 'Corepack installer accepted an existing root.');
 assert.match(corepackExistingRootCheck.stderr, /install root already exists/u);
-assert.match(
-  packageJson.scripts.build,
-  /^node scripts\/check-build-toolchain\.mjs frontend --require-corepack-invocation && /u,
-);
-assert.match(
-  packageJson.scripts.lint,
-  /^node scripts\/check-build-toolchain\.mjs frontend --require-corepack-invocation && /u,
-);
-
-for (const scriptName of [
-  'tauri:dev',
-  'tauri:build',
-]) {
-  assert.match(
-    packageJson.scripts[scriptName],
-    /^node scripts\/check-build-toolchain\.mjs tauri --require-corepack-invocation && /u,
-  );
-}
-
-for (const scriptName of ['tauri:android:dev', 'tauri:android:build', 'tauri:android:apk']) {
-  assert.match(
-    packageJson.scripts[scriptName],
-    /^node scripts\/check-build-toolchain\.mjs android --require-corepack-invocation && /u,
-  );
-}
-
-assert.match(buildRelease, /Join-Path \$RepoRoot "scripts\/check-build-toolchain\.mjs"/u);
-assert.match(buildRelease, /-Title "Validate locked build toolchain"/u);
-assert.match(buildRelease, /-Arguments @\(\$ToolchainCheckScript, "full"\)/u);
-assert.doesNotMatch(buildRelease, /Get-Command "pnpm"/u);
-assert.match(buildRelease, /Get-Command "corepack"/u);
-
+assert.match(packageJson.scripts.build, /flutter-workspace\.mjs --task build-windows/u);
+assert.match(packageJson.scripts.lint, /flutter-workspace\.mjs --task analyze/u);
+assert.ok(Object.keys(packageJson.scripts).every(name=>!name.startsWith('tauri:')));
+assert.match(buildRelease, /scripts\/check-build-toolchain\.mjs/u);
+assert.match(buildRelease, /preflight\.ps1/u);
+assert.match(buildRelease, /flutter-workspace\.mjs/u);
 assert.match(ciWorkflow, /node-version-file: \.nvmrc/u);
 assert.match(
   ciWorkflow,

@@ -3,12 +3,18 @@ using System.Text.RegularExpressions;
 var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
 {
     "/automation/lease",
+    "/business/status",
     "/custom-recipes",
     "/devices",
     "/favorites",
+    // 图片状态、清单与单张 PNG 都是已认证只读资源；重新提取只能使用下方 POST。
+    "/game-media/image",
+    "/game-media/manifest",
+    "/game-media/status",
     "/health",
     "/local-api/config",
     "/logs/settings",
+    "/logs/packages",
     "/missions/available",
     "/missions/tracked",
     "/rare-guests/invitations",
@@ -20,6 +26,9 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/automation/lease/acquire",
     "/automation/lease/release",
     "/automation/barriers/ack",
+    "/business/page-session/open",
+    "/business/page-session/update",
+    "/business/automation/retry",
     "/custom-recipes/move",
     "/custom-recipes/remove",
     "/custom-recipes/settings",
@@ -37,21 +46,18 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/favorites/add-recipe",
     "/favorites/remove-beverage",
     "/favorites/remove-recipe",
+    "/game-media/reload",
     "/inventory/bulk-set",
     "/inventory/set",
     "/local-api/config",
-    "/local-api/token/regenerate",
     "/logs/config",
     "/logs/console",
     "/logs/export-diagnostics",
+    "/logs/packages/delete",
     "/logs/open-folder",
-    "/orders/complete-first",
-    "/orders/normal/complete-first",
-    "/orders/prepare-next",
     "/orders/rare/dismiss",
     "/rare-guests/invite",
     "/rare-guests/invite-all",
-    "/ui-pinning/targets",
     "/updates/check",
     "/updates/download",
     "/updates/install-on-exit",
@@ -61,8 +67,13 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
 try
 {
     var sourcePath = FindServerSource();
-    var source = File.ReadAllText(sourcePath);
+    // UI 目标解析器已等价拆到同一类型的 partial 文件；审计必须覆盖真实实现的两部分，
+    // 不能因物理文件拆分遗漏严格颜色、布尔和整数校验，也不调整既有协议断言。
+    var source = File.ReadAllText(sourcePath) + Environment.NewLine
+        + File.ReadAllText(Path.Combine(Path.GetDirectoryName(sourcePath)!, "LocalApiServer.UiTargetParsing.cs"));
     AssertAbsent(source, "NormalizeApiPath", "Legacy API path normalization still exists.");
+    AssertAbsent(source, "case \"/local-api/token/regenerate\":", "The replaced random-password route still exists.");
+    AssertAbsent(source, "case \"/business/query\":", "The unbounded page query route still exists.");
     AssertAbsent(source, "case \"/\":", "The root path still aliases another endpoint.");
     AssertAbsent(source, "StartsWith(\"/api/\"", "The /api/* path alias still exists.");
     AssertAbsent(source, "case \"/automation/cancel\":", "The destructive automation-cancellation route still exists.");
@@ -159,11 +170,11 @@ try
         "Runtime writers no longer validate the current device authority revision.");
     AssertContains(
         source,
-        "AcknowledgeAutomationSafetyBarrier(request, query)",
+        "AcknowledgeAutomationSafetyBarrier(request, requestData)",
         "Automation safety barriers do not expose an explicit lease-owned acknowledgement endpoint.");
     AssertContains(
         source,
-        "return _ackAutomationSafetyBarrier(sequence);",
+        "var result = _ackAutomationSafetyBarrier(sequence);",
         "Safety barrier acknowledgement does not reach the authoritative Mod registry.");
     AssertContains(source, "AutomationEpoch = automationEpoch", "Order commands are not stamped with the validated automation epoch.");
     AssertContains(
@@ -209,6 +220,12 @@ try
     AssertNoDuplicates("GET", getRoutes);
     AssertNoDuplicates("POST", postRoutes);
 
+    // 新客户端仅消费 C# 宿主生成的动作；已删除的旧客户端入口不保留任何兼容路由。
+    foreach (var legacyRoute in new[] { "/orders/prepare-next", "/orders/complete-first", "/orders/normal/complete-first", "/ui-pinning/targets" })
+    {
+        AssertAbsent(source, $"case \"{legacyRoute}\":", "已删除的旧客户端业务入口仍可到达。");
+    }
+
     var automationReleaseRouteStart = RequireIndex(source, "case \"/automation/lease/release\":", postSwitchStart);
     var automationBarrierRouteStart = RequireIndex(source, "case \"/automation/barriers/ack\":", automationReleaseRouteStart);
     var automationReleaseRoute = source[automationReleaseRouteStart..automationBarrierRouteStart];
@@ -223,7 +240,7 @@ try
 
     var inviteAllRouteStart = RequireIndex(source, "case \"/rare-guests/invite-all\":", postSwitchStart);
     var inviteRouteStart = RequireIndex(source, "case \"/rare-guests/invite\":", inviteAllRouteStart);
-    var nextPostRouteStart = RequireIndex(source, "case \"/ui-pinning/targets\":", inviteRouteStart);
+    var nextPostRouteStart = RequireIndex(source, "case \"/favorites/add-recipe\":", inviteRouteStart);
     AssertContains(
         source[inviteAllRouteStart..inviteRouteStart],
         "ReadRareGuestInvitationWriteExpectation(query)",

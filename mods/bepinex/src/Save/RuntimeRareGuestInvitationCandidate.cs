@@ -13,7 +13,11 @@ internal sealed record RuntimeRareGuestInvitationCandidate(
     bool RuntimeAvailable,
     string AvailabilityReason,
     bool KizunaStateKnown,
-    int KizunaLevel);
+    int KizunaLevel)
+{
+    // 位置读取与邀请资格独立；false 本身不能表示“其它地图”。
+    public string LocationStatus { get; init; } = "unavailable";
+}
 
 internal static class RuntimeRareGuestInvitationCandidates
 {
@@ -61,6 +65,12 @@ internal static class RuntimeRareGuestInvitationCandidates
                 .OrderBy(value => value, StringComparer.Ordinal)
                 .ToList(),
             IsCurrentScene = items.Any(candidate => candidate.IsCurrentScene),
+            // 任一精确别名在当前地图即可确认；全部别名均成功查无才可声明未登记。
+            // 部分别名读取失败时保留未知，不能让另一条否定记录掩盖失败。
+            LocationStatus = items.Any(candidate => candidate.LocationStatus == "current-map")
+                ? "current-map"
+                : items.All(candidate => candidate.LocationStatus == "not-in-current-map")
+                    ? "not-in-current-map" : "unavailable",
             AvailabilityKnown = knownCandidates.Count > 0,
             RuntimeAvailable = runtimeAvailable,
             AvailabilityReason = runtimeAvailable ? "" : best.AvailabilityReason,

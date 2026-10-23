@@ -1,6 +1,6 @@
 # Addressables 标签映射提取手册
 
-更新日期：2026-08-19
+整理日期：2026-10-23；下述资源规则与示例保留既有分析结论，本次文档整理未重新提取游戏资源。
 
 本文只说明从游戏 Addressables 恢复料理、酒水和规则 Tag 映射的操作步骤。Tag 的业务语义见
 [料理机制知识库](tmi-cooking-mechanics-knowledge-base.md)，运行时读取和发布见
@@ -24,10 +24,12 @@
 2. 游戏本体 IL2CPP 元数据与字符串
 3. 历史资料与社区资料（仅作语义交叉验证）
 
-当前仓库已确认：
+现有分析输入已确认：
 
 - `catalog.bundle` 可直接读取，其中包含 Addressables catalog 的 JSON TextAsset。
 - 实际内容 bundle 经过固定 `0x53` 异或处理，解码后可还原为标准 UnityFS 包。
+
+这两项是已分析游戏输入的事实，不是对未来版本的格式保证。游戏或 DLC 更新后应记录新 catalog 与内容 bundle 的摘要，重新验证格式，再使用下述流程；禁止仅因文件名相似沿用旧映射。生产客户端的图片初始化使用[运行时图片服务](game-media.md)，不在发布时执行本手册并把提取资源打包进客户端。
 
 ## 3. 操作流程
 
@@ -100,7 +102,7 @@
 
 ## 4. 已核实结论（料理标签）
 
-当前仓库已验证以下关键事实：
+以下文件名来自既有分析快照，仅作定位示例；内容哈希型 bundle 名在更新后可能变化，当前版本必须按第 3 节从 catalog 精确反查：
 
 - `FoodTagProfile.asset` 位于核心 bundle `core_07e01badce0c3466a71d003dd46efa15.bundle`
 - 中文 `FoodTagsLang.txt` 位于核心 bundle `core_d588e1cad1b8b9b47f46af2be495e6c3.bundle`

@@ -1,0 +1,4 @@
+# 上级忽略 .NET bin 输出；本目录的 bin 是 Dart 可执行测试源码，必须随仓库交付。
+!/bin/
+!/bin/*.dart
+.dart_tool/

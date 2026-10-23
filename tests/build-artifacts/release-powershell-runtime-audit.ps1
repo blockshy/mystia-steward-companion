@@ -118,8 +118,8 @@ function Get-TestReleaseAssetContentType {
         "mystia-steward-companion-bepinex.zip" {
             return "application/zip"
         }
-        "mystia-steward-companion-companion-windows-x64.exe" {
-            return "application/x-msdownload"
+        "mystia-steward-companion-companion-windows-x64.zip" {
+            return "application/zip"
         }
         "mystia-steward-companion-android-arm64-v8a.apk" {
             return "application/vnd.android.package-archive"
@@ -623,8 +623,8 @@ function Get-OracleContentType {
         "mystia-steward-companion-bepinex.zip" {
             return "application/zip"
         }
-        "mystia-steward-companion-companion-windows-x64.exe" {
-            return "application/x-msdownload"
+        "mystia-steward-companion-companion-windows-x64.zip" {
+            return "application/zip"
         }
         "mystia-steward-companion-android-arm64-v8a.apk" {
             return "application/vnd.android.package-archive"

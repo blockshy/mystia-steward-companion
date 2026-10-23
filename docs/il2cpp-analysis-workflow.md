@@ -1,15 +1,13 @@
 # IL2CPP 源码与 IDA 分析工作流
 
-更新日期：2026-08-19
+更新日期：2026-10-23
 
 本文只负责分析资料生成、证据层级、锁定分析工具和已确认的失效路径；产品构建与测试命令见
 [本地开发与构建](local-development.md)和[验证指南](validation-guide.md)。
 
 ## 目标与边界
 
-当前 Steam 安装的《东方夜雀食堂》虽然运行在 Linux 主机上，主程序仍是 Windows x64 PE：
-`Touhou Mystia Izakaya.exe`、`GameAssembly.dll` 和 `UnityPlayer.dll`。因此 Linux 版 BepInEx
-不能加载该游戏；运行 Mod 时应使用 Windows x64 IL2CPP 包并通过 Proton 启动。
+本项目分析的《东方夜雀食堂》主程序为 Windows x64 PE：`Touhou Mystia Izakaya.exe`、`GameAssembly.dll` 和 `UnityPlayer.dll`。生产 Mod 使用 Windows x64 IL2CPP BepInEx 包；在 Windows 原生运行，在历史 Linux 测试环境中经 Proton 运行。不能因为分析工具运行于 Linux，就改用 Linux 版 BepInEx 加载这些 Windows 二进制。
 
 源码分析不需要启动游戏。仓库工具直接只读当前主游戏的 `GameAssembly.dll`、
 `global-metadata.dat`、`globalgamemanagers` 和 `ScriptingAssemblies.json`，在外部分析目录生成：
@@ -21,11 +19,14 @@
 5. 输入哈希、工具链版本、完整性计数和新旧对比报告。
 
 生成过程不写 Steam 游戏目录，不启动 Unity，不读取或修改存档，也不依赖游戏目录中安装的 BepInEx。
+若存在对应的 `appmanifest_1584090.acf`，脚本还只读复制该 Steam 安装清单用于版本溯源；它不作为游戏运行时业务数据来源。
 
-## 当前目录布局
+## 分析资料目录
+
+仓库工作区通过 `external/analysis/new/` 读取当前分析资料，通过 `external/analysis/backup/` 核对历史资料；这些大体积本机资料不进入产品构建或公开 Git 载荷。Windows 本机映射与可用工具以本地开发交接为准，不能只因目录存在就声明完整分析流水线已经通过。历史生成源目录为 `/huyu/data/disk/mystia-steward-companion/`，其 manifest 中的原始绝对路径保留用于溯源，不全局改写成当前工作区路径。
 
 ```text
-/huyu/data/disk/mystia-steward-companion/
+external/analysis/
   backup/
     legacy-analysis-20260608/       # 原 Windows 分析，原样保留
     rejected-generated/             # 可恢复的无效/中止生成产物
@@ -80,22 +81,22 @@
 
 ## 完整生成
 
-完整分析使用根目录 `toolchain.lock.json` / `global.json` 精确锁定的 .NET SDK `10.0.110` 和 Python
-3.10+；Mod 发布 DLL 仍目标
-`net6.0`，两者不得混为同一个工程。先确认 IDA 已由当前用户完成首次许可确认，且 `idapyswitch`
-已配置可用 Python 3。目标目录必须为空：
+完整分析入口 `generate-analysis.sh` 当前锁定 Linux Cpp2IL 资产和 Linux IDA `idat`，不是原生 Windows PowerShell 入口。它使用根目录 `toolchain.lock.json` / `global.json` 精确锁定的 .NET SDK `10.0.110` 和 Python 3.10+；Mod 发布 DLL 仍目标 `net6.0`，两者不得混为同一个工程。Windows 下可只读现有 metadata、interop 和 IDA 导出；若需完整重新生成，应使用符合该脚本锁定条件的 Linux 分析环境，或先单独审查新的 Windows 分析入口，不能宣称 Windows Flutter/Mod 构建已经覆盖此流程。
+
+先确认 IDA 已由当前用户完成首次许可确认，且 `idapyswitch` 已配置可用 Python 3。在仓库根目录运行，将下列游戏输入与 IDA 目录替换为该分析环境中的真实绝对路径；输出目录必须为空：
 
 ```bash
 mods/bepinex/tools/il2cpp-analysis/generate-analysis.sh \
-  '/home/blockshy/.local/share/Steam/steamapps/common/Touhou Mystia Izakaya' \
-  '/huyu/data/disk/mystia-steward-companion/new-next'
+  '/absolute/path/to/Touhou Mystia Izakaya' \
+  './external/analysis/new-next' \
+  '/absolute/path/to/locked-ida'
 ```
 
 脚本不会自动删除或覆盖既有分析。生成完成后先检查：
 
 ```bash
-python3 -m json.tool /huyu/data/disk/mystia-steward-companion/new-next/analysis-manifest.json >/dev/null
-sed -n '1,240p' /huyu/data/disk/mystia-steward-companion/new-next/comparison-report.md
+python3 -m json.tool external/analysis/new-next/analysis-manifest.json >/dev/null
+sed -n '1,240p' external/analysis/new-next/comparison-report.md
 ```
 
 只有输入哈希、关键 RVA、interop 形态、函数体覆盖率和日志都通过后，才把当前 `new/` 移入一个明确的
@@ -153,6 +154,6 @@ ILSpy 10.1.1 对少数 Il2CppInterop 复杂泛型程序集无法生成项目 C#�
 
 ## Steam 游戏目录约束
 
-分析脚本只读本页列出的四个游戏输入，不安装、修复或清理 Steam 目录中的 BepInEx。Linux 主机通过
+分析流程以本页列出的游戏二进制、元数据与安装清单为只读输入，不安装、修复或清理 Steam 目录中的 BepInEx。Linux 主机通过
 Proton 实际运行 Mod 时使用锁定的 Windows x64 #783 包，并按
 `WINEDLLOVERRIDES="winhttp=n,b" %command%` 加载；加载器维护与离线分析保持为两个独立流程。

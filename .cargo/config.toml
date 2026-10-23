@@ -1,0 +1,5 @@
+# updater 会被 Mod 单独复制到临时 runner 目录，不能依赖系统或伴随目录的 VC DLL。
+# 放在仓库根以覆盖从根目录使用 --manifest-path 的正式构建；打包仍检查实际 PE 导入，
+# 防止调用环境通过 RUSTFLAGS 覆盖此设置后生成缺少运行库的更新器。
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

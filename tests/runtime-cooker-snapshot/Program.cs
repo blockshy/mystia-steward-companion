@@ -19,6 +19,8 @@ try
     VerifyExactReservationIdentity();
     VerifyCookerContentSignature();
     VerifyLockedCookerSourceContracts();
+    VerifyInventoryReadSourceProjection();
+    VerifyBeverageUnlockSourceProjection();
 
     Console.WriteLine("PASS: runtime cooker snapshots retain exact identities and fail closed on uncertain lock state.");
     return 0;
@@ -27,6 +29,65 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+/// <summary>
+/// 完整业务候选可以包含人为99，但只有调用方明确证明实读来源时才能成为库存事实。
+/// 此字段仅决定客户端库存展示/选择，不改原推荐兜底内容或厨具快照。
+/// </summary>
+static void VerifyInventoryReadSourceProjection()
+{
+    var repository = new DataRepository();
+    repository.Beverages.Add(new Beverage { Id = 0, Name = "合成酒水" });
+    var fallback = RecommendationState.AllAvailable(repository);
+    var candidate = RecommendationStateSnapshot.From(fallback);
+    AssertEqual(99, candidate.OwnedBeverageQty[0], "业务兜底样本必须真实包含99。");
+    AssertEqual(false, candidate.InventoryReadReady, "候选兜底不能自动变为库存实读来源。");
+    var confirmed = RecommendationStateSnapshot.From(fallback, inventoryReadReady: true);
+    AssertEqual(true, confirmed.InventoryReadReady, "明确实读事实必须传入DTO。");
+    confirmed.OwnedBeverageQty[0] = 5;
+    AssertEqual(99, fallback.OwnedBeverageQty[0], "DTO投影不能污染原状态。");
+}
+
+/// <summary>
+/// 酒水图鉴必须同时具备实际运行态来源与完整收录读取，不能借候选的合成99或上次缓存
+/// 冒充解锁。DTO 返回副本，库存候选仍严格保持旧语义；已收录且库存为零是有效场景。
+/// </summary>
+static void VerifyBeverageUnlockSourceProjection()
+{
+    var repository = new DataRepository();
+    repository.Beverages.Add(new Beverage { Id = 7, Name = "合成酒水" });
+    var fallback = RecommendationState.AllAvailable(repository);
+    var synthetic = RecommendationStateSnapshot.From(fallback);
+    AssertEqual(false, synthetic.BeverageUnlockReadReady, "合成99不能证明图鉴解锁。");
+    AssertEqual(0, synthetic.UnlockedBeverageIds.Count, "合成候选不能进入解锁集合。");
+
+    var state = new RecommendationState { BeverageUnlockReadReady = true };
+    state.UnlockedBeverageIds.UnionWith(new[] { 7, 0 });
+    state.OwnedBeverageQty[7] = 0;
+    var confirmed = RecommendationStateSnapshot.From(state, inventoryReadReady: true);
+    AssertEqual(true, confirmed.BeverageUnlockReadReady, "实读完整图鉴应发布就绪。");
+    AssertEqual("0,7", string.Join(",", confirmed.UnlockedBeverageIds), "精确ID与零ID必须稳定发布。");
+    AssertEqual(0, confirmed.OwnedBeverageQty[7], "图鉴不得篡改零库存。");
+    AssertEqual(0, confirmed.AvailableBeverageIds.Count, "新增图鉴不能将零库存变成自动化候选。");
+    confirmed.UnlockedBeverageIds.Add(99);
+    AssertEqual(false, state.UnlockedBeverageIds.Contains(99), "DTO不能反向污染运行态图鉴。");
+    state.UnlockedBeverageIds.Add(88);
+    AssertEqual(false, confirmed.UnlockedBeverageIds.Contains(88), "已发布DTO不能跟随运行态集合改变。");
+
+    var stale = RecommendationStateSnapshot.From(state, inventoryReadReady: false);
+    AssertEqual(false, stale.BeverageUnlockReadReady, "旧状态/读取失败不应发布就绪。");
+    AssertEqual(0, stale.UnlockedBeverageIds.Count, "来源失效必须撤销完整收录事实。");
+    state.BeverageUnlockReadReady = false;
+    var unreadable = RecommendationStateSnapshot.From(state, inventoryReadReady: true);
+    AssertEqual(false, unreadable.BeverageUnlockReadReady, "库存成功不等于图鉴成功。");
+    AssertEqual(0, unreadable.UnlockedBeverageIds.Count, "不完整图鉴不得泄漏残留ID。");
+    AssertEqual(0, unreadable.OwnedBeverageQty[7], "图鉴失败不得清空成功的库存快照。");
+
+    var empty = RecommendationStateSnapshot.From(
+        new RecommendationState { BeverageUnlockReadReady = true }, inventoryReadReady: true);
+    AssertEqual(true, empty.BeverageUnlockReadReady, "已初始化且确认为空的图鉴应与未知区分。");
+    AssertEqual(0, empty.UnlockedBeverageIds.Count, "真正空图鉴保持空。");
 }
 
 static void VerifyControllerFailureFailsClosed()

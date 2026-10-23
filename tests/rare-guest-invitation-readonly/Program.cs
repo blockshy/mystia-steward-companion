@@ -4,6 +4,8 @@ try
 {
     AssertRareGuestInvitationIdentityProjection();
     AssertMappedAliasesShareOneCanonicalCandidate();
+    AssertOptionalCurrentMapLocationReads();
+    AssertLocationDoesNotChangeAllScopeEligibility();
     AssertBepInEx783KeyedLookupMetadata();
     AssertExactDictionaryLookup();
     AssertSchedulerCharacterIdentityField();
@@ -107,6 +109,113 @@ static void AssertMappedAliasesShareOneCanonicalCandidate()
         mappedOnlyForward[0].RuntimeId,
         mappedOnlyReverse[0].RuntimeId,
         "Mapped alias deduplication depends on catalog enumeration order.");
+}
+
+/// <summary>
+/// 直接执行生产只读位置 helper：全部范围允许展示读取失败，当前范围必须保留
+/// 原有失败关闭行为。只检查精确地图及 runtimeStringId，不提供全表枚举接口。
+/// </summary>
+static void AssertOptionalCurrentMapLocationReads()
+{
+    var map = new object();
+    var npc = new object();
+    var mapReads = 0;
+    var entryReads = 0;
+    var snapshot = RuntimeRareGuestInvitationLocationSnapshot.Capture(() =>
+    {
+        mapReads++;
+        return (true, map);
+    }, required: false);
+    var hit = snapshot.Locate("DLC1_Marisa", (actualMap, key) =>
+    {
+        entryReads++;
+        AssertSame(map, actualMap, "Location lookup used a different map object.");
+        AssertEqual("DLC1_Marisa", key, "Location lookup changed the verified runtime key.");
+        return (true, npc);
+    }, required: false);
+    AssertEqual(1, mapReads, "Current map was not captured exactly once.");
+    AssertEqual(1, entryReads, "Runtime key was not read exactly once.");
+    AssertEqual("current-map", hit.Status, "An exact current map hit was not identified.");
+    AssertSame(npc, hit.TrackedNpc, "Current scope lost the exact tracked NPC object.");
+    AssertEqual("not-in-current-map",
+        snapshot.Locate("Missing", (_, _) => (false, null), required: false).Status,
+        "A successful miss was not distinguished from a read failure.");
+    var missingMap = RuntimeRareGuestInvitationLocationSnapshot.Capture(
+        () => (false, null), required: false);
+    AssertEqual("not-in-current-map", missingMap.Locate("Missing", (_, _) =>
+        throw new InvalidOperationException("A missing map must not trigger an entry read."),
+        required: false).Status, "A missing current map was fabricated as another location.");
+
+    foreach (var required in new[] { false, true })
+    {
+        if (required)
+        {
+            AssertThrows<InvalidOperationException>(() =>
+                RuntimeRareGuestInvitationLocationSnapshot.Capture(
+                    () => throw new InvalidOperationException("map"), required: true),
+                "Current scope swallowed a map read failure.");
+            AssertThrows<InvalidOperationException>(() =>
+                RuntimeRareGuestInvitationLocationSnapshot.Capture(() => (true, null), required: true),
+                "Current scope accepted a null map value.");
+            AssertThrows<InvalidOperationException>(() => snapshot.Locate("Exact", (_, _) =>
+                throw new InvalidOperationException("entry"), required: true),
+                "Current scope swallowed a tracked NPC read failure.");
+            AssertThrows<InvalidOperationException>(() => snapshot.Locate("Exact", (_, _) =>
+                (true, null), required: true), "Current scope accepted a null tracked NPC.");
+        }
+        else
+        {
+            var failed = RuntimeRareGuestInvitationLocationSnapshot.Capture(
+                () => throw new InvalidOperationException("map"), required: false);
+            AssertEqual("unavailable", failed.Locate("Exact", (_, _) =>
+                throw new InvalidOperationException("Must not read after failed capture."),
+                required: false).Status, "All scope failed to isolate a map read failure.");
+            AssertFalse(RuntimeRareGuestInvitationLocationSnapshot.Capture(
+                () => (true, null), required: false).IsKnown,
+                "All scope treated a null map as a confirmed negative.");
+            AssertEqual("unavailable", snapshot.Locate("Exact", (_, _) =>
+                throw new InvalidOperationException("entry"), required: false).Status,
+                "All scope failed to isolate a tracked NPC read failure.");
+            AssertEqual("unavailable", snapshot.Locate("Exact", (_, _) =>
+                (true, null), required: false).Status,
+                "All scope treated a null tracked NPC as a confirmed negative.");
+        }
+    }
+}
+
+/// <summary>
+/// 同一原生角色的多个 runtime 别名只改变展示来源。all 读取位置前后的原生 ID、
+/// 对象引用、羁绊和资格字段必须完全相同；混合未知记录不产生假的其它地图结论。
+/// </summary>
+static void AssertLocationDoesNotChangeAllScopeEligibility()
+{
+    var guest = new object();
+    var first = CreateCandidate(guest, 10, 10, "Marisa", "", false, false, true);
+    var second = CreateCandidate(guest, 10, 1100, "DLC1_Marisa", "", false, false, true);
+    var before = RuntimeRareGuestInvitationCandidates.Deduplicate(new[] { first, second }).Single();
+    foreach (var statuses in new[]
+    {
+        ("current-map", "unavailable", "current-map"),
+        ("not-in-current-map", "not-in-current-map", "not-in-current-map"),
+        ("not-in-current-map", "unavailable", "unavailable"),
+        ("unavailable", "unavailable", "unavailable"),
+    })
+    {
+        var merged = RuntimeRareGuestInvitationCandidates.Deduplicate(new[]
+        {
+            first with { LocationStatus = statuses.Item1, IsCurrentScene = statuses.Item1 == "current-map" },
+            second with { LocationStatus = statuses.Item2, IsCurrentScene = statuses.Item2 == "current-map" },
+        });
+        AssertEqual(1, merged.Count, "Optional location reads changed canonical candidate count.");
+        var after = merged.Single();
+        AssertEqual(statuses.Item3, after.LocationStatus, "Alias location evidence merged incorrectly.");
+        AssertEqual(before.CanonicalGuestId, after.CanonicalGuestId, "Location changed the invitation ID.");
+        AssertSame(before.Guest, after.Guest, "Location changed the native invitation object.");
+        AssertEqual(before.KizunaLevel, after.KizunaLevel, "Location changed bond eligibility.");
+        AssertEqual(before.KizunaStateKnown, after.KizunaStateKnown, "Location changed bond validity.");
+        AssertFalse(after.AvailabilityKnown, "All scope acquired the current map visibility filter.");
+        AssertTrue(after.RuntimeAvailable, "Optional location failure disabled an all-scope guest.");
+    }
 }
 
 static RuntimeRareGuestInvitationCandidate CreateCandidate(
@@ -465,7 +574,7 @@ static void AssertRareGuestInvitationSourceIsPassive()
         "bepinex",
         "src",
         "Save",
-        "RuntimeRareGuestInvitationService.cs"));
+        "RuntimeRareGuestInvitationService.cs")).Replace("\r\n", "\n", StringComparison.Ordinal);
 
     foreach (var forbidden in new[]
              {
@@ -529,6 +638,11 @@ static void AssertRareGuestInvitationSourceIsPassive()
                  "MonoSingletonTypeDefinitionName",
                  "ReadExactSingletonInstance(",
                  "RuntimeRareGuestInvitationWriteGuard.Matches(",
+                 "RuntimeRareGuestInvitationLocationSnapshot.Capture(",
+                 "trackedNpcs, currentMap.Label, \"RunTimeDayScene.trackedNPCs\"",
+                 "locations.Locate(identity.RuntimeStringId",
+                 "required: locationRequired",
+                 "LocationStatus = candidate.LocationStatus",
              })
     {
         AssertContains(

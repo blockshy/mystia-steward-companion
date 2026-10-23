@@ -3059,6 +3059,27 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                     $"{normalizedReason}; pre-destroy-identity-check={identityFailure}");
                 return false;
             }
+
+            // Unity 的 Destroy 在帧尾才真正删除对象。同一帧关闭并重开抛送面板时，
+            // 已停用的私有填充仍会被 GetChild 枚举，使两个原生背景被误读成三个。
+            // 只把已验证 owner/image/rect 三个指针的自有克隆立即移出按钮层级；
+            // 不按名字或 activeSelf 过滤任意原生 Image，也不放宽“两背景”证明条件。
+            var ownedRect = visual.Owner.transform;
+            if (!IsLiveUnityObject(ownedRect)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(ownedRect, out var rectPointer)
+                || rectPointer != visual.RectPointer)
+            {
+                _visualErrors++;
+                AbandonOwnedVisual(visual, $"{normalizedReason}; pre-detach exact RectTransform identity changed");
+                return false;
+            }
+            ownedRect.SetParent(null, false);
+            if (!TryValidateOwnedVisualIdentity(visual, out identityFailure))
+            {
+                _visualErrors++;
+                AbandonOwnedVisual(visual, $"{normalizedReason}; post-detach-identity-check={identityFailure}");
+                return false;
+            }
             UnityEngine.Object.Destroy(visual.Owner);
             _destroyedVisuals++;
             if (logRetirement)

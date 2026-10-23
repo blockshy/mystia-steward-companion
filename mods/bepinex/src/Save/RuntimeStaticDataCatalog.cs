@@ -366,6 +366,8 @@ internal sealed class RuntimeStaticDataCatalog
                 RecipeId = descriptor.RecipeId,
                 Name = food.Name,
                 Ingredients = recipeIngredients,
+                // 直接复制已验证原生配方的依赖，保留重复食材，不借用名称或可变原生集合。
+                IngredientIds = descriptor.IngredientIds.ToList(),
                 PositiveTags = food.PositiveTags,
                 NegativeTags = food.NegativeTags,
                 Cooker = descriptor.Cooker,

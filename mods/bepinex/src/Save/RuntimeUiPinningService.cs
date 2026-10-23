@@ -44,6 +44,11 @@ internal static class RuntimeUiPinningService
     private static long _ingredientForces;
     private static long _beverageForces;
     private static long _scopeCleanupImbalances;
+    private static long _validatedTargetGeneration = -1;
+    private static long _validatedRareCaptureVersion = -1;
+    private static long _validatedNormalCaptureVersion = -1;
+    private static float _nextOrderIdentityCheckAt;
+    private static readonly TimeSpan OrderIdentityCaptureMaxAge = TimeSpan.FromHours(6);
 
     [ThreadStatic]
     private static int _cookingRefreshDepth;
@@ -201,11 +206,19 @@ internal static class RuntimeUiPinningService
         ArgumentNullException.ThrowIfNull(targets);
         ValidateSession(sessionGeneration);
 
-        lock (TargetPublicationRoot)
+        List<TargetDiagnostic>? diagnostics = null;
+        try
         {
-            ValidateSession(sessionGeneration);
-            return PublishTargets(sessionGeneration, targets);
+            lock (TargetPublicationRoot)
+            {
+                ValidateSession(sessionGeneration);
+                PublishTargets(sessionGeneration, targets, ref diagnostics);
+            }
         }
+        finally { WriteTargetDiagnostics(diagnostics); }
+        // Status 会读取多个视觉服务的状态并格式化长文本，仅供诊断。它不参与发布事务，
+        // 不应在目标发布锁内获取视觉锁，也不能让后台日志写盘延长主线程的目标锁等待。
+        return Status;
     }
 
     internal static RuntimeUiTargetSetSnapshot ReadTargetSet()
@@ -356,18 +369,28 @@ internal static class RuntimeUiPinningService
     {
         NightBusinessLifecycleSnapshot lifecycle;
         RuntimeUiTargetSetSnapshot target;
-        lock (TargetPublicationRoot)
+        List<TargetDiagnostic>? diagnostics = null;
+        try
         {
-            lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-            if (!lifecycle.IsActive) return;
-
-            target = Volatile.Read(ref _targetSet);
-            if (target.SessionGeneration != lifecycle.Generation
-                || IsAuthorityFenceTargetLocked(target))
+            lock (TargetPublicationRoot)
             {
-                return;
+                lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+                if (!lifecycle.IsActive) return;
+
+                target = Volatile.Read(ref _targetSet);
+                if (target.SessionGeneration != lifecycle.Generation
+                    || IsAuthorityFenceTargetLocked(target))
+                {
+                    return;
+                }
+
+                // 订单结束与新方案求解并非同一事务。HUD 会因 capture 消失撤下旧边框，
+                // 但只识别桌号/厨具类型的其他表面无法自行知道原订单已结束。必须在统一
+                // 主线程消费入口撤回该订单的整个声明，避免同桌新客继承上一单的提示。
+                target = ReconcileOrderIdentityLocked(lifecycle, target, ref diagnostics);
             }
         }
+        finally { WriteTargetDiagnostics(diagnostics); }
 
         lock (SyncRoot)
         {
@@ -384,6 +407,59 @@ internal static class RuntimeUiPinningService
         {
             lock (SyncRoot) _panelRefreshTickActive = false;
         }
+    }
+
+    /// <summary>
+    /// 仅在 Unity 主线程核验当前订单来源；后台发布仍只保存不可变托管目标，不访问 wrapper。
+    /// 发布代次或 capture 版本变化立即检查，未变化时每 250ms 兜底，避免每帧复制捕获集合。
+    /// </summary>
+    private static RuntimeUiTargetSetSnapshot ReconcileOrderIdentityLocked(
+        NightBusinessLifecycleSnapshot lifecycle,
+        RuntimeUiTargetSetSnapshot targetSet,
+        ref List<TargetDiagnostic>? diagnostics)
+    {
+        if (Environment.CurrentManagedThreadId != lifecycle.ThreadId || targetSet.Targets.Count == 0)
+            return targetSet;
+
+        var rareVersion = SpecialOrderRuntimeCapture.ChangeVersion;
+        var normalVersion = NormalOrderRuntimeCapture.ChangeVersion;
+        var now = UnityEngine.Time.realtimeSinceStartup;
+        if (_validatedTargetGeneration == targetSet.Generation
+            && _validatedRareCaptureVersion == rareVersion
+            && _validatedNormalCaptureVersion == normalVersion
+            && now < _nextOrderIdentityCheckAt)
+        {
+            return targetSet;
+        }
+
+        List<RuntimeUiTargetSnapshot>? retained = null;
+        for (var index = 0; index < targetSet.Targets.Count; index++)
+        {
+            var target = targetSet.Targets[index];
+            var valid = RuntimeUiTargetOrderResolver.TryResolveCurrentCapture(
+                target, OrderIdentityCaptureMaxAge, out var binding, out var failure) && binding != null;
+            if (valid)
+            {
+                retained?.Add(target);
+                continue;
+            }
+
+            // 首次失效才分配结果列表。精确 trace/key/lifecycle/desk 与两原生指针沿用
+            // HUD 的解析器；未知、歧义或失去绑定一律撤回，不改用桌号/名称猜新订单。
+            retained ??= targetSet.Targets.Take(index).ToList();
+            AddTargetDiagnostic(ref diagnostics, warning: false,
+                $"Runtime UI order target retired: publication={targetSet.Generation}; business={targetSet.SessionGeneration}; kind={target.Kind}; reason={failure}.");
+        }
+
+        if (retained != null)
+            PublishTargets(targetSet.SessionGeneration, retained, ref diagnostics);
+
+        var current = Volatile.Read(ref _targetSet);
+        _validatedTargetGeneration = current.Generation;
+        _validatedRareCaptureVersion = rareVersion;
+        _validatedNormalCaptureVersion = normalVersion;
+        _nextOrderIdentityCheckAt = now + 0.25f;
+        return current;
     }
 
     public static void Abandon(string reason)
@@ -406,25 +482,31 @@ internal static class RuntimeUiPinningService
         long sessionGeneration,
         string reason)
     {
-        lock (TargetPublicationRoot)
+        List<TargetDiagnostic>? diagnostics = null;
+        try
         {
-            var current = Volatile.Read(ref _targetSet);
-            var presentationTarget = IsAuthorityFenceTargetLocked(current)
-                ? _authorityFencePresentationTarget
-                : current.SessionGeneration == sessionGeneration && current.Generation > 0
-                    ? current
-                    : null;
-            var disabled = PublishEmptyTargetSetLocked(
-                sessionGeneration,
-                "authority-fence-preserved",
-                reason);
-            Volatile.Write(ref _authorityFencePresentationTarget, presentationTarget);
-            Volatile.Write(ref _authorityFenceTargetGeneration, disabled.Generation);
-            TryLogInfo(
-                $"Runtime UI authority panel refresh deferred: fence={disabled.Generation}; "
-                + $"presentation={presentationTarget?.Generation.ToString() ?? "none"}; "
-                + "waiting for the first complete target publication.");
+            lock (TargetPublicationRoot)
+            {
+                var current = Volatile.Read(ref _targetSet);
+                var presentationTarget = IsAuthorityFenceTargetLocked(current)
+                    ? _authorityFencePresentationTarget
+                    : current.SessionGeneration == sessionGeneration && current.Generation > 0
+                        ? current
+                        : null;
+                var disabled = PublishEmptyTargetSetLocked(
+                    sessionGeneration,
+                    "authority-fence-preserved",
+                    reason,
+                    ref diagnostics);
+                Volatile.Write(ref _authorityFencePresentationTarget, presentationTarget);
+                Volatile.Write(ref _authorityFenceTargetGeneration, disabled.Generation);
+                AddTargetDiagnostic(ref diagnostics, warning: false,
+                    $"Runtime UI authority panel refresh deferred: fence={disabled.Generation}; "
+                    + $"presentation={presentationTarget?.Generation.ToString() ?? "none"}; "
+                    + "waiting for the first complete target publication.");
+            }
         }
+        finally { WriteTargetDiagnostics(diagnostics); }
     }
 
     /// <summary>
@@ -435,21 +517,28 @@ internal static class RuntimeUiPinningService
         long sessionGeneration,
         string reason)
     {
-        lock (TargetPublicationRoot)
+        List<TargetDiagnostic>? diagnostics = null;
+        try
         {
-            ClearAuthorityFenceLocked();
-            PublishEmptyTargetSetLocked(
-                sessionGeneration,
-                "business-boundary-cleared",
-                reason);
-            RunTargetTransitionNoThrow(() => Abandon(reason));
+            lock (TargetPublicationRoot)
+            {
+                ClearAuthorityFenceLocked();
+                PublishEmptyTargetSetLocked(
+                    sessionGeneration,
+                    "business-boundary-cleared",
+                    reason,
+                    ref diagnostics);
+                RunTargetTransitionNoThrow(() => Abandon(reason), ref diagnostics);
+            }
         }
+        finally { WriteTargetDiagnostics(diagnostics); }
     }
 
     private static RuntimeUiTargetSetSnapshot PublishEmptyTargetSetLocked(
         long sessionGeneration,
         string transition,
-        string reason)
+        string reason,
+        ref List<TargetDiagnostic>? diagnostics)
     {
         var current = Volatile.Read(ref _targetSet);
         var disabled = new RuntimeUiTargetSetSnapshot(
@@ -458,28 +547,29 @@ internal static class RuntimeUiPinningService
             Array.Empty<RuntimeUiTargetSnapshot>());
         Volatile.Write(ref _targetSet, disabled);
 
-        RunTargetTransitionNoThrow(() => RuntimeCookerHighlightService.UpdateTargets(disabled));
-        RunTargetTransitionNoThrow(() => RuntimeSeatHighlightService.UpdateTargets(disabled));
+        RunTargetTransitionNoThrow(() => RuntimeCookerHighlightService.UpdateTargets(disabled), ref diagnostics);
+        RunTargetTransitionNoThrow(() => RuntimeSeatHighlightService.UpdateTargets(disabled), ref diagnostics);
         var hudOrderSynchronized = TryUpdateOrderHighlightSurface(
             "HUD",
-            () => RuntimeOrderHighlightService.UpdateTargets(disabled));
+            () => RuntimeOrderHighlightService.UpdateTargets(disabled), ref diagnostics);
         var throwDeliveryOrderSynchronized = TryUpdateOrderHighlightSurface(
             "throw-delivery panel",
-            () => RuntimeThrowDeliverOrderHighlightService.UpdateTargets(disabled));
+            () => RuntimeThrowDeliverOrderHighlightService.UpdateTargets(disabled), ref diagnostics);
         lock (SyncRoot)
         {
             _hudOrderHighlightTargetSynchronized = hudOrderSynchronized;
             _throwDeliveryOrderHighlightTargetSynchronized = throwDeliveryOrderSynchronized;
             _lastTargetTransition = transition;
         }
-        TryLogInfo(
-            $"Runtime UI target transition={transition}: generation={sessionGeneration}; reason={reason}.");
+        AddTargetDiagnostic(ref diagnostics, warning: false,
+            $"Runtime UI target transition={transition}: generation={sessionGeneration}; publication={disabled.Generation}; reason={reason}.");
         return disabled;
     }
 
-    private static string PublishTargets(
+    private static void PublishTargets(
         long sessionGeneration,
-        IReadOnlyList<RuntimeUiTargetSnapshot> targets)
+        IReadOnlyList<RuntimeUiTargetSnapshot> targets,
+        ref List<TargetDiagnostic>? diagnostics)
     {
         var orderedTargets = targets.OrderBy(target => target.Kind).ToArray();
         var current = Volatile.Read(ref _targetSet);
@@ -494,7 +584,7 @@ internal static class RuntimeUiPinningService
                 && _hudOrderHighlightTargetSynchronized
                 && _throwDeliveryOrderHighlightTargetSynchronized)
             {
-                return Status;
+                return;
             }
             updateHudOrderSurface = !targetMatches || !_hudOrderHighlightTargetSynchronized;
             updateThrowDeliveryOrderSurface = !targetMatches || !_throwDeliveryOrderHighlightTargetSynchronized;
@@ -514,10 +604,10 @@ internal static class RuntimeUiPinningService
         }
         var hudOrderSynchronized = !updateHudOrderSurface || TryUpdateOrderHighlightSurface(
             "HUD",
-            () => RuntimeOrderHighlightService.UpdateTargets(published));
+            () => RuntimeOrderHighlightService.UpdateTargets(published), ref diagnostics);
         var throwDeliveryOrderSynchronized = !updateThrowDeliveryOrderSurface || TryUpdateOrderHighlightSurface(
             "throw-delivery panel",
-            () => RuntimeThrowDeliverOrderHighlightService.UpdateTargets(published));
+            () => RuntimeThrowDeliverOrderHighlightService.UpdateTargets(published), ref diagnostics);
 
         lock (SyncRoot)
         {
@@ -531,9 +621,8 @@ internal static class RuntimeUiPinningService
             }
         }
 
-        TryLogInfo(
+        AddTargetDiagnostic(ref diagnostics, warning: false,
             $"Runtime UI target set updated: {DescribeTargetSet(published)}; orderSurfaces=hud:{(hudOrderSynchronized ? "synchronized" : "retry-pending")},throwDelivery:{(throwDeliveryOrderSynchronized ? "synchronized" : "retry-pending")}.");
-        return Status;
     }
 
     private static RuntimeUiTargetSetSnapshot ResolveSurfaceRefreshTarget(
@@ -571,7 +660,7 @@ internal static class RuntimeUiPinningService
         Volatile.Write(ref _authorityFencePresentationTarget, null);
     }
 
-    private static void RunTargetTransitionNoThrow(Action action)
+    private static void RunTargetTransitionNoThrow(Action action, ref List<TargetDiagnostic>? diagnostics)
     {
         try
         {
@@ -579,13 +668,15 @@ internal static class RuntimeUiPinningService
         }
         catch (Exception ex)
         {
-            TryLogWarning($"Runtime UI target transition step failed without escaping its owner: {ex.GetBaseException().Message}");
+            AddTargetDiagnostic(ref diagnostics, warning: true,
+                $"Runtime UI target transition step failed without escaping its owner: {ex.GetBaseException().Message}");
         }
     }
 
     private static bool TryUpdateOrderHighlightSurface(
         string surface,
-        Action action)
+        Action action,
+        ref List<TargetDiagnostic>? diagnostics)
     {
         try
         {
@@ -594,10 +685,33 @@ internal static class RuntimeUiPinningService
         }
         catch (Exception ex)
         {
-            TryLogWarning($"Runtime UI target could not update the {surface} order-highlight surface without affecting the other surface: {ex.GetBaseException().Message}");
+            AddTargetDiagnostic(ref diagnostics, warning: true,
+                $"Runtime UI target could not update the {surface} order-highlight surface without affecting the other surface: {ex.GetBaseException().Message}");
             return false;
         }
     }
+
+    /// <summary>
+    /// 在发布锁内只保存这次事务已经确定的托管诊断文字；无变化的发布不创建集合。
+    /// 所有目标/权威屏障提交仍在原锁内完成，不把状态发布延迟到日志回调之后。
+    /// </summary>
+    private static void AddTargetDiagnostic(ref List<TargetDiagnostic>? diagnostics, bool warning, string message)
+        => (diagnostics ??= new()).Add(new TargetDiagnostic(warning, message));
+
+    private static void WriteTargetDiagnostics(List<TargetDiagnostic>? diagnostics)
+    {
+        if (diagnostics == null) return;
+        // 同一事务的警告与完成日志保持原调用顺序。不同线程的事务可能在锁外交错输出，
+        // 应按日志中的发布代次理解先后，不能为诊断顺序另加一个会阻塞主线程的全局日志锁。
+        // TryLog* 继续隔离日志接收器异常；即使写盘停顿，其他线程仍可取得目标发布许可。
+        foreach (var diagnostic in diagnostics)
+        {
+            if (diagnostic.Warning) TryLogWarning(diagnostic.Message);
+            else TryLogInfo(diagnostic.Message);
+        }
+    }
+
+    private readonly record struct TargetDiagnostic(bool Warning, string Message);
 
     private static void TryLogInfo(string message)
     {
@@ -625,11 +739,8 @@ internal static class RuntimeUiPinningService
 
     private static void ValidateSession(long sessionGeneration)
     {
-        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
-        if (lifecycle.IsActive && sessionGeneration > 0 && sessionGeneration == lifecycle.Generation) return;
-
-        throw new InvalidOperationException(
-            $"Night-business UI target rejected: requested generation={sessionGeneration}, current generation={lifecycle.Generation}, phase={lifecycle.Phase}.");
+        // 与离线宿主共享完全相同的纯值校验；调用位置仍保留发布锁内外两次复核。
+        RuntimeUiTargetSessionGuard.Validate(sessionGeneration, RuntimeNightBusinessLifecycle.Snapshot);
     }
 
     private static string DescribeTargetSet(RuntimeUiTargetSetSnapshot targetSet)

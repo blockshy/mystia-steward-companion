@@ -1,81 +1,66 @@
 # mystia-steward-companion
 
-`mystia-steward-companion` 是《东方夜雀食堂》的非官方 BepInEx IL2CPP Mod。它读取游戏当前状态，并通过独立的 Windows 或 Android 伴随窗口提供料理推荐、经营辅助和可选自动化。
+`mystia-steward-companion` 是《东方夜雀食堂》的非官方 BepInEx IL2CPP Mod。游戏电脑上的 C# 模块负责读取游戏、计算推荐和执行可选自动化；Flutter 伴随客户端在 Windows 或 Android 上展示结果、管理配置并提供人工操作。
 
-本页只介绍主要功能和使用入口。完整安装、页面操作与故障排查请阅读 [Mod 使用说明](mods/bepinex/README.md)，具体功能也可以在伴随窗口的 `设置 -> 帮助` 中查看。
+本页介绍产品与入口。安装、配置和故障排查见 [Mod 使用说明](mods/bepinex/README.md)，客户端内也可离线阅读 `设置 → 帮助`。当前源码使用 Flutter、Forui 和官方 animations；实际已发布版本以 [GitHub Releases](https://github.com/blockshy/mystia-steward-companion/releases) 为准，分支开发完成不代表已经发布。
 
-## 主要功能
+## 页面与主要功能
 
-- **料理推荐**：按地区、普客、稀客和点单 Tag 推荐料理、加料与酒水。
-- **收藏与自定义方案**：集中管理料理和酒水收藏，也可以为指定稀客配置固定推荐料理。
-- **经营中助手**：实时显示普客与稀客订单、推荐方案、执行状态和必要诊断。
-- **可选自动化**：可分别控制送酒、开锅、送料理和完成订单；功能默认由用户手动配置。
-- **游戏界面辅助**：可选料理、食材、酒水、厨具、桌位和订单高亮，以及目标加料料理选项。
-- **任务与邀请**：查看可接取及进行中的任务，并管理当天的稀客邀请名单；两个模块默认关闭。
-- **特殊经营支持**：支持怪诞料理大赛、幽幽子挑战与重修、寻找瑞灵踪迹、月都试炼 1/2/3、血池地狱等场景。
-- **多设备连接**：游戏电脑负责运行 Mod，Windows 或 Android 设备可在可信局域网内连接；多设备时由用户指定主设备配置。
-- **日志与更新**：提供运行日志、诊断包、正式版本更新检查和跨版本更新说明，便于排查问题和升级。
-
-自动化、运行时库存修改和部分游戏界面辅助会改变游戏运行状态。首次使用前建议备份存档，并先熟悉对应设置和帮助说明。
-
-## Mod窗口页面一览
-
-| 页面 | 用途 |
+| 页面 | 功能 |
 | --- | --- |
-| `概览` | 查看连接、运行时数据和库存摘要。 |
-| `推荐料理` | 查看普客、稀客推荐，维护自定义方案和收藏。 |
-| `经营中` | 查看实时订单、推荐方案和自动化状态。 |
-| `扩展功能` | 使用任务列表、稀客邀请和运行时库存修改。 |
-| `设置` | 管理窗口、连接、推荐、实验性功能、更新和帮助。 |
-| `日志` | 开启调试信息后显示，用于导出日志和诊断包。 |
+| 总览 | 经营状态、今日供给、食材与酒水合并低库存表。 |
+| 经营 | 稀客与普客的实时订单方案、自动化状态、精简制作信息的专注页，以及订单数量、当前厨具、暂停原因与待确认事项的统计信息。 |
+| 推荐 | 普客地区推荐、稀客需求推荐、收藏、自定义配方、推荐偏好。有效条件确定后自动查询，可搜索结果。 |
+| 扩展 | 任务列表、稀客邀请、库存修改、自动化、游戏界面辅助。各模块页签常驻，在页内启停。 |
+| 数据 | 料理与酒水图鉴，按已解锁、未解锁或全部筛选并搜索；游戏图像资源管理。 |
+| 设置 | 连接与设备、外观、成套更新、诊断与帮助。 |
 
-## 安装与快速开始
+- **推荐与配方**：料理、酒水、材料、厨具和匹配信息使用统一组件与游戏图片。自定义配方分为“料理模式”和“稀客模式”，各自保存，只当前模式参与计算；评分提供四个固定预设及可调权重的“自定义”。
+- **订单与专注**：订单按点单时间显示。专注页默认合并两类订单的时间顺序，也可在本机启用“稀客优先”，并选择制作字段、隐藏窗口 UI；不改变自动化调度规则。
+- **自动化与辅助**：分别控制普客/稀客的送酒、开锅、料理交付和完成订单；游戏界面辅助提供目标列表置顶、加料选项及厨具、桌位、订单高亮。支持已实现规则的特殊经营场景，详见[特殊经营说明](docs/special-business-scenes-notes.md)。
+- **多设备**：游戏电脑运行完整 Mod，其它 Windows 或 Android 客户端通过可信局域网连接。主设备管理共享配置并维持自动化，查看设备不会自动接管。
+- **诊断**：记录实际操作及结果，支持聚合日志、诊断包导出和删除管理、成套版本更新检查。
 
-1. 从 [GitHub Releases](https://github.com/blockshy/mystia-steward-companion/releases) 下载发布包。
-2. 按 [安装 BepInEx](mods/bepinex/README.md#安装-bepinex) 和 [安装 Mod](mods/bepinex/README.md#安装-mod) 完成部署。
-3. 启动游戏并读取存档，等待伴随窗口自动连接。
-4. 在 `概览` 页确认运行时数据已经就绪，再进入推荐或经营页面。
-5. 自动化、游戏界面辅助、任务列表和稀客邀请按需手动开启。
+任务列表、稀客邀请和库存修改的开关按设备保存，默认关闭；自动化与游戏界面辅助使用持久化共享总开关，重启或重连后沿用。自动化、库存修改和加料辅助会改变游戏状态，首次使用前请备份存档并阅读对应帮助。
 
-游戏电脑必须安装 Mod。另一台 Windows 电脑或 Android 设备只需安装对应伴随客户端，再按 [其他设备连接说明](mods/bepinex/README.md#另一台设备连接windows--android) 连接游戏电脑。
+## 安装与开始使用
+
+1. 在游戏电脑按[安装 BepInEx](mods/bepinex/README.md#安装-bepinex)准备已验证的 IL2CPP #783 环境。
+2. 按[安装 Mod](mods/bepinex/README.md#安装-mod)部署完整目录。Mod、Windows/Android 客户端应成套更新，不能混用旧客户端或只复制单个 EXE/DLL。
+3. 启动游戏，等待图像初始化或缓存校验完成；进入存档后查看总览及推荐。Windows 窗口隐藏时可按 F8。
+4. 按需启用扩展功能。自动化暂停时到 `经营 → 统计信息` 查看原因与待确认事项；详细任务过程在对应客人类型的“自动化状态”中查看。
+5. 另一台设备按[局域网连接步骤](mods/bepinex/README.md#另一台设备连接windows--android)填写游戏电脑地址和 Token；切换主设备前先同步共享配置。
+
+首次运行从游戏本机读取图像，不随安装包分发游戏图片。缓存校验、等待目录、提取和失败统一在独立初始化界面显示。旧缓存缺少启动凭据时需进入存档确认一次；随后游戏版本、DLC、资源身份及缓存完整性检查通过，即可在主菜单复用。数据中的“资源管理”支持分类、搜索和主设备重新读取。
+
+Windows 使用窄侧栏；Android 使用底部六项导航。字号、主题和显示偏好按设备保存；Windows 的背景与内容不透明度分别控制填充与前景。料理/酒水列表展示紧凑标签摘要，余项以“+N”表示，详情保留完整内容；刷新时已有有效信息保持显示，新方案未返回的字段使用占位。
 
 ## 常用操作
 
 | 操作 | 作用 |
 | --- | --- |
-| `F8` / `RS Click` | 在游戏和伴随窗口之间切换。 |
-| `F10` | 开启或关闭伴随窗口鼠标穿透。 |
-| `A` / `B` | 手柄确认 / 返回。 |
-| `LB` / `RB` | 切换页面或页签。 |
-| `LT` / `RT` | 滚动当前区域。 |
-| `X` | 在推荐项上收藏或取消收藏。 |
-| `Y` | 进入稀客专注模式或切换精简显示。 |
+| F8 / RS Click | Windows 游戏与伴随窗口之间切换。 |
+| F10 | Windows 鼠标穿透开关及恢复。 |
+| 左摇杆 / 十字键 | 移动焦点。 |
+| A / B | 手柄确认 / 返回。 |
+| LB / RB | 切换主页面。 |
+| LT / RT | 切换当前横向页签。 |
+| 推荐行上的 X | 收藏当前推荐项。 |
 
-完整键盘、手柄和窗口行为见 [快捷键与手柄](mods/bepinex/README.md#快捷键与手柄)。
+手柄提示仅在手柄操作时显示；重连或恢复焦点后先松开按键和摇杆回中。关闭 Windows 窗口会隐藏到托盘；完整退出使用托盘或外观页入口。作为主设备的 Android 进入后台会暂停自动化，回到前台并恢复连接后才按保存配置继续。
 
 ## 遇到问题时
 
-1. 在 `设置 -> 窗口` 开启 `显示调试信息`。
-2. 进入 `日志` 页开启总日志，并复现问题。
-3. 导出诊断包，必要时记录相关订单的 `R-xxxx` 或 `N-xxxx` 日志标识。
-4. 提供诊断包以及对应的 `aggregate-mod.log` 日志文件；分享前请检查日志中的本机路径和游戏状态信息。
-
-详细步骤见 [日志与诊断](mods/bepinex/README.md#日志与诊断) 和伴随窗口内置帮助。
+在游戏电脑的 `设置 → 诊断` 开启聚合 Mod 日志，记录复现时间、操作和订单 `R-xxxx` / `N-xxxx` 标识，再导出诊断包。分享前检查其中的本机路径与游戏信息。操作结果未知时先核对现场，不通过反复提交猜测是否成功；详见[日志与诊断](mods/bepinex/README.md#日志与诊断)。
 
 ## 文档入口
 
-面向用户：
-
-- [Mod 安装与使用说明](mods/bepinex/README.md)
-- 伴随窗口内的 `设置 -> 帮助`
-
-面向开发者：
-
-- [开发环境、构建与打包](mods/bepinex/README.dev.md)
-- [开发约定](docs/development-conventions.md)
-- [本地构建与发布](docs/README.md)
-- [IL2CPP / IDA 分析流程](docs/il2cpp-analysis-workflow.md)
-- [项目机制与当前约束](docs/repo-memory.md)
+| 读者 | 入口 |
+| --- | --- |
+| 用户 | [Mod 安装与使用说明](mods/bepinex/README.md)、客户端 `设置 → 帮助` |
+| 开发者 | [开发环境、构建与打包](mods/bepinex/README.dev.md)、[专题索引](docs/README.md)、[开发约定](docs/development-conventions.md) |
+| UI 与平台开发 | [客户端 UI 规范](docs/companion-ui.md)、[Android 开发](docs/android-development.md) |
+| 运行时分析 | [IL2CPP / IDA 流程](docs/il2cpp-analysis-workflow.md)、[项目机制与约束](docs/repo-memory.md) |
 
 ## 主要开源组件
 
@@ -84,22 +69,15 @@
 | BepInEx | Unity IL2CPP Mod 加载与插件框架 | LGPL-2.1-only | [BepInEx/BepInEx](https://github.com/BepInEx/BepInEx) |
 | HarmonyX | 运行时方法补丁 | MIT | [BepInEx/HarmonyX](https://github.com/BepInEx/HarmonyX) |
 | Il2CppInterop | CoreCLR 与 Unity IL2CPP 运行时互操作 | LGPL-3.0-only | [BepInEx/Il2CppInterop](https://github.com/BepInEx/Il2CppInterop) |
-| Tauri 及官方插件 | Windows / Android 伴随窗口和系统能力 | MIT OR Apache-2.0 | [tauri-apps/tauri](https://github.com/tauri-apps/tauri)、[plugins-workspace](https://github.com/tauri-apps/plugins-workspace) |
+| Flutter / Dart | Windows / Android 界面与客户端 | BSD-3-Clause | [flutter/flutter](https://github.com/flutter/flutter)、[dart-lang/sdk](https://github.com/dart-lang/sdk) |
+| Forui | 统一组件、主题与图标 | MIT；字体等资产见各包声明 | [forus-labs/forui](https://github.com/forus-labs/forui) |
+| animations | 官方过渡动画 | BSD-3-Clause | [flutter/packages](https://github.com/flutter/packages/tree/main/packages/animations) |
+| Riverpod | 页面依赖注入 | MIT | [rrousselGit/riverpod](https://github.com/rrousselGit/riverpod) |
 | windows-sys | 独立 Windows 更新程序的 DPI 与原生控件接入 | MIT OR Apache-2.0 | [microsoft/windows-rs](https://github.com/microsoft/windows-rs) |
-| React / React DOM | 伴随窗口用户界面 | MIT | [facebook/react](https://github.com/facebook/react) |
-| react-markdown | Release Note 的受限 Markdown 展示 | MIT | [remarkjs/react-markdown](https://github.com/remarkjs/react-markdown) |
-| Mantine | 界面组件与 React Hooks | MIT | [mantinedev/mantine](https://github.com/mantinedev/mantine) |
-| Tailwind CSS | 界面样式与构建插件 | MIT | [tailwindlabs/tailwindcss](https://github.com/tailwindlabs/tailwindcss) |
-| Tabler Icons | 界面图标 | MIT | [tabler/tabler-icons](https://github.com/tabler/tabler-icons) |
-| Geist | 伴随窗口字体 | OFL-1.1 | [Fontsource Geist](https://fontsource.org/fonts/geist) |
-| clsx | CSS 类名组合 | MIT | [lukeed/clsx](https://github.com/lukeed/clsx) |
-| Serde / serde_json | Tauri 端数据序列化 | MIT OR Apache-2.0 | [serde-rs/serde](https://github.com/serde-rs/serde)、[serde-rs/json](https://github.com/serde-rs/json) |
-| Vite | 前端开发与生产构建 | MIT | [vitejs/vite](https://github.com/vitejs/vite) |
-| TypeScript | 前端类型检查与编译 | Apache-2.0 | [microsoft/TypeScript](https://github.com/microsoft/TypeScript) |
-| ESLint | 代码静态检查 | MIT | [eslint/eslint](https://github.com/eslint/eslint) |
-| Playwright | 界面自动化巡检 | Apache-2.0 | [microsoft/playwright](https://github.com/microsoft/playwright) |
+| Serde / serde_json | 独立更新程序序列化 | MIT OR Apache-2.0 | [serde-rs/serde](https://github.com/serde-rs/serde)、[serde-rs/json](https://github.com/serde-rs/json) |
+| Vite / TypeScript | 冻结的离线业务差分参照 | MIT / Apache-2.0 | [vitejs/vite](https://github.com/vitejs/vite)、[microsoft/TypeScript](https://github.com/microsoft/TypeScript) |
 
-上表列出项目直接使用的主要运行时组件和开发工具。完整依赖及锁定版本以 [package.json](package.json)、[pnpm-lock.yaml](pnpm-lock.yaml)、[Cargo.toml](apps/companion/src-tauri/Cargo.toml) 和 [Cargo.lock](apps/companion/src-tauri/Cargo.lock) 为准；各组件的使用与再分发分别遵循其自身许可证。
+上表列出主要组件。完整依赖及锁定版本以 [Flutter 依赖](apps/companion-flutter/pubspec.lock)、[Node 依赖](pnpm-lock.yaml) 和 [更新程序依赖](native/updater/Cargo.lock) 为准；各组件的使用与再分发分别遵循自身许可证。Windows 使用系统中文字体，不随包复制系统字体文件。
 
 ## 许可证与来源
 
@@ -115,7 +93,7 @@
 
 本项目为非官方开源工具，仅用于学习、研究和游戏过程中的辅助决策。使用本项目前，建议先备份存档，并自行确认所在地、平台规则和社区规则是否允许使用此类 Mod。
 
-Mod 会读取游戏运行时状态；部分功能会修改运行时库存、调整窗口行为或执行实验性自动化操作。这些功能可能影响原始游戏体验，也可能在游戏更新、DLC 差异、特殊经营场景、其他 Mod 或系统环境变化时失效。
+Mod 会读取游戏当前状态；部分功能会修改当前库存、调整窗口行为或执行实验性自动化操作。这些功能可能影响原始游戏体验，也可能在游戏更新、DLC 差异、特殊经营场景、其他 Mod 或系统环境变化时失效。
 
 日志、总日志分片和诊断包可能包含游戏运行状态、订单、订单日志标识、库存、错误信息或本机路径。对外分享日志前，请自行检查并删除不希望公开的内容。
 

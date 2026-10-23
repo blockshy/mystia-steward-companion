@@ -1,6 +1,6 @@
 # 开发文档索引
 
-更新日期：2026-08-19
+复核日期：2026-10-23
 
 本目录面向维护者，记录项目架构、开发流程和已经由代码、测试或游戏分析资料确认的实现边界。用户安装与操作说明仍以根目录 `README.md`、`mods/bepinex/README.md` 和伴随窗口内置帮助为准。
 
@@ -10,8 +10,9 @@
 - 入口文档负责导航，不复制专题契约、完整命令矩阵或版本历史。
 - 操作手册记录“怎样做”；架构和契约文档记录“边界是什么”；游戏机制文档记录“证据说明了什么”。
 - 测试源码是逐条断言的权威来源，[验证指南](validation-guide.md) 只说明改动范围与验证入口。
-- 临时排障过程、发布演练和阶段进度放在被 Git 忽略的 `temp/` 或 `SESSION_HANDOVER.md`，问题解决后不并入长期文档。
+- 临时排障过程和测试产物放在被 Git 忽略的 `temp/`；阶段方案与交接放在独立本地仓库 `local-docs/`，不并入代码仓的长期文档。
 - 不为删除的旧路径、旧类型或旧行为保留兼容说明。仍有价值的结论应改写为当前唯一规则。
+- 历史测试记录保留原提交、日期和证据范围；提交压缩不改变这些记录对应的源码内容，也不能把历史通过结果改写为新一次测试通过。
 
 ## 入口与架构
 
@@ -28,9 +29,11 @@
 | --- | --- |
 | [本地开发与构建](local-development.md) | 锁定工具链、依赖安装、桌面/Mod 构建、缓存和本地预览 |
 | [Android 开发](android-development.md) | Android 工具链、签名、双 ABI APK 构建和本地排障 |
-| [验证指南](validation-guide.md) | 按变更范围选择 lint、build、Cargo、dotnet、audit、smoke 与 Playwright |
+| [验证指南](validation-guide.md) | 按变更范围选择 Flutter/Dart、真实 HTTP 宿主、Cargo、dotnet 与原生 smoke |
 | [发布流程](local-release.md) | 正式 Actions 发布、预览版发布、审批、资产事务和失败处理 |
 | [本地构建引用](../mods/bepinex/References/README.md) | 私有引用 bundle 的身份、恢复和校验 |
+| [协议宿主测试](../tests/flutter-contracts/README.md) | 隔离 HTTP 宿主的额外运行库准备、协议执行和管理接口验证 |
+| [平台适配包](../packages/companion_platform/README.md) | Pigeon 生成、系统能力和平台存储边界 |
 
 ## 运行时与应用契约
 
@@ -42,6 +45,7 @@
 | [本地 API](local-api.md) | listener、鉴权、请求限制、规范路由和设备配置权威 |
 | [游戏 UI 集成](game-ui-integration.md) | 置顶、加料变体、厨具/桌位/订单高亮及 Unity ownership |
 | [伴随窗口 UI](companion-ui.md) | 导航、响应式布局、设计系统、手柄焦点和前端状态边界 |
+| [运行时图像资源](game-media.md) | 首次提取、图鉴头像、缓存代次、认证分发与初始化门禁 |
 | [推荐引擎](recommendation-engine.md) | 候选生成、硬过滤、排序、执行计划和阻断诊断 |
 | [任务系统](missions.md) | tracked、available、调度来源与 ServeInWork 的只读边界 |
 | [更新系统](update-system.md) | 检查调度、catalog/manifest、更新页面与 Windows updater |
@@ -64,5 +68,11 @@
 - 改构建命令、锁定工具或本地准备：更新 `local-development.md`；Android 专属内容只改 `android-development.md`。
 - 改正式 Release 事务、GitHub 配置或资产集合：更新 `local-release.md`。
 - 改运行时读取、订单、自动化、本地 API 或 UI ownership：只更新对应专题文档。
-- 改用户可见功能：另行检查两份用户 README 和 `apps/companion/src/data/help-content.json`，但不要把开发实现复制到用户文档。
+- 改用户可见功能：另行检查两份用户 README 和 `apps/companion-flutter/assets/help-content.json`，但不要把开发实现复制到用户文档。
 - 新增专题前先确认现有文档没有承担该职责；确需新增时同步本索引和相关入口链接。
+
+## 复核范围
+
+长期文档以当前分支源码为准；另一个开发分支或已取消探针的能力不能直接写为当前功能。发布流程中的环境准备与实际 workflow 必须分别核对，未自动化的前置步骤应明确注明，不能因本机已有缓存而省略。
+
+用户帮助资产属于随客户端分发的文档，改动后运行帮助浏览器相关测试。Markdown 文档则核对相对链接、代码路径、命令参数及所属专题，不因纯文档改动重复游戏实测或发布构建。

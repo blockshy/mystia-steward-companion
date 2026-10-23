@@ -211,6 +211,8 @@ internal static class RuntimeMissionRecipePriorityProjection
             Place = context.Place,
             PlaceLabel = context.PlaceLabel,
             ActiveRareGuests = context.ActiveRareGuests.ToList(),
+            // 任务优先级只投影订单，必须原样保留名单读取是否完整，不能把未知变成无人。
+            ActiveRareGuestsReadComplete = context.ActiveRareGuestsReadComplete,
             Orders = orders,
             Source = context.Source,
             Error = context.Error,

@@ -1,6 +1,6 @@
 # 运行时 Provider
 
-更新日期：2026-08-19
+更新日期：2026-10-23
 
 本文档只说明 Mod 如何从游戏运行时读取并发布推荐所需数据，包括读取来源、场景就绪、缓存、失败语义和诊断边界。订单所有权与生命周期见 [运行时订单生命周期](runtime-order-lifecycle.md)，自动化副作用见 [自动化运行时](automation-runtime.md)，HTTP 传输协议见 [本地 API](local-api.md)。
 
@@ -11,11 +11,15 @@
 - 反射入口必须精确匹配已验证的类型、成员、返回值和具体集合形态。成员缺失、类型错误、容量异常、身份歧义或读取异常均按本轮不可用处理。
 - Provider 只读游戏状态，不生成运行时记录、不刷新 NPC、不推进任务，也不写入游戏存档。
 - 诊断来源不能进入业务投影；打开总日志只增加观测，不改变推荐或自动化输入。
-- 只有需要完整枚举的已验证静态字典才使用匹配泛参的具体 `Enumerator` / `KeyValuePair`，并复核数量与缓冲区；
-  运行时 tracking、scheduled 等字典只按已验证 key 精确查找。任何形态或元素错误都拒绝整组结果，不使用会
-  静默跳项的通用对象枚举器。
+- 一次同步采集内，精确原生指针对应的成功托管 DTO 可复用；每轮开始清空，不能跨帧保留游戏 wrapper。未知指针和失败结果不缓存。普客捕获已就绪时仅提前剔除最终本就会被剔除的同指针可视项，未绑定可视订单仍正常读取，权限不会提升。稀客多来源复用保留各自来源，完整手动诊断仍逐源读取。
+- 料理、酒水和普客 ID 索引随 `DataRepository` 实例创建，目录替换同时替换索引。聚合诊断按完整段落一次写入，减少主线程逐行同步刷盘；文件上限和异常大段轮换规则不变。
+- 需要完整枚举的已验证静态字典和活动客人集合使用匹配泛参的具体 `Enumerator` / `KeyValuePair`，并复核数量与缓冲区；
+  运行时 tracking、scheduled 等字典仍只按已验证 key 精确查找。集合形态、枚举或计数错误拒绝该来源结果，
+  不使用会静默跳项的通用对象枚举器。活动客人个体分类失败时保留其他已确认客人，并明确标记名单不完整。
 
 ## 静态运行时目录
+
+料理目录同时提供用于展示的 `ingredients` 与来自原生配方的精确 `ingredientIds`。ID 数组保留顺序和重复项，不从名称反向推断；`null`/缺失表示未知，真实空数组才表示无需基础材料。自动化用精确 ID 核对库存，显示名称不参与动作准入。
 
 `RuntimeStaticDataCatalog` 从以下五张 `DataBaseCore` 映射读取目录根：
 
@@ -62,6 +66,8 @@ ID 域必须保持原生语义：
 
 食材和酒水数量只有精确 `-1` 表示无限，`0` 不发布，低于 `-1` 视为读取失败。Provider 不生成存储快照，也不枚举玩家存档内部容器。没有任何已解锁配方时不发布空推荐状态，而是等待后续刷新。
 
+`recommendationState.inventoryReadReady` 单独表示数量确由真实库存读取取得；`runtimeLoaded` 或目录完整不能代替它。经营推荐兜底状态可能含合成数量 99，但该标记必须为 false。客户端只有在标记为 true、数量映射及可用 ID 集合合法完整时，才可将稀疏编码省略的条目解释为零库存；否则显示未知并禁用库存修改。库存写入仍需主设备权限与主线程 fresh read，这个读取标记本身不授予写入许可。
+
 夜间经营才读取物理厨具快照。厨具快照只有 `complete` 与 `unavailable` 两种业务状态；任一条目形态、身份、坐标、锁定状态或能力读取失败都会使整轮不可用于自动化，不按已读子集推测容量。厨具的执行所有权不属于 Provider，详见 [自动化运行时](automation-runtime.md)。
 
 ## 场景就绪
@@ -99,6 +105,20 @@ ID 域必须保持原生语义：
 - 诊断中的稀客候选只接受实际 `SpecialGuest`，或带明确稀客 `StringId` / `SourceGuestID` 的对象；普通
   `GuestBase` 的数字 ID 不能单独证明稀客身份，避免与稀客 ID 重叠时生成幽灵候选。
 
+活动稀客名单只从已验证的控制器集合读取：`AllPresentedGuestGroupController` 的具体 HashSet、
+`AllGuestsControllersInDesk` / `CanPlayerRepellGuest` / `ManualDesksDic` 的具体字典，以及
+`QueuedGuestControllers` 的具体 List。桌号字典可能有稀疏键，不能把 `0..Count-1` 当成键；
+`AllGuestInDeskController` 原生 getter 仅返回桌号字典的 Values，不再重复枚举该接口包装。
+
+集合中的 `GuestGroupController` 与 `OrderingGuest` 的 `GuestBase` 都可能只是基类包装。
+`RuntimeRareGuestReader` 先按原生类型转换为 `SpecialGuestsController`，再读取并转换真实 `SpecialGuest`；
+明确的 `NormalGuestsController` 直接跳过，未知类型、转换失败、集合异常或身份不可读取都记录为名单不完整。
+不通过订单、显示名称或数字 ID 猜测并补造活动客人，也不建立新的 Hook 或场景扫描。
+
+`nightBusiness.activeRareGuestsReadComplete` 仅在全部名单来源完整读取后为 true。部分来源成功时可以显示
+已确认的客人，同时提供读取详情；只有完整读取且列表为空时，前端才显示“暂无稀客”。完整性参与快照签名，
+任务投影必须原样复制该字段。该诊断完整性不替代正式订单捕获和自动化各自的就绪判断。
+
 具体创建、身份、退出与 ABA 隔离统一由 [运行时订单生命周期](runtime-order-lifecycle.md) 定义。
 
 ## 缓存与发布
@@ -115,8 +135,10 @@ ID 域必须保持原生语义：
 
 - `runtimeSceneReadiness`：场景门闩、generation 和当前阻断状态。
 - `runtimeDataComplete`、`runtimeDataSource`、`runtimeDataStatus`：核心目录与身份目录组合状态。
+- `recommendationState.inventoryReadReady`：真实库存数量完整性，不与目录或经营就绪混用。
 - `runtime-static-data`、`runtime-tags`、`runtime-database`、`runtime-guests`、`runtime-izakayas`：总日志中的缓存目录证据。
-- `night-business`：运行时捕获状态、活动客人、可见样本和有界解析失败。
+- `night-business`：运行时捕获状态、活动客人、可见样本和有界解析失败。快照总日志同时记录
+  `nightGuests`、`nightGuestsReadComplete`、`nightSource`、`nightError`，便于区分真实空名单与采集失败。
 - `performanceMs`：`refresh.runtime`、`runtimeData.serialize`、`runtime.cookerSnapshot` 等已发布耗时。
 
 诊断写入失败不得影响正式读取；经营热路径只能复用已缓存的静态诊断，不得为写日志重新扫描数据库。
@@ -134,3 +156,8 @@ dotnet run --project tests/snapshot-signature/SnapshotSignatureSmoke.csproj -c R
 ```
 
 涉及游戏成员、Hook 或集合形态的变更还必须按 [IL2CPP / IDA 分析流程](il2cpp-analysis-workflow.md) 重新取得证据，不能用兼容读取代替验证。
+
+`runtime-reflection` 同时校验真实 BepInEx 783 HashSet/Enumerator 元数据，以及基类包装、普稀客同 ID、
+稀疏桌号、完整空集合和枚举故障等离线边界；任务投影涉及名单字段时还运行
+`tests/runtime-mission-recipe-priority/RuntimeMissionRecipePrioritySmoke.csproj`，确认完整性和已读名单不丢失。
+上述托管替身与元数据验证不代表真实 Unity/IL2CPP 场景通过。

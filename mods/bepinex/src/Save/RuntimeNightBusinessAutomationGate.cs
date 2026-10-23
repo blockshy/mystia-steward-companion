@@ -140,6 +140,18 @@ internal static class RuntimeNightBusinessAutomationGate
                     runtimeAvailable: true);
             }
 
+            // 原生单例和 IsInTutorial 已在上方重新读取，不能把此分支提前到读取之前。
+            // 稳定经营时只复用不可变的诊断快照，避免每帧及每个动作检查点反复创建
+            // 完全相同的状态字符串；权限、教学锁存与经营代次仍逐次严格核验。
+            if (_snapshot.Allowed
+                && _snapshot.Generation == lifecycle.Generation
+                && _snapshot.RuntimeAvailable
+                && !_snapshot.TutorialLatched
+                && _snapshot.BlockReason.Length == 0)
+            {
+                return _snapshot;
+            }
+
             return PublishLocked(
                 allowed: true,
                 blockReason: "",

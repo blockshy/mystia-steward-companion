@@ -1,0 +1,7 @@
+# Dart/Flutter 在平台包检查时生成的缓存与插件注册器，不属于手写平台实现。
+.dart_tool/
+.flutter-plugins-dependencies
+build/
+android/app/
+android/local.properties
+windows/flutter/

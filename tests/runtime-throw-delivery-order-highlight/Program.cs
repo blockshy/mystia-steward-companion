@@ -921,6 +921,47 @@ Assert(!RuntimeThrowDeliverOrderHighlightService.Status.Contains("Normal:target:
     "A normal target must not bind to a same-desk SpecialOrder by desk fallback.");
 RuntimeThrowDeliverOrderHighlightService.Dispose("dual target throw-delivery coverage complete");
 
+// 帧尾销毁 + 原生按钮池复用：旧自有 Image 仍存活时必须已经离开按钮层级，
+// 同帧下一次绑定仍只认两个原生背景；不能依赖即时 Destroy 桩或跳过所有 inactive Image。
+var deferredGeneration = NextGeneration();
+BeginBusiness(deferredGeneration);
+var deferredOrder = new GuestsManager.NormalOrder(2);
+var deferredController = new GuestGroupController(2);
+ClearRuntimeCaptures();
+var deferredTarget = CaptureTarget(deferredOrder, deferredController, 2, lifecycle: 14_001);
+RuntimeThrowDeliverOrderHighlightService.UpdateTargets(CreateTargetSet(deferredGeneration, deferredTarget));
+var deferredPanel = CreatePanel(Card(2, deferredOrder, deferredController));
+deferredPanel.ReuseBuiltButtonsOnOpen = true;
+InvokeOpen(deferredPanel);
+var deferredVisuals = GetVisuals(deferredPanel, 2);
+var deferredNative = CaptureNativeVisuals(deferredVisuals);
+var deferredOldFill = SingleLiveOwnedFill(deferredVisuals.Button);
+UnityEngine.Object.DeferDestroy = true;
+try
+{
+    InvokeClose(deferredPanel);
+    Assert(deferredOldFill.m_CachedPtr != IntPtr.Zero && !deferredOldFill.activeSelf,
+        "帧尾销毁夹具必须保留已停用但尚未销毁的旧克隆。");
+    Assert(deferredOldFill.transform.parent == null,
+        "精确自有克隆必须先移出按钮，不能在同帧被重新计入背景。");
+    InvokeOpen(deferredPanel);
+    var deferredNewFill = SingleLiveOwnedFill(deferredVisuals.Button);
+    Assert(deferredNewFill.Pointer != deferredOldFill.Pointer,
+        "同帧重开必须发布新的精确填充，不复活已撤回克隆。");
+    AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "active:1/1",
+        "同帧按钮复用不应因旧自有填充产生三个背景而拒绝绑定。");
+    AssertNativeVisualsUnchanged(deferredNative, allowBackgroundEnabledChange: false);
+    UnityEngine.Object.FlushDeferredDestruction();
+    Assert(deferredOldFill.m_CachedPtr == IntPtr.Zero && deferredNewFill.m_CachedPtr != IntPtr.Zero,
+        "帧尾仅销毁已退休填充，不能误删新填充。");
+}
+finally
+{
+    UnityEngine.Object.DeferDestroy = false;
+    UnityEngine.Object.FlushDeferredDestruction();
+    RuntimeThrowDeliverOrderHighlightService.Dispose("deferred destruction coverage complete");
+}
+
 AuditProductionSource();
 Console.WriteLine("Runtime throw-delivery order highlight smoke checks passed.");
 

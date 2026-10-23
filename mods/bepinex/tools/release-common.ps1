@@ -3,7 +3,7 @@
 Set-StrictMode -Version Latest
 
 $script:MystiaReleasePackageName = "mystia-steward-companion-bepinex.zip"
-$script:MystiaReleaseCompanionName = "mystia-steward-companion-companion-windows-x64.exe"
+$script:MystiaReleaseCompanionName = "mystia-steward-companion-companion-windows-x64.zip"
 $script:MystiaReleaseAndroidNames = @(
     "mystia-steward-companion-android-arm64-v8a.apk",
     "mystia-steward-companion-android-armeabi-v7a.apk"
@@ -21,7 +21,7 @@ $script:MystiaReleaseAssetContentTypes.Add(
 )
 $script:MystiaReleaseAssetContentTypes.Add(
     $script:MystiaReleaseCompanionName,
-    "application/x-msdownload"
+    "application/zip"
 )
 foreach ($AndroidName in $script:MystiaReleaseAndroidNames) {
     $script:MystiaReleaseAssetContentTypes.Add(
@@ -242,19 +242,19 @@ function Assert-MystiaProjectVersion {
             Pattern = '"version"\s*:\s*"([^"]+)"'
         },
         @{
-            Name = "tauri.conf.json"
-            Path = Join-Path $RepoRoot "apps/companion/src-tauri/tauri.conf.json"
-            Pattern = '"version"\s*:\s*"([^"]+)"'
+            Name = "pubspec.yaml"
+            Path = Join-Path $RepoRoot "apps/companion-flutter/pubspec.yaml"
+            Pattern = '^version:\s*([^+\s]+)\+[1-9][0-9]*\s*$'
         },
         @{
             Name = "Cargo.toml"
-            Path = Join-Path $RepoRoot "apps/companion/src-tauri/Cargo.toml"
+            Path = Join-Path $RepoRoot "native/updater/Cargo.toml"
             Pattern = '^version = "([^"]+)"'
         },
         @{
             Name = "Cargo.lock"
-            Path = Join-Path $RepoRoot "apps/companion/src-tauri/Cargo.lock"
-            Pattern = '(?s)name = "mystia-steward-companion"\s+version = "([^"]+)"'
+            Path = Join-Path $RepoRoot "native/updater/Cargo.lock"
+            Pattern = '(?s)name = "mystia-steward-companion-updater"\s+version = "([^"]+)"'
         },
         @{
             Name = "PluginVersion"

@@ -219,7 +219,9 @@ internal static partial class RuntimeOrderPreparationService
                 OrderPreparationStepCodes.CookingMismatchStored,
                 "interrupted",
                 "cooking-food-mismatch-stored",
-                $"{job.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已放入保温箱并释放该自动料理任务，将在下一轮重试目标料理。",
+                // 此层只确认安全入箱与任务释放，是否继续由协调器的回退预算和执行许可决定。
+                // 不能在这里承诺“下一轮重试”，否则第二次失败触及预算上限后会误报进度。
+                $"{job.RecipeName} 已完成，但成品 {actualText} 不是目标料理 {target.FoodName}（料理 #{target.FoodId}），已放入保温箱并释放该自动料理任务；是否继续重试由当前自动回退预算与执行条件决定。",
                 actualFoodId,
                 activeTargetTags.ToArray(),
                 actualFoodTags,
@@ -275,7 +277,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"{job.RecipeName} 已完成，但当前特殊料理目标暂不可用；"
                 + $"开锅目标 revision={originalTargetRevision} "
                 + $"{FormatSpecialFoodTargetForMessage(originalTargetSignature, originalTargetTags)}。"
-                + "本轮未送达、入箱或复位厨具，等待权威目标恢复。");
+                + "本轮未送达、入箱或复位厨具，等待当前特殊料理目标恢复。");
         }
 
         if (specialTargetChanged)

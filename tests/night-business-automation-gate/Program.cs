@@ -26,6 +26,23 @@ try
     AssertTrue(allowed.Allowed, "A readable non-tutorial business did not allow automation.");
     AssertEqual("", allowed.BlockReason, "Allowed automation retained a block reason.");
 
+    // 验证生产门禁真实执行：每次仍读取 getter，而稳定状态不再创建长诊断字符串。
+    // 先暖机排除反射/JIT 初始化，分配预算仅针对隔离托管宿主，不换算游戏 FPS。
+    for (var index = 0; index < 1024; index++) RuntimeNightBusinessAutomationGate.Refresh();
+    var readsBefore = director.TutorialReads;
+    var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+    const int stableChecks = 4096;
+    for (var index = 0; index < stableChecks; index++)
+    {
+        var stable = RuntimeNightBusinessAutomationGate.Refresh();
+        AssertEqual(allowed.Version, stable.Version, "Unchanged real state changed the gate version.");
+        AssertTrue(ReferenceEquals(allowed.Status, stable.Status), "Stable status text was rebuilt per check.");
+    }
+    var allocated = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+    AssertEqual(stableChecks, director.TutorialReads - readsBefore, "Stable gate reused stale native tutorial state.");
+    AssertTrue(allocated <= stableChecks * 96L, "Stable gate still allocates a full diagnostic string per check.");
+    Console.WriteLine($"GATE-STABLE-ALLOCATION checks={stableChecks}; bytes={allocated}; realGetterReads={director.TutorialReads - readsBefore}; not-FPS");
+
     var publishedBeforeOffThreadRead = RuntimeNightBusinessAutomationGate.Snapshot;
     var offThread = Task.Run(RuntimeNightBusinessAutomationGate.Refresh).GetAwaiter().GetResult();
     AssertFalse(offThread.Allowed, "A background-thread read unexpectedly allowed automation.");

@@ -60,6 +60,8 @@ PowerShell 和 Bash preflight 都会执行同一项身份校验，不再只检�
 
 ## 测试专用引用
 
+真实 HTTP 宿主 `tests/flutter-contracts/host/FlutterContractsHost.csproj` 调用 BepInEx `ConfigFile`，需要额外恢复锁定 #783 原始分发包中的 `BepInEx/core/SemanticVersioning.dll`。它不在上述私有 7-DLL 编译 bundle 中，也不随 Mod 发布。默认放在 `temp/flutter-mod-host-runtime`，单独构建宿主可用 `-p:BepInExRuntimeDirectory=<目录>` 覆盖；宿主构建强制核对文件 SHA-256，详细来源、长度和摘要见[协议测试前置条件](../../../tests/flutter-contracts/README.md#执行)。完整 `build-release.ps1` 也会构建此宿主，因此必须在启动完整构建前准备。
+
 运行 `tests/ui-pinning-runtime/UiPinningRuntimeSmoke.csproj` 的实际 Harmony wrapper 测试时，还需要从同一 BepInEx `core` 目录复制以下两个 HarmonyX 运行依赖；它们只用于该 smoke，不属于 Mod 编译或发布 preflight 的额外依赖：
 
 - `MonoMod.RuntimeDetour.dll`
@@ -79,7 +81,8 @@ dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
-  -ReferenceDir "D:\path\to\mystia-steward-companion-references"
+  -ReferenceDir "D:\path\to\mystia-steward-companion-references" `
+  -FlutterSdkRoot "D:\path\to\locked-flutter"
 
 dotnet run --project tests\ui-pinning-runtime\UiPinningRuntimeSmoke.csproj `
   -c Release -p:ReferenceDir="D:\path\to\mystia-steward-companion-references"

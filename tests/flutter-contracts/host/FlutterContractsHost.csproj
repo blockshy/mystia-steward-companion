@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 复用 migration/flutter 的真实 HTTP 隔离宿主路线；链接当前生产源码，不复制路由或存储协议。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework><LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><UseAppHost>false</UseAppHost>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <ReferenceDir>../../../mods/bepinex/References</ReferenceDir>
+    <!-- ConfigFile 的真实运行时依赖来自已锁定 BepInEx #783 分发包，不能替换为 NuGet 或测试桩。
+         允许验证脚本显式传入已解压目录；默认复用工作区既有的隔离运行库缓存。 -->
+    <BepInExRuntimeDirectory Condition="'$(BepInExRuntimeDirectory)' == ''">$(MSBuildProjectDirectory)/../../../temp/flutter-mod-host-runtime</BepInExRuntimeDirectory>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
+    <ProjectReference Include="../../../modules/companion-contracts/MystiaStewardCompanion.Contracts.csproj" />
+    <Compile Include="../../../mods/bepinex/src/**/*.cs" LinkBase="ProductionMod" />
+    <Reference Include="BepInEx.Core"><HintPath>$(ReferenceDir)/BepInEx.Core.dll</HintPath></Reference>
+    <Reference Include="SemanticVersioning"><HintPath>$(BepInExRuntimeDirectory)/SemanticVersioning.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP"><HintPath>$(ReferenceDir)/BepInEx.Unity.IL2CPP.dll</HintPath></Reference>
+    <Reference Include="0Harmony"><HintPath>$(ReferenceDir)/0Harmony.dll</HintPath></Reference>
+    <Reference Include="Il2CppInterop.Runtime"><HintPath>$(ReferenceDir)/Il2CppInterop.Runtime.dll</HintPath></Reference>
+    <Reference Include="Il2Cppmscorlib"><HintPath>$(ReferenceDir)/Il2Cppmscorlib.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ReferenceDir)/UnityEngine.CoreModule.dll</HintPath></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(ReferenceDir)/UnityEngine.InputLegacyModule.dll</HintPath></Reference>
+  </ItemGroup>
+  <Target Name="VerifyLockedBepInExRuntimeDependency" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(BepInExRuntimeDirectory)/SemanticVersioning.dll')"
+      Text="缺少锁定 BepInEx #783 的 SemanticVersioning.dll；请从 references.lock.json 指定且 SHA256 已验证的原始分发包恢复，或传入 BepInExRuntimeDirectory。" />
+    <GetFileHash Files="$(BepInExRuntimeDirectory)/SemanticVersioning.dll" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="LockedBepInExRuntimeHash" />
+    </GetFileHash>
+    <Error Condition="'%(LockedBepInExRuntimeHash.FileHash)' != 'A5B57607225A0EBDE049E93469F49E5B2D07A7D602A03864CE3A72CCF57103A2'"
+      Text="SemanticVersioning.dll 与锁定 BepInEx #783 原始分发包不一致。" />
+  </Target>
+</Project>

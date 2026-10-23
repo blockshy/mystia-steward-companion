@@ -6,6 +6,8 @@ internal sealed class LocalApiHealthDto
 {
     public bool Ok { get; init; }
     public string PluginVersion { get; init; } = "";
+    /// <summary>独立于业务计算和配置 schema 的产品客户端协议版本。</summary>
+    public int ClientProtocolVersion { get; init; }
     public string BindAddress { get; init; } = "";
     public int Port { get; init; }
     public bool AuthRequired { get; init; }
@@ -36,6 +38,8 @@ internal sealed class LocalApiSnapshotUnchangedDto
 {
     public bool Unchanged { get; init; }
     public string SnapshotSignature { get; init; } = "";
+    /// <summary>独立显示顺序令牌，不替代原始快照签名或业务 current 校验。</summary>
+    public string OrderPresentationSignature { get; init; } = "";
 }
 
 internal sealed class LocalApiLogSettingsDto
@@ -74,6 +78,8 @@ internal sealed class LocalApiConnectionConfigDto
     public int Port { get; init; }
     public string Token { get; init; } = "";
     public IReadOnlyList<LocalApiLanEndpointDto> LanEndpoints { get; init; } = Array.Empty<LocalApiLanEndpointDto>();
+    /// <summary>当前实际网卡可选地址；即使 LAN 尚未启用也返回，与已监听的 LanEndpoints 区分。</summary>
+    public IReadOnlyList<LocalApiLanEndpointDto> AvailableLanEndpoints { get; init; } = Array.Empty<LocalApiLanEndpointDto>();
     public string? LanError { get; init; }
     public string? Error { get; init; }
 }
@@ -82,6 +88,28 @@ internal sealed class LocalApiConnectionConfigUpdate
 {
     public bool? LanEnabled { get; init; }
     public string? LanBindHost { get; init; }
+    /// <summary>省略表示不修改；显式空值不作为清空凭据的请求。</summary>
+    public string? Token { get; init; }
+}
+
+internal sealed class LocalApiDiagnosticPackageListDto
+{
+    public bool Ok { get; init; }
+    public IReadOnlyList<LocalApiDiagnosticPackageItemDto> Items { get; init; } = Array.Empty<LocalApiDiagnosticPackageItemDto>();
+    public string? Error { get; init; }
+}
+
+internal sealed class LocalApiDiagnosticPackageItemDto
+{
+    public string Id { get; init; } = "";
+    public string FileName { get; init; } = "";
+    public long ByteLength { get; init; }
+    public string CreatedAtUtc { get; init; } = "";
+}
+
+internal sealed class LocalApiDiagnosticPackageDeleteRequest
+{
+    public string Id { get; init; } = "";
 }
 
 internal sealed class LocalApiAutomationLeaseDto

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 6,
   "node": "24.19.0",
   "corepack": "0.35.0",
   "corepackIntegrity": "sha512-9BuIGHDFE7Zieor1CeRsvt7X7AJFEuJ6OnbSbsVprq83ChDFoBh1wP98NeUS9FT3ZwlzFllPElXcz/OiDf0YGw==",
@@ -37,7 +37,7 @@
   "android": {
     "jdkDistribution": "temurin",
     "jdkVendor": "Eclipse Adoptium",
-    "jdkVersion": "21.0.4",
+    "jdkVersion": "21.0.12.1",
     "compileSdk": 36,
     "targetSdk": 36,
     "gradle": "8.14.3",
@@ -45,12 +45,74 @@
     "buildTools": "35.0.0",
     "ndkPackage": "30.0.14904198",
     "ndkRevision": "30.0.14904198-beta1",
-    "rustTargets": [
-      "aarch64-linux-android",
-      "armv7-linux-androideabi"
-    ],
-    "signingCertificateSha256": "1540b609d5cd54e06a8429bb0aaa2cc4b511e055565fdac93acf206c1791d1fb"
+    "signingCertificateSha256": "1540b609d5cd54e06a8429bb0aaa2cc4b511e055565fdac93acf206c1791d1fb",
+    "jdkReleaseSemver": "21.0.12.1+1"
   },
   "dotnet6HarmonySdk": "6.0.428",
-  "dotnet6HarmonyImage": "mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e"
+  "dotnet6HarmonyImage": "mcr.microsoft.com/dotnet/sdk@sha256:eaa148f3f58a7276c9bb2eac0612f9560e9ba69e44de02e9ae1912e7105a9b1e",
+  "flutter": {
+    "version": "3.47.6",
+    "channel": "stable",
+    "frameworkRevision": "5fc346839b5d0eef006ed8404392afb4dfae428d",
+    "engineRevision": "692136cb6582dbfc5af3fb33c2515a069f2f66d0",
+    "dartVersion": "3.13.5",
+    "archives": {
+      "linux-x64": {
+        "url": "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.6-stable.tar.xz",
+        "size": 1577721284,
+        "sha256": "f1631b9c2c8b3529323db412b0d1beacf4a748f8783b0d7cf599a8fd5f461675"
+      },
+      "win32-x64": {
+        "url": "https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_3.47.6-stable.zip",
+        "size": 1933193895,
+        "sha256": "a01bb0d26de91bc23c97cd9ccfaad281a612fb8304213fdd5df1119a09404796"
+      }
+    }
+  },
+  "flutterWindows": {
+    "profiles": [
+      {
+        "id": "vs2022-ci",
+        "visualStudio": "17.14.37710.0",
+        "generator": "Visual Studio 17 2022",
+        "msvcTools": {
+          "minInclusive": "14.44.35207",
+          "maxExclusive": "14.44.35208"
+        },
+        "compiler": {
+          "minInclusive": "19.44.35229.0",
+          "maxExclusive": "19.44.35229.1"
+        },
+        "cmake": {
+          "minInclusive": "3.31.6",
+          "maxExclusive": "3.31.7"
+        },
+        "windowsSdk": "10.0.26100.0",
+        "vcRuntime": "14.44.35112"
+      },
+      {
+        "id": "vs2026-local",
+        "visualStudio": "18.3.11520.95",
+        "generator": "Visual Studio 18 2026",
+        "msvcTools": {
+          "minInclusive": "14.50.35717",
+          "maxExclusive": "14.50.35718"
+        },
+        "compiler": {
+          "minInclusive": "19.50.35725.0",
+          "maxExclusive": "19.50.35725.1"
+        },
+        "cmake": {
+          "minInclusive": "4.1.2",
+          "maxExclusive": "4.1.3"
+        },
+        "windowsSdk": "10.0.26100.0",
+        "vcRuntime": "14.50.35710"
+      }
+    ]
+  },
+  "flutterAndroid": {
+    "androidGradlePlugin": "8.11.1",
+    "kotlin": "2.2.20"
+  }
 }

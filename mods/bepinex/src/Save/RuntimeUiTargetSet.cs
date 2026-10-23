@@ -296,6 +296,20 @@ internal sealed class RuntimeUiTargetSetSnapshot
         SessionGeneration = sessionGeneration;
         _targets = normalizedTargets;
         _readOnlyTargets = Array.AsReadOnly(_targets);
+        // 发布对象不可变，以下投影仅包含托管值；在发布时计算一次，避免每个 LateUpdate
+        // 为同一组普客/稀客目标重新分配筛选数组和座位字典。新 generation 必定创建新投影，
+        // 不缓存 Unity/IL2CPP 对象，也不推迟调用方的当前订单、会话和权限核验。
+        OrderHighlightTargets = Array.AsReadOnly(_targets.Where(target => target.OrderHighlightEnabled).ToArray());
+        var seatClaims = new Dictionary<int, RuntimeSeatHighlightClaim>();
+        foreach (var target in _targets)
+        {
+            if (!target.SeatHighlightEnabled || target.DeskCode < 0) continue;
+            var combined = target.Claim;
+            if (seatClaims.TryGetValue(target.DeskCode, out var existing)) combined |= existing.Claims;
+            seatClaims[target.DeskCode] = new RuntimeSeatHighlightClaim(
+                Generation, SessionGeneration, target.DeskCode, combined);
+        }
+        SeatHighlightClaims = new ReadOnlyDictionary<int, RuntimeSeatHighlightClaim>(seatClaims);
 
         var rareColor = RuntimeTargetHighlightColor.DefaultRare;
         var normalColor = RuntimeTargetHighlightColor.DefaultNormal;
@@ -312,6 +326,10 @@ internal sealed class RuntimeUiTargetSetSnapshot
     public long SessionGeneration { get; }
 
     public IReadOnlyList<RuntimeUiTargetSnapshot> Targets => _readOnlyTargets;
+
+    public IReadOnlyList<RuntimeUiTargetSnapshot> OrderHighlightTargets { get; }
+
+    public IReadOnlyDictionary<int, RuntimeSeatHighlightClaim> SeatHighlightClaims { get; }
 
     public RuntimeTargetHighlightPalette Palette { get; }
 
@@ -394,3 +412,10 @@ internal sealed class RuntimeUiTargetSetSnapshot
         return claims;
     }
 }
+
+/// <summary>一次目标发布内的纯托管座位声明；同桌普客/稀客合并标志，保留完整发布及经营代次。</summary>
+internal readonly record struct RuntimeSeatHighlightClaim(
+    long TargetSetGeneration,
+    long SessionGeneration,
+    int DeskCode,
+    RuntimeUiTargetKinds Claims);

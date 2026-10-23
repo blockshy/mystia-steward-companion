@@ -1,17 +1,23 @@
 # 特殊经营验证
 
-更新日期：2026-08-19
+更新日期：2026-10-23
 
-本文只记录特殊经营的自动化验证入口、当前实机闭环状态和复测清单。规则事实见[特殊经营游戏规则](special-business-scenes-notes.md)，实现策略见[特殊经营实现](special-business-implementation.md)。
+本文只记录特殊经营的自动化验证入口、实机证据范围和复测清单。规则事实见[特殊经营游戏规则](special-business-scenes-notes.md)，实现策略见[特殊经营实现](special-business-implementation.md)。具体任务的提交号、执行日志及测试结果另记交付记录，不因文档整理或历史压缩而重新声明为已验证。
 
 ## 自动化验证
 
-前端规则、上下文、运行时分类、血池结算和厨具拓扑的聚合入口：
+当前 C# 候选/特殊经营规则、订单、自动化、实际宿主和打包边界的聚合入口：
+
+```bash
+corepack pnpm audit:business
+```
+
+该入口的 C# 差分使用 `tests/reference-client` 中冻结的 TS 纯计算基线，比较完整值树；不能把仅运行旧算法的审计当成新实现通过。代表目录规模还要检查冷计算、库存/偏好更新与连续快照变化下的发布恢复。
+
+运行时分类、血池结算与厨具拓扑的聚合入口：
 
 ```bash
 corepack pnpm audit:special-business
-corepack pnpm audit:mizuchi
-corepack pnpm audit:automation
 ```
 
 按修改范围可单独运行：
@@ -27,7 +33,9 @@ dotnet run --project tests/rare-order-identity-matching/RareOrderIdentityMatchin
 
 逐条断言由测试源码负责；完整分层和平台要求见[验证指南](validation-guide.md)。游戏成员或闭包变化时还必须按 [IL2CPP / IDA 分析工作流](il2cpp-analysis-workflow.md)重新取得证据。
 
-## 当前实机状态
+## 实机证据范围
+
+下列特殊经营场景记录来自 C# / Flutter 迁移前版本，保留用于后续明确授权时的复测规划。迁移实施中的离线差分、mock、HTTP 与构建结果，或当前分支普通经营的用户测试反馈，均不能自动将这些专项场景标为新版本闭环：
 
 - 月都试炼 1/2/3 已逐场确认推荐与自动化正常；试炼 1 还闭环了合法 guest ID `0`、possessed/ordinary、辣椒水 modifier、捕获推进和 `(-1,None)` 保护期。
 - 寻找瑞灵踪迹已确认 challenge、剧情入口和订单链。当前实现已接入材料 `5002` 与控制身份，但仍需在最新构建完成下面列出的完整基础场景复测。

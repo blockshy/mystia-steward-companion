@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+    <UseAppHost>false</UseAppHost><CheckEolTargetFramework>false</CheckEolTargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 直接测试生产更新器的完整性校验；不加载游戏、BepInEx 或更新网络。 -->
+    <Compile Include="../../mods/bepinex/src/Updates/BusinessPackageManifest.cs" Link="BusinessPackageManifest.cs" />
+  </ItemGroup>
+</Project>

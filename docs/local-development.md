@@ -1,225 +1,56 @@
 # 本地开发与构建
 
-更新日期：2026-08-19
+唯一工具版本基线为根 `toolchain.lock.json`。客户端为 `apps/companion-flutter`，纯Dart包为 `packages/companion_protocol` 和 `packages/companion_client`，原生适配为 `packages/companion_platform`。业务在两个C# modules中，独立Windows更新程序位于 `native/updater`。
 
-本文档只说明日常本地开发环境、构建入口和开发服务。测试选择见
-[验证指南](validation-guide.md)，Android 专用环境见
-[Android 开发](android-development.md)，版本与发布操作见
-[发布流程](local-release.md)。
+## 准备
 
-## 工具链基线
-
-根目录 [`toolchain.lock.json`](../toolchain.lock.json) 是本地与 CI 共用的唯一版本来源。文档中的版本仅帮助安装；
-升级时先修改锁文件及其校验逻辑，不使用系统中的 `stable`、`latest` 或较新预装版本作为回退。
-
-| 工具 | 锁定版本 | 用途 |
-| --- | --- | --- |
-| Node.js | `24.19.0` | 前端、构建与审计脚本 |
-| Corepack | `0.35.0` | 提供锁定的包管理器入口 |
-| pnpm | `10.10.0` | 依赖、前端、Tauri 与项目脚本 |
-| .NET SDK | `10.0.110` | 构建目标为 `net6.0` 的 Mod 及测试工程 |
-| Rust / Cargo | `1.97.1` | Tauri 桌面与移动端壳 |
-| PowerShell | `7.6.4` | Windows 完整构建与发布编排脚本 |
-| GitHub CLI | `2.97.0` | 恢复私有引用和准备发布元数据 |
-
-Windows 桌面构建还需要 Microsoft C++ Build Tools 2022（或 Visual Studio 的“使用 C++ 的桌面开发”组件）
-和 Microsoft Edge WebView2 Runtime。Linux 上检查 Tauri 时需要 WebKitGTK、AppIndicator、SVG、OpenSSL
-和 `xdotool` 的开发包；不同发行版使用对应包管理器安装。
-
-先在仓库根目录检查环境：
-
-```bash
-corepack pnpm toolchain:check
-```
-
-该命令要求 Node、Corepack、pnpm、.NET 与 Rust 和锁文件完全一致。只改前端时，`pnpm` 脚本仍会先验证
-前端所需的锁定工具；不要绕过脚本直接调用 Vite 或 Tauri CLI。
-
-### 首次初始化
-
-若系统尚无锁定的 Corepack，可将其安装到新的隔离目录。Windows PowerShell 示例：
+按工具锁准备Node/Corepack/pnpm、.NET、Rust、Flutter/Dart与对应平台工具。Flutter路径必须显式传入，不通过PATH选择未知SDK。Windows使用原生VS/MSVC/CMake，Android使用锁定JDK/SDK/NDK/Gradle；不能用跨平台产物代替Windows验证。
 
 ```powershell
-$toolchainParent = Join-Path $env:LOCALAPPDATA "mystia-steward-companion\toolchain"
-New-Item -ItemType Directory -Force $toolchainParent | Out-Null
-$corepackRoot = Join-Path $toolchainParent "corepack-0.35.0"
-node scripts/install-locked-corepack.mjs --install-root $corepackRoot
-$env:PATH = "$corepackRoot;$env:PATH"
-corepack install
-rustup toolchain install 1.97.1 --profile minimal
 corepack pnpm install --frozen-lockfile
-corepack pnpm toolchain:check
-```
-
-安装器只接受尚不存在的目录，并校验锁定 tarball 的完整性。升级 Corepack 时创建新的版本目录，不覆盖旧目录，
-也不执行全局 `corepack enable`。
-
-Mod 的目标框架是 `net6.0`，产品构建仍使用锁定的 .NET SDK `10.0.110`。只有三项真实 Harmony/MonoMod
-动态补丁测试使用锁定的 .NET 6 容器；入口和限制见[验证指南](validation-guide.md#真实-harmonymonomod-测试)。
-
-## BepInEx 构建引用
-
-`mods/bepinex/References/` 中的真实 DLL 不提交到公开仓库。引用的来源、文件集合、大小和 SHA-256 由
-[`references.lock.json`](../mods/bepinex/References/references.lock.json) 唯一锁定。
-
-首次恢复、外部引用目录和测试专用 HarmonyX 依赖的操作见
-[`mods/bepinex/References/README.md`](../mods/bepinex/References/README.md)。已有引用可直接验证：
-
-```bash
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task get
 corepack pnpm references:verify
 ```
 
-不要从当前游戏目录、另一版 BepInEx 或旧 interop 临时拼接 DLL。恢复器会拒绝 bundle 内缺项、多项、
-子目录和符号链接；恢复器与 preflight 都会拒绝正式文件的大小或哈希漂移，不会联网寻找替代版本。
+首次新增依赖时在对应应用或包目录运行锁定 Flutter 的 `pub get`，审查并提交该目录的 `pubspec.lock`；日常 get 强制 lockfile。Pigeon 生成源与三端结果一起提交。密钥只通过本机安全存储或 CI 签名环境提供，不写进普通偏好、日志或源码。
 
-## 常规开发入口
+`.NET SDK` 与测试运行时是两个前置条件：`global.json` 选择锁定 SDK，`net6.0` 隔离宿主还要求已安装 .NET 6 运行时。完整 Flutter 测试和整包构建会启动真实 HTTP 宿主；除 7 个正式编译引用外，必须先按 [协议测试说明](../tests/flutter-contracts/README.md#执行)从锁定 BepInEx #783 原始分发包恢复测试专用 `SemanticVersioning.dll`。只执行 `references:verify` 不能证明这个额外运行库已经就绪。
 
-以下命令均从仓库根目录运行。
+## 检查与构建
 
-### 前端
-
-```bash
-corepack pnpm dev
-corepack pnpm lint
-corepack pnpm build
-corepack pnpm preview
-```
-
-- `dev` 启动 Vite 开发服务；
-- `build` 先执行 TypeScript project build，再生成 `apps/companion/dist/`；
-- `preview` 只预览当前已有的生产构建，因此先运行 `build`；
-- 功能完成前按变更范围选择专项 audit，不能用生产构建成功代替行为验证。
-
-### Tauri 桌面壳
-
-```bash
-corepack pnpm tauri:dev
-corepack pnpm tauri:build
-cargo check --manifest-path apps/companion/src-tauri/Cargo.toml
-```
-
-`tauri:build` 使用 `--no-bundle`，适合日常验证 Rust 壳和嵌入式前端；完整安装包由后文的构建脚本生成。
-修改窗口聚焦、单实例或 updater 时，还应运行对应 Rust 单测和 Windows 实机检查，详见
-[验证指南](validation-guide.md#tauri-rust-与独立-updater)。
-
-### BepInEx Mod
-
-```bash
-pwsh -ExecutionPolicy Bypass -File mods/bepinex/tools/preflight.ps1
+```powershell
+dotnet build tests/flutter-contracts/host/FlutterContractsHost.csproj -c Release -p:NuGetAudit=false
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task format-check
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task generated-check
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task verify
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task contracts-test
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task build-windows
+node scripts/flutter-workspace.mjs --sdk-root <Flutter目录> --task build-android
+cargo test --locked --manifest-path native/updater/Cargo.toml
+cargo build --locked --manifest-path native/updater/Cargo.toml --release
 dotnet build mods/bepinex/MystiaStewardCompanion.BepInEx.csproj -c Release
 ```
 
-Git Bash 可使用：
+上述命令在仓库根目录运行。`verify` 仅执行 Flutter 应用的 analyze/test，不包含独立 Dart 契约、格式或 Pigeon 生成一致性；因此这些任务分别列出。协议、客户端和平台包的独立测试入口，以及无私有引用时的公共验证子集，见[验证指南](validation-guide.md)。若使用 `corepack pnpm flutter:*` 简写，先显式设置 `MYSTIA_FLUTTER_SDK_ROOT` 为同一个已锁定 SDK 目录。
 
-```bash
-bash mods/bepinex/tools/preflight.sh
-```
+Android 交付入口是 `scripts/build-android-signed-apk.mjs`；普通 Android Release 构建同样要求既有正式签名材料，并校验原证书、包身份和对齐，缺失时明确失败。APK 安装需要签名，不能把旧的未签名编译产物交给用户；构建和签名校验仍不表示已验证 Android 真机或覆盖升级。配置与交付路径见 [Android 开发](android-development.md)。
 
-Mod 开发目录与运行时入口见
-[`mods/bepinex/README.dev.md`](../mods/bepinex/README.dev.md)，运行时数据读取边界见
-[运行时 Provider](runtime-provider.md)。
-
-## Windows 完整本地构建
-
-PowerShell 7 从仓库根目录运行：
+完整Windows包入口：
 
 ```powershell
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1
+pwsh -File mods/bepinex/tools/build-release.ps1 -FlutterSdkRoot <Flutter目录>
 ```
 
-脚本依次验证锁定工具链与 References、安装冻结依赖、构建前端和 Tauri、构建 Mod，再事务式生成本地安装资产。
-该操作不会创建 Git tag 或 GitHub Release。
+该入口无条件构建 HTTP 宿主并运行完整应用/契约测试，`-SkipFlutterBuild` 只跳过 Windows 客户端编译，不能跳过测试运行库准备。默认宿主运行库目录为 `temp/flutter-mod-host-runtime`；单独构建宿主时可用 `-p:BepInExRuntimeDirectory=<目录>` 指定其他位置。当前发布 workflow 尚缺少该额外运行库的恢复步骤，不能将本机缓存已补齐后的构建结果表述成全新 CI 环境可直接通过；发布前待办见[发布流程](local-release.md#发布前待办)。
 
-常用的定向参数：
+构建只生成本地产物，不部署游戏、不创建标签、不发布 GitHub Release。完整 Windows 运行树 ZIP、Mod ZIP 与可选双 ABI APK 输出到 `mods/bepinex/dist`。安装入口为 `mods/bepinex/tools/install-local-package.ps1`，接收包含完整运行树与 `package-manifest.json` 的解包目录并核对全部载荷，默认只读校验，显式 `-Execute` 才执行安装；不能直接把 ZIP 路径传作包目录，也不能单独复制主 EXE 或 DLL。
 
-```powershell
-# 依赖已经按 lockfile 安装
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 -SkipInstall
+`build-windows` 按 [Flutter 官方 ZIP 分发要求](https://docs.flutter.dev/platform-integration/windows/building)，从当前根锁匹配的 VS `VC/Redist/MSVC/<锁定版本>/x64/Microsoft.VC14x.CRT` 复制未修改的 `msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll` 到 EXE 同级，并带上根 NOTICE 的 `THIRD-PARTY-NOTICES.txt` 副本。构建验证 x64 PE、有效微软签名、同系列且不早于基线的统一文件版本，以及源/目标 SHA-256；Redist 目录版本不等于 DLL 的服务补丁版本，实际身份记录在 `temp/flutter-build-evidence/windows-runtime.json`。不从 System32 或 PATH 搜索替代 DLL，不分发系统 UCRT 或 debug runtime。
 
-# 只改 C# Mod
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
-  -SkipInstall -SkipFrontendBuild -SkipTauriBuild
+独立 updater 由根 `.cargo/config.toml` 强制 x64 MSVC 静态 CRT；它被单独复制到临时 runner 时无需旁置上述 DLL。打包入口再次只读验证完整运行树和真实 PE 导入，缺库、字节冲突、未知 VC 依赖，或环境 `RUSTFLAGS` 导致 updater 重新动态链接均拒绝。更换锁定工具链、SDK 或 NOTICE 后若已有 Release 同名文件冲突，先停止使用该目录的客户端/测试进程，在应用目录使用锁定 Flutter 执行 `flutter clean`，再完整重建；不要手工从 System32 换 DLL 或混用不同 Redist。跨平台边界测试为 `corepack pnpm audit:windows-runtime`；真实 Windows 校验为 `node scripts/windows-runtime.mjs verify <完整运行树> <updater.exe>`。
 
-# 使用已按 references.lock.json 恢复的外部目录
-pwsh -ExecutionPolicy Bypass -File mods\bepinex\tools\build-release.ps1 `
-  -ReferenceDir "D:\path\to\mystia-steward-companion-references"
-```
+## 本机缓存
 
-只要修改了 `apps/companion/src/` 或 Tauri 代码，就不能跳过对应构建，否则最终包可能继续携带旧产物。
-`-SkipPackage` 只用于保留裸构建输出以便诊断；Android 扩展参数及签名要求见
-[Android 本地开发](android-development.md)。
+构建缓存放入被忽略的temp或Flutter build目录；不提交.dart_tool、Gradle/NuGet缓存或SDK。JDK在Windows长临时目录下出现Unix-domain socket/loopback错误时，可为当前构建进程选择短临时路径，同时设置TEMP/TMP及 `jdk.net.unixdomain.tmpdir` / `java.io.tmpdir`。不得修改系统全局设置掩盖工具锁不一致。
 
-## 构建产物管理
-
-Cargo 多目标缓存、Android Gradle 输出和 .NET `bin/obj` 会持续增长。使用统一脚本治理，不手工删除 Cargo
-`deps` 中的单个哈希目录：
-
-```bash
-# 仅报告
-corepack pnpm artifacts:report
-
-# 超过默认 12 GiB 时清理到 8 GiB
-corepack pnpm artifacts:prune
-
-# 预览及执行完整清理
-corepack pnpm artifacts:clean -- --dry-run
-corepack pnpm artifacts:clean
-```
-
-清理以完整 profile、target triple、Gradle build 目录或 .NET 项目为单位，并拒绝白名单外路径和符号链接。
-`mods/bepinex/dist`、`References`、`temp`、`node_modules`、Playwright 数据与签名材料不在自动清理范围。
-
-不要在 Cargo、Gradle、Vite 或 dotnet 仍运行时执行 prune/clean。首次清理后需要完整重编译属于预期。
-构建脚本可用 `-BuildCacheLimitGiB`、`-BuildCacheTargetGiB` 调整高低水位；
-`-SkipBuildCacheCleanup` 仅用于定位问题。
-
-## Mock API 与浏览器预览
-
-不启动游戏时，可用稳定 mock 数据开发伴随窗口。
-
-终端一：
-
-```bash
-corepack pnpm mock:api
-```
-
-默认 API 地址为 `http://127.0.0.1:32145`，token 为 `mock-token`。
-
-终端二：
-
-```bash
-corepack pnpm dev -- --host 127.0.0.1 --port 5173
-```
-
-浏览器打开 `http://127.0.0.1:5173`，在开发者工具 Console 写入开发连接并刷新：
-
-```js
-localStorage.setItem('mystia-steward-companion-mod-api-endpoint', 'http://127.0.0.1:32145');
-localStorage.setItem('mystia-steward-companion-mod-api-token', 'mock-token');
-localStorage.setItem('mystia-steward-companion-show-debug-details', '1');
-location.reload();
-```
-
-生产构建预览使用另一端口，避免与 Vite dev 混淆：
-
-```bash
-corepack pnpm build
-corepack pnpm preview -- --host 127.0.0.1 --port 4173
-```
-
-浏览器/Vite 开发模式会直接访问 mock API；打包后的桌面和 Android 应用通过 Tauri
-`request_local_api` 原生命令访问 Mod。不要通过放宽 CSP 或加入 WebView direct-fetch 回退来掩盖原生代理错误。
-
-Playwright 环境变量、浏览器安装和按功能选择的巡检命令见
-[验证指南](validation-guide.md#playwright-巡检)。
-
-## 本地运行边界
-
-- Windows 游戏实测使用 Windows x64 IL2CPP BepInEx #783；不要把 Linux BepInEx 安装到通过 Proton 运行的
-  Windows PE 游戏。
-- Linux 可完成源码分析、前端、Rust、普通 .NET 构建和大部分 smoke；Win32 窗口、WebView2、APK 签名及
-  真实游戏行为仍需对应平台验证。
-- 游戏运行时结构的判断以锁定反编译资料为依据，流程见
-  [IL2CPP 源码与 IDA 分析工作流](il2cpp-analysis-workflow.md)。
-- 日常构建不改变版本、不创建 tag，也不发布资产；预览版和正式版操作统一见
-[发布流程](local-release.md)。
+验证选择见[验证指南](validation-guide.md)，原生协议见[伴随UI](companion-ui.md)，正式发布事务见[发布流程](local-release.md)。

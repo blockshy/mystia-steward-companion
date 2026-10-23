@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 纯业务层只依赖契约和 .NET 基础库；游戏、HTTP 与存储能力由宿主实现接口。 -->
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>MystiaStewardCompanion.Business</AssemblyName>
+    <RootNamespace>MystiaStewardCompanion.Business</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../companion-contracts/MystiaStewardCompanion.Contracts.csproj" />
+  </ItemGroup>
+</Project>

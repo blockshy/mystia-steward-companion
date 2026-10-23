@@ -1,0 +1,34 @@
+name: mystia_steward_companion
+description: 东方夜雀食堂管家伴随客户端，业务权威由本地 C# 宿主持有。
+publish_to: none
+version: 1.3.1+1003002
+environment:
+  sdk: '>=3.13.5 <4.0.0'
+  flutter: '>=3.47.6'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  forui: 0.27.4
+  animations: 3.0.0
+  crypto: 3.0.7
+  material_ui: 1.0.0
+  flutter_riverpod: 3.4.3
+  companion_protocol:
+    path: ../../packages/companion_protocol
+  companion_client:
+    path: ../../packages/companion_client
+  companion_platform:
+    path: ../../packages/companion_platform
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+flutter:
+  uses-material-design: true
+  assets:
+    # 状态栏只读取顶层 version，客户端版本与构建入口共用同一事实来源。
+    - pubspec.yaml
+    - assets/help-content.json

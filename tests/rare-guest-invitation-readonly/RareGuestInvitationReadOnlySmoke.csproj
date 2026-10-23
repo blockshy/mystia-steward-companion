@@ -14,6 +14,7 @@
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/RuntimeConcreteCollectionReader.cs" Link="RuntimeConcreteCollectionReader.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestInvitationCandidate.cs" Link="RuntimeRareGuestInvitationCandidate.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestInvitationLocation.cs" Link="RuntimeRareGuestInvitationLocation.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestInvitationIdentity.cs" Link="RuntimeRareGuestInvitationIdentity.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeSchedulerCharacterIdentity.cs" Link="RuntimeSchedulerCharacterIdentity.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestInvitationWriteGuard.cs" Link="RuntimeRareGuestInvitationWriteGuard.cs" />

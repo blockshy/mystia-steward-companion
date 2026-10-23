@@ -516,13 +516,10 @@ internal sealed class UpdateService : IDisposable
                 $"{PackageRootDirectoryName}-{MystiaStewardCompanionPlugin.PluginVersion}-{DateTime.UtcNow:yyyyMMddHHmmss}");
             Directory.CreateDirectory(Path.GetDirectoryName(backupDirectory)!);
 
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = runnerPath,
-                WorkingDirectory = runnerDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-            };
+            // 更新器也由游戏派生且拥有原生窗口，沿用管家的局部 Steam 环境隔离。
+            // 不修改父游戏环境，保留独立 runner 路径和现有退出/安装事务协议。
+            var startInfo = CompanionProcessEnvironment.CreateStartInfo(
+                runnerPath, runnerDirectory, createNoWindow: true);
             startInfo.ArgumentList.Add("--game-pid");
             startInfo.ArgumentList.Add(Process.GetCurrentProcess().Id.ToString());
             startInfo.ArgumentList.Add("--plugin-dir");
@@ -1475,28 +1472,7 @@ internal sealed class UpdateService : IDisposable
         string extractRoot,
         CancellationToken cancellationToken)
     {
-        if (Directory.Exists(extractRoot)) Directory.Delete(extractRoot, recursive: true);
-        Directory.CreateDirectory(extractRoot);
-        var fullRoot = EnsureDirectorySeparator(Path.GetFullPath(extractRoot));
-        using var archive = ZipFile.OpenRead(packagePath);
-        foreach (var entry in archive.Entries)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var destination = Path.GetFullPath(Path.Combine(extractRoot, entry.FullName));
-            if (!destination.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase))
-            {
-                throw new InvalidOperationException($"更新包包含非法路径：{entry.FullName}");
-            }
-
-            if (string.IsNullOrWhiteSpace(entry.Name))
-            {
-                Directory.CreateDirectory(destination);
-                continue;
-            }
-
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            entry.ExtractToFile(destination, overwrite: true);
-        }
+        BusinessPackageManifest.Extract(packagePath, extractRoot, cancellationToken);
     }
 
     private static void PromoteDownloadDirectory(string pendingRoot, string versionRoot)
@@ -1550,6 +1526,7 @@ internal sealed class UpdateService : IDisposable
         RequireFile(directory, RequiredPluginDll);
         RequireFile(directory, RequiredWindowsCompanion);
         RequireFile(directory, RequiredWindowsUpdater);
+        BusinessPackageManifest.Validate(directory);
     }
 
     private static void RequireFile(string root, string relativePath)

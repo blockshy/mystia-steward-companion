@@ -11,17 +11,17 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
-const require = createRequire(import.meta.url);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..');
-const companionDir = path.join(repoRoot, 'apps', 'companion');
-const androidDir = path.join(companionDir, 'src-tauri', 'gen', 'android');
-const androidJavaSourcesDir = path.join(androidDir, 'app', 'src', 'main', 'java');
-const keystorePropertiesPath = path.join(androidDir, 'keystore.properties');
-const apkOutputDir = path.join(androidDir, 'app', 'build', 'outputs', 'apk');
+const companionDir = path.join(repoRoot, 'apps', 'companion-flutter');
+const androidDir = path.join(companionDir, 'android');
+// 仅从调用者显式给定的受保护配置读取，不扫描凭据，也不把密码复制到源码目录。
+const keystorePropertiesPath = process.env.MYSTIA_ANDROID_KEYSTORE_PROPERTIES
+  ? path.resolve(repoRoot, process.env.MYSTIA_ANDROID_KEYSTORE_PROPERTIES)
+  : path.join(androidDir, 'keystore.properties');
+const apkOutputDir = path.join(companionDir, 'build', 'app', 'outputs', 'flutter-apk');
 const distDir = path.join(repoRoot, 'mods', 'bepinex', 'dist');
 const buildArtifactManager = path.join(repoRoot, 'scripts', 'manage-build-artifacts.mjs');
 const buildToolchainCheck = path.join(repoRoot, 'scripts', 'check-build-toolchain.mjs');
@@ -44,11 +44,6 @@ const releaseApkTargets = [
     assetName: 'mystia-steward-companion-android-armeabi-v7a.apk',
   },
 ];
-const androidReleaseProfileEnv = {
-  CARGO_PROFILE_RELEASE_STRIP: 'symbols',
-  CARGO_PROFILE_RELEASE_LTO: 'thin',
-  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '1',
-};
 
 if (isMainModule()) {
   main();
@@ -61,9 +56,9 @@ function main() {
   assertRealDirectory(distDir, 'Android release dist');
   assertNoPendingAndroidStages();
   pruneBuildArtifacts();
-  cleanGeneratedAndroidSources();
-  rmSync(apkOutputDir, { recursive: true, force: true });
-  runTauriAndroidApkBuild();
+  // 仅清理固定且已校验的 Flutter APK 输出目录，不能扫描或删除平台源码。
+  if (existsSync(apkOutputDir)) { assertRealDirectory(apkOutputDir, 'Flutter APK output'); rmSync(apkOutputDir, { recursive: true }); }
+  run(process.execPath, [path.join(repoRoot, 'scripts/flutter-workspace.mjs'), '--task', 'build-android'], { cwd: repoRoot });
 
   const aapt2 = findAapt2Command();
   const signedApks = findSignedApks(aapt2);
@@ -114,11 +109,15 @@ function stageAndVerifyAndroidApks(signedApksToStage, signer, aapt2Command) {
     const items = signedApksToStage.map((item) => {
       const stagedPath = path.join(stagingDir, item.target.assetName);
       copyFileSync(item.apkPath, stagedPath);
+      // 校验实际待发布副本，不能只检查源目录或 pubspec；旧增量产物可能仍携带已退役图片。
+      verifyNoBundledGameMediaInApk(stagedPath);
+      // 安装交付必须同时满足签名与 APK 内原生库的 ZIP 对齐；文件名或 aapt 元数据不能代替这些检查。
+      verifyAndroidApkAlignment(stagedPath, findZipalignCommand());
       verifyAndroidApkSignature(stagedPath, signer, androidToolchain.signingCertificateSha256);
       assertAndroidApkIdentity(dumpAndroidApkBadging(stagedPath, aapt2Command), {
         applicationId: androidApplicationId,
         versionName: projectPackage.version,
-        versionCode: computeTauriAndroidVersionCode(projectPackage.version),
+        versionCode: readFlutterAndroidVersionCode(projectPackage.version),
         abi: item.target.abi,
       });
       console.log(`Signed Android APK certificate and package identity verified: ${item.apkPath}`);
@@ -247,6 +246,16 @@ function readBooleanEnvironmentVariable(name, defaultValue) {
 }
 
 function assertSigningConfig() {
+  if (process.env.MYSTIA_ANDROID_KEYSTORE_PROPERTIES && !path.isAbsolute(process.env.MYSTIA_ANDROID_KEYSTORE_PROPERTIES)) {
+    throw new Error('MYSTIA_ANDROID_KEYSTORE_PROPERTIES must be an absolute path.');
+  }
+  // 保留 EACCES 等真实权限错误，不能把受保护但不可读的既有配置误判为“没有密钥”。
+  try {
+    const stat = lstatSync(keystorePropertiesPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Android signing config must be a regular file, not a link.');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   if (!existsSync(keystorePropertiesPath)) {
     throw new Error(
       [
@@ -357,79 +366,6 @@ function resolveStoreFile(storeFile) {
   return path.resolve(androidDir, storeFile);
 }
 
-function runTauriAndroidApkBuild() {
-  const tauriCliScript = findTauriCliScript();
-  const buildOptions = withAndroidReleaseProfileEnv({ cwd: companionDir });
-  const buildArgs = [
-    'android',
-    'build',
-    '--apk',
-    '--split-per-abi',
-    '--target',
-    ...releaseApkTargets.map((target) => target.target),
-  ];
-  if (tauriCliScript) {
-    run(process.execPath, [tauriCliScript, ...buildArgs], buildOptions);
-    return;
-  }
-
-  run('tauri', buildArgs, buildOptions);
-}
-
-function withAndroidReleaseProfileEnv(options) {
-  return {
-    ...options,
-    env: {
-      ...process.env,
-      ...androidReleaseProfileEnv,
-    },
-  };
-}
-
-function cleanGeneratedAndroidSources() {
-  if (!existsSync(androidJavaSourcesDir)) return;
-
-  for (const generatedDir of findGeneratedDirectories(androidJavaSourcesDir)) {
-    rmSync(generatedDir, { recursive: true, force: true });
-  }
-}
-
-function findGeneratedDirectories(rootDir) {
-  const matches = [];
-  const stack = [rootDir];
-
-  while (stack.length > 0) {
-    const currentDir = stack.pop();
-    for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-
-      const entryPath = path.join(currentDir, entry.name);
-      if (entry.name === 'generated') {
-        matches.push(entryPath);
-        continue;
-      }
-
-      stack.push(entryPath);
-    }
-  }
-
-  return matches;
-}
-
-function findTauriCliScript() {
-  try {
-    const packageJsonPath = require.resolve('@tauri-apps/cli/package.json', { paths: [repoRoot] });
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf8'));
-    const binPath = typeof packageJson.bin === 'string' ? packageJson.bin : packageJson.bin?.tauri;
-    if (!binPath) return '';
-
-    const cliScript = path.resolve(path.dirname(packageJsonPath), binPath);
-    return existsSync(cliScript) ? cliScript : '';
-  } catch {
-    return '';
-  }
-}
-
 function findSignedApks(aapt2Command) {
   if (!existsSync(apkOutputDir)) {
     throw new Error(`Android APK output directory was not generated: ${apkOutputDir}`);
@@ -448,6 +384,21 @@ function findSignedApks(aapt2Command) {
     (candidate) => dumpAndroidApkBadging(candidate, aapt2Command),
     projectPackage.version,
   );
+}
+
+/** 普通 build-android 与正式打包共用实际 APK 校验；文件名带 release 不能代表已经签名。 */
+function verifyReleaseBuildOutput() {
+  const aapt2 = findAapt2Command();
+  const candidates = findSignedApks(aapt2);
+  const signer = findApkSignerCommand();
+  const zipalign = findZipalignCommand();
+  for (const candidate of candidates) {
+    verifyNoBundledGameMediaInApk(candidate.apkPath);
+    verifyAndroidApkAlignment(candidate.apkPath, zipalign);
+    verifyAndroidApkSignature(candidate.apkPath, signer, androidToolchain.signingCertificateSha256);
+  }
+  console.log('Android Release APKs verified: no bundled game media, original applicationId, locked signing certificate, version, ABI and 16 KiB ZIP alignment.');
+  return candidates;
 }
 
 function listFilesRecursive(rootDir) {
@@ -471,8 +422,7 @@ function listFilesRecursive(rootDir) {
 
 function isTargetReleaseApk(candidate, target) {
   const normalized = candidate.replace(/\\/g, '/').toLowerCase();
-  const flavor = target.flavor.toLowerCase();
-  return normalized.includes(`/apk/${flavor}/release/`);
+  return normalized.endsWith(`/app-${target.abi}-release.apk`);
 }
 
 function isSignedReleaseApk(candidate) {
@@ -482,7 +432,7 @@ function isSignedReleaseApk(candidate) {
     && (normalized.includes('/release/') || normalized.endsWith('-release.apk'));
 }
 
-function resolveReleaseAndroidApkCandidates(candidates, inspectBadging, expectedVersionName) {
+function resolveReleaseAndroidApkCandidates(candidates, inspectBadging, expectedVersionName, expectedVersionCode = readFlutterAndroidVersionCode(expectedVersionName)) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     throw new Error('Expected signed Android release APK candidates.');
   }
@@ -493,7 +443,6 @@ function resolveReleaseAndroidApkCandidates(candidates, inspectBadging, expected
       || expectedVersionName.length === 0) {
     throw new Error('Expected Android versionName must be a non-empty project version.');
   }
-  const expectedVersionCode = computeTauriAndroidVersionCode(expectedVersionName);
 
   const badgingByCandidate = candidates.map((candidate) => ({
     candidate,
@@ -606,29 +555,15 @@ function parseAapt2Badging(output) {
   return { applicationId, versionName, versionCode, nativeCodes };
 }
 
-function computeTauriAndroidVersionCode(versionName) {
-  if (typeof versionName !== 'string') {
-    throw new Error('Android release version must be canonical X.Y.Z or X.Y.Z-preview.N.');
-  }
-  const match = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-preview\.([1-9][0-9]*))?$/u.exec(versionName);
-  if (!match) {
-    throw new Error(`Android release version must be canonical X.Y.Z or X.Y.Z-preview.N: ${versionName}`);
-  }
-
-  const major = BigInt(match[1]);
-  const minor = BigInt(match[2]);
-  const patch = BigInt(match[3]);
-  if (minor > 999n || patch > 999n) {
-    throw new Error('Android release minor and patch versions must each be between 0 and 999.');
-  }
-
-  const versionCode = (major * 1_000_000n) + (minor * 1_000n) + patch;
-  if (versionCode < 1n || versionCode > BigInt(maximumAndroidVersionCode)) {
-    throw new Error(
-      `Android versionCode must be between 1 and ${maximumAndroidVersionCode}; received ${versionCode}.`,
-    );
-  }
-  return Number(versionCode);
+function readFlutterAndroidVersionCode(versionName) {
+  // 显式 pubspec build number 必须高于旧正式 APK，保留同 applicationId 下的系统升级资格。
+  // 不再套用旧 Tauri 的版本公式；未来每次发布由版本修改同时递增此数字。
+  const pubspec = readFileSync(path.join(companionDir, 'pubspec.yaml'), 'utf8');
+  const match = /^version:\s*([^\s+]+)\+([1-9][0-9]*)\s*$/mu.exec(pubspec);
+  if (!match || match[1] !== versionName) throw new Error('Flutter pubspec version 与项目发布版本不一致。');
+  const value = Number(match[2]);
+  if (!Number.isSafeInteger(value) || value <= 1003001 || value > maximumAndroidVersionCode) throw new Error('Flutter Android versionCode 必须大于历史正式版本 1003001，且不超过 Android 上限。');
+  return value;
 }
 
 function extractSingleBadgingAttribute(line, attributeName) {
@@ -650,6 +585,46 @@ function findApkSignerCommand() {
     command: findJavaCommand(),
     args: ['-jar', apksignerJar],
   };
+}
+
+/** 选择锁定工具，只读检查 APK 内原生库的 16 KiB ZIP 对齐；不会在签名后重写 APK 并破坏签名。 */
+function findZipalignCommand() {
+  const command = findAndroidBuildToolFile(process.platform === 'win32' ? 'zipalign.exe' : 'zipalign');
+  if (!command) throw new Error(`Locked Android Build Tools ${androidToolchain.buildTools} does not contain zipalign.`);
+  return command;
+}
+
+function verifyAndroidApkAlignment(apkPath, command, invoke = runCaptured) {
+  return invoke(command, ['-c', '-P', '16', '-v', '4', apkPath], { cwd: repoRoot });
+}
+
+/**
+ * 只读列举最终 APK 的 ZIP 条目，拒绝以前随客户端打包的游戏图片、清单及空目录。
+ * 使用构建本来就要求的锁定 JDK，避免另引入 ZIP 依赖或解压不可信路径；不执行 APK、
+ * 不读取签名凭据，也不删除输入。签名、包身份与 ZIP 对齐仍由各自原有门禁独立验证。
+ */
+function verifyNoBundledGameMediaInApk(apkPath, command = findJarCommand(), invoke = runCaptured) {
+  const result = invoke(command, ['--list', '--file', apkPath], { cwd: repoRoot, maxBuffer: 8 * 1024 * 1024 });
+  if (typeof result.stdout !== 'string') throw new Error('Android APK ZIP entry listing is unavailable.');
+  const entries = result.stdout.split(/\r?\n/u)
+    .filter((entry) => entry.length > 0)
+    .map((entry) => path.posix.normalize(entry.replaceAll('\\', '/')));
+  // 非空且有 AndroidManifest 才能证明工具确实列出了 APK；不能把空输出当作没有旧资源。
+  if (!entries.includes('AndroidManifest.xml')) throw new Error('Android APK ZIP entry listing has no AndroidManifest.xml.');
+  const retired = 'assets/flutter_assets/assets/game-media';
+  if (entries.some((entry) => {
+    const lower = entry.toLowerCase();
+    return lower === retired || lower.startsWith(`${retired}/`);
+  })) {
+    throw new Error('Android APK contains retired bundled assets/game-media; rebuild the client before packaging. Existing artifacts were not deleted.');
+  }
+}
+
+function findJarCommand() {
+  // 与 apksigner 使用相同 JAVA_HOME，不回退 PATH 中未知版本的 jar。
+  const command = path.join(path.dirname(findJavaCommand()), process.platform === 'win32' ? 'jar.exe' : 'jar');
+  if (!existsSync(command)) throw new Error(`Locked Android JDK executable does not exist: ${command}`);
+  return command;
 }
 
 function findJavaCommand() {
@@ -770,8 +745,9 @@ export {
   assertApkSignerCertificateSha256,
   assertRealDirectory,
   assertSigningProperties,
+  assertSigningConfig,
   commitStagedAndroidApks,
-  computeTauriAndroidVersionCode,
+  readFlutterAndroidVersionCode,
   decodeJavaPropertyValue,
   extractApkSignerCertificateSha256,
   parseAapt2Badging,
@@ -779,4 +755,7 @@ export {
   pruneThenCommitAndroidApks,
   resolveReleaseAndroidApkCandidates,
   verifyAndroidApkSignature,
+  verifyAndroidApkAlignment,
+  verifyNoBundledGameMediaInApk,
+  verifyReleaseBuildOutput,
 };

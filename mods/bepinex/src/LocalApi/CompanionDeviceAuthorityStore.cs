@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Business.Domain.Recommendation;
 
 namespace MystiaStewardCompanion.LocalApi;
 
@@ -17,14 +18,15 @@ namespace MystiaStewardCompanion.LocalApi;
 internal sealed class CompanionDeviceAuthorityStore
 {
     public const int ProtocolVersion = 1;
-    public const int ProfileSchemaVersion = 1;
-    private const int StoreSchemaVersion = 1;
+    public const int ProfileSchemaVersion = 4;
+    private const int StoreSchemaVersion = 4;
     private const int MaxDevices = 32;
     private static readonly TimeSpan OnlineTtl = TimeSpan.FromSeconds(20);
     private static readonly Regex ColorPattern = new("^#[0-9A-F]{6}$", RegexOptions.CultureInvariant);
     private static readonly HashSet<string> ProfileBooleanFields = new(StringComparer.Ordinal)
     {
         "automationEnabled",
+        "gameUiEnabled",
         "autoRareOrderEnabled",
         "autoNormalOrderEnabled",
         "autoNormalTakeBeverage",
@@ -63,7 +65,6 @@ internal sealed class CompanionDeviceAuthorityStore
             "autoMaxRollbacks",
             "rareTargetHighlightColor",
             "normalTargetHighlightColor",
-            "serviceOrderSortMode",
             "recommendationSortProfile",
             "recommendationBudgetPolicy",
             "recipeVariantLimitPerBase",
@@ -196,6 +197,10 @@ internal sealed class CompanionDeviceAuthorityStore
             RequireExpectedAuthority(data, request.ExpectedAuthorityRevision);
             RequirePrimary(data, clientId);
             var current = RequireRegisteredDevice(data, clientId);
+            // 迁移后的主设备也可能处于待确认状态；禁止用一次普通配置修改
+            // 越过新 profile 的持久化确认，必须先按新 hash/revision 完成 ACK。
+            if (!string.IsNullOrWhiteSpace(current.PendingSyncId))
+                throw Conflict("请先保存并确认当前同步配置，再修改共享设置。");
             if (request.ExpectedProfileRevision != current.ProfileRevision)
             {
                 throw Conflict("配置版本已经变化，请刷新设备状态后重试。");
@@ -389,14 +394,15 @@ internal sealed class CompanionDeviceAuthorityStore
         string clientId,
         long expectedAuthorityRevision,
         DateTime nowUtc,
-        out string error)
+        out string error,
+        bool recordActivity = true)
     {
         lock (_lock)
         {
             if (_data == null)
             {
                 error = string.IsNullOrWhiteSpace(_loadError)
-                    ? "伴随设备权威尚未初始化，请先完成设备注册。"
+                    ? "设备连接信息尚未准备好，请先完成设备注册。"
                     : _loadError;
                 return false;
             }
@@ -412,11 +418,17 @@ internal sealed class CompanionDeviceAuthorityStore
             }
             if (expectedAuthorityRevision <= 0 || expectedAuthorityRevision != _data.AuthorityRevision)
             {
-                error = "配置权威版本已经变化，请刷新设备状态后重试。";
+                error = "主设备或共享配置已变化，请刷新设备状态后重试。";
+                return false;
+            }
+            if (!string.IsNullOrWhiteSpace(RequireRegisteredDevice(_data, clientId).PendingSyncId))
+            {
+                error = "当前主设备尚未保存并确认同步配置，不能修改游戏运行时状态。";
                 return false;
             }
 
-            _lastSeenUtc[clientId] = nowUtc.ToUniversalTime();
+            // 后台业务许可检查不能伪造客户端心跳；仅外部真实请求记录在线活动。
+            if (recordActivity) _lastSeenUtc[clientId] = nowUtc.ToUniversalTime();
             error = "";
             return true;
         }
@@ -425,6 +437,16 @@ internal sealed class CompanionDeviceAuthorityStore
     public long ReadAuthorityRevision()
     {
         lock (_lock) return _data?.AuthorityRevision ?? 0;
+    }
+
+    /// <summary>读取后台计算使用的权威配置副本，不刷新任何设备的在线时间。</summary>
+    public CompanionDeviceAuthorityStateDto ReadBusinessState(DateTime nowUtc)
+    {
+        lock (_lock)
+        {
+            var data = RequireData();
+            return BuildState(data, data.PrimaryDeviceId, nowUtc);
+        }
     }
 
     private void Load()
@@ -439,7 +461,17 @@ internal sealed class CompanionDeviceAuthorityStore
 
             try
             {
-                var data = JsonFileStore.LoadOrCreate<DeviceAuthorityData>(_path, JsonOptions);
+                // 原文只读取一次，再基于同一份 JSON 做结构校验和反序列化。
+                // 不能先交给 POCO：缺少 devices、修订或 pendingSyncId 时，属性默认值
+                // 会将损坏文件伪装成合法空注册表或已确认设备，进而被迁移覆盖。
+                var raw = File.ReadAllText(_path, Encoding.UTF8);
+                using var document = JsonDocument.Parse(raw);
+                ValidateStoredDocument(document.RootElement);
+                var data = document.RootElement.Deserialize<DeviceAuthorityData>(JsonOptions)
+                    ?? throw new InvalidDataException("Device authority document is null.");
+                // 只迁移已知 v1/v2/v3 存储，先验证原配置哈希与字段，再原子落盘新格式。
+                // 文件异常或未来版本不会进入迁移，也不会被空默认值覆盖。
+                if (data.Version is 1 or 2 or 3) data = MigrateLegacyVersion(data);
                 ValidateStoredData(data);
                 _data = data;
                 _loadError = "";
@@ -452,6 +484,107 @@ internal sealed class CompanionDeviceAuthorityStore
             }
         }
     }
+
+    /// <summary>
+    /// 在默认值或大小写宽松的反序列化规则介入前，验证磁盘协议的完整外壳。
+    /// v1/v2/v3/v4 的外壳相同，差异仅在 profile；profile 的字段、类型、依赖和原始
+    /// 哈希继续由 ValidateStoredData 按明确版本验证。此方法只读，不修补缺省数据。
+    /// </summary>
+    private static void ValidateStoredDocument(JsonElement document)
+    {
+        if (document.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException("Device authority document must be an object.");
+        RequireExactProperties(document, new HashSet<string>(StringComparer.Ordinal)
+        {
+            "version", "registryId", "authorityRevision", "stateRevision", "primaryDeviceId", "devices",
+        }, "设备配置文件");
+        // 版本必须在原始 JSON 中明确为受支持整数；不推断缺省版本，也不接受字符串版本。
+        var version = document.GetProperty("version");
+        if (version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number)
+            || number is not (1 or 2 or 3 or StoreSchemaVersion))
+            throw new InvalidDataException("Unsupported device authority document version.");
+        _ = RequireString(document, "registryId");
+        _ = RequireString(document, "primaryDeviceId");
+        var devices = document.GetProperty("devices");
+        if (devices.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("Stored devices must be an array.");
+
+        var recordFields = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "deviceId", "label", "platform", "appVersion", "profileRevision", "appliedProfileRevision",
+            "profileHash", "profile", "pendingSyncId", "createdAtUtc", "updatedAtUtc",
+        };
+        foreach (var device in devices.EnumerateArray())
+        {
+            if (device.ValueKind != JsonValueKind.Object)
+                throw new InvalidDataException("Stored device must be an object.");
+            // 精确字段检查同时拒绝重复和未知字段，避免 Deserialize 的后值覆盖前值
+            // 或忽略未知属性造成身份、同步状态及原始记录信息悄然丢失。
+            RequireExactProperties(device, recordFields, "设备记录");
+            foreach (var field in new[]
+            {
+                "deviceId", "label", "platform", "appVersion", "profileHash", "pendingSyncId",
+                "createdAtUtc", "updatedAtUtc",
+            })
+                _ = RequireString(device, field);
+            // 修订数值和时间仍交给类型反序列化以及后续范围校验，避免维护第二套语义规则。
+        }
+    }
+
+    /// <summary>
+    /// 将已验证的 v1/v2/v3 设备配置一次性升级为 v4，删除旧订单排序并明确评分模式。
+    /// v1 仍按历史辅助分项推导新增总开关；v2 保留用户显式选择，不重新推导。
+    /// 除已移除字段外，保留身份、主设备、自动化及全部有效偏好。
+    /// 每个设备获得新 revision/hash 与待确认标识，旧 ACK 和旧写入凭据不能
+    /// 确认新配置，客户端必须先持久化新 profile 后重新 ACK 才恢复写入。
+    /// </summary>
+    private DeviceAuthorityData MigrateLegacyVersion(DeviceAuthorityData legacy)
+    {
+        ValidateStoredData(legacy, legacy.Version);
+        var next = CloneData(legacy);
+        next.Version = StoreSchemaVersion;
+        foreach (var device in next.Devices)
+        {
+            var fields = device.Profile.EnumerateObject().ToDictionary(
+                property => property.Name, property => property.Value.Clone(), StringComparer.Ordinal);
+            if (legacy.Version == 1)
+            {
+                var enabled = fields.Any(field => IsGameUiFeature(field.Key) && field.Value.GetBoolean());
+                fields.Add("gameUiEnabled", JsonSerializer.SerializeToElement(enabled));
+            }
+            fields.Remove("serviceOrderSortMode");
+            var sort = fields["recommendationSortProfile"];
+            // 旧界面允许顶着固定预设名称调整九项参数。只修正模式标识，保留全部
+            // 原始目标值和顺序；不能用新默认值覆盖用户配置，也不猜其它相似预设。
+            if (!SortMatchesPreset(sort))
+                fields["recommendationSortProfile"] = JsonSerializer.SerializeToElement(new
+                {
+                    preset = "custom",
+                    objectives = sort.GetProperty("objectives").Clone(),
+                });
+            device.Profile = JsonSerializer.SerializeToElement(fields);
+            device.ProfileRevision = checked(device.ProfileRevision + 1);
+            device.ProfileHash = ComputeProfileHash(device.Profile);
+            device.PendingSyncId = Guid.NewGuid().ToString("N");
+        }
+        if (next.Devices.Count > 0)
+        {
+            next.AuthorityRevision = checked(next.AuthorityRevision + 1);
+            next.StateRevision = checked(next.StateRevision + 1);
+        }
+        ValidateStoredData(next);
+        // 与常规 mutation 共用已验证的原子文件替换，不在迁移失败时提交内存态。
+        JsonFileStore.Save(_path, next, JsonOptions);
+        return next;
+    }
+
+    /// <summary>精确匹配十个历史辅助字段，避免将自动化或收藏偏好算入总开关。</summary>
+    private static bool IsGameUiFeature(string field) => field is
+        "rareGameUiPinningEnabled" or "normalGameUiPinningEnabled"
+        or "rareRecipeVariantEnabled" or "normalRecipeVariantEnabled"
+        or "rareCookerHighlightEnabled" or "normalCookerHighlightEnabled"
+        or "rareSeatHighlightEnabled" or "normalSeatHighlightEnabled"
+        or "rareOrderHighlightEnabled" or "normalOrderHighlightEnabled";
 
     private void SaveAndCommit(DeviceAuthorityData next)
     {
@@ -521,7 +654,7 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         return _data ?? throw new CompanionDeviceAuthorityException(
             503,
-            string.IsNullOrWhiteSpace(_loadError) ? "设备配置权威不可用。" : _loadError);
+            string.IsNullOrWhiteSpace(_loadError) ? "设备连接与共享配置信息暂不可用。" : _loadError);
     }
 
     private static CompanionDeviceRecord RequireRegisteredDevice(DeviceAuthorityData data, string deviceId)
@@ -543,7 +676,7 @@ internal sealed class CompanionDeviceAuthorityStore
     {
         if (expected <= 0 || expected != data.AuthorityRevision)
         {
-            throw Conflict("配置权威版本已经变化，请刷新设备状态后重试。");
+            throw Conflict("主设备或共享配置已变化，请刷新设备状态后重试。");
         }
     }
 
@@ -564,15 +697,21 @@ internal sealed class CompanionDeviceAuthorityStore
         }
     }
 
-    private static JsonElement ValidateAndCloneProfile(JsonElement profile)
+    private static JsonElement ValidateAndCloneProfile(JsonElement profile, int schemaVersion = ProfileSchemaVersion)
     {
         if (profile.ValueKind != JsonValueKind.Object)
         {
             throw new CompanionDeviceAuthorityException(400, "共享配置必须是 JSON 对象。");
         }
-        RequireExactProperties(profile, ProfileFields, "共享配置");
+        // 旧字段集合只允许磁盘迁移使用。所有 HTTP 请求严格接受 schema 4，
+        // 不能把旧排序字段偷偷忽略，令调用方误认为已保存了不存在的设置。
+        var fields = new HashSet<string>(ProfileFields, StringComparer.Ordinal);
+        if (schemaVersion is 1 or 2) fields.Add("serviceOrderSortMode");
+        if (schemaVersion == 1) fields.Remove("gameUiEnabled");
+        RequireExactProperties(profile, fields, "共享配置");
         foreach (var field in ProfileBooleanFields)
         {
+            if (schemaVersion == 1 && field == "gameUiEnabled") continue;
             RequireBoolean(profile, field);
         }
 
@@ -581,24 +720,25 @@ internal sealed class CompanionDeviceAuthorityStore
         RequireInteger(profile, "autoMaxStepRetries", 1, 10);
         RequireInteger(profile, "autoMaxRollbacks", 0, 5);
         RequireInteger(profile, "recipeVariantLimitPerBase", 1, 8);
-        RequireStringChoice(profile, "serviceOrderSortMode", "ordered", "guest");
+        if (schemaVersion is 1 or 2) RequireStringChoice(profile, "serviceOrderSortMode", "ordered", "guest");
         RequireStringChoice(profile, "recommendationBudgetPolicy", "block", "warn", "ignore");
         RequireColor(profile, "rareTargetHighlightColor");
         RequireColor(profile, "normalTargetHighlightColor");
-        ValidateSortProfile(profile.GetProperty("recommendationSortProfile"));
+        ValidateSortProfile(profile.GetProperty("recommendationSortProfile"), schemaVersion < ProfileSchemaVersion);
         ValidateExclusions(profile.GetProperty("recommendationExclusions"));
         ValidatePreferenceDependencies(profile);
         return profile.Clone();
     }
 
-    private static void ValidateSortProfile(JsonElement value)
+    private static void ValidateSortProfile(JsonElement value, bool legacy)
     {
         if (value.ValueKind != JsonValueKind.Object)
         {
             throw new CompanionDeviceAuthorityException(400, "推荐排序配置必须是对象。");
         }
         RequireExactProperties(value, new HashSet<string>(new[] { "preset", "objectives" }, StringComparer.Ordinal), "推荐排序配置");
-        RequireStringChoice(value, "preset", "balanced", "resources", "profit", "simple");
+        if (legacy) RequireStringChoice(value, "preset", "balanced", "resources", "profit", "simple");
+        else RequireStringChoice(value, "preset", "balanced", "resources", "profit", "simple", "custom");
         var objectives = value.GetProperty("objectives");
         if (objectives.ValueKind != JsonValueKind.Array || objectives.GetArrayLength() != ObjectiveKeys.Count)
         {
@@ -624,6 +764,28 @@ internal sealed class CompanionDeviceAuthorityStore
             RequireInteger(objective, "weight", 0, 100);
             RequireStringChoice(objective, "direction", "asc", "desc");
         }
+        if (!legacy && value.GetProperty("preset").GetString() != "custom" && !SortMatchesPreset(value))
+            throw new CompanionDeviceAuthorityException(400, "固定评分预设不能修改参数，请使用自定义模式。");
+    }
+
+    /// <summary>
+    /// 对照推荐引擎唯一的四组预设定义验证完整目标值，不复制权重表，也不在 HTTP
+    /// 入口执行推荐计算。调用前已验证目标全集、唯一 key 和类型；目标数组排列不影响判定。
+    /// 此比较仅用于固定预设校验和旧记录迁移，不把显式 custom 自动改回任何预设。
+    /// </summary>
+    private static bool SortMatchesPreset(JsonElement value)
+    {
+        var preset = value.GetProperty("preset").GetString()!;
+        using var document = JsonDocument.Parse(RecommendationEngine.BuildDefaultRecommendationSortProfile(preset).ToJsonString());
+        var expected = document.RootElement.GetProperty("objectives").EnumerateArray()
+            .ToDictionary(item => item.GetProperty("key").GetString()!, StringComparer.Ordinal);
+        return value.GetProperty("objectives").EnumerateArray().All(item =>
+        {
+            var rule = expected[item.GetProperty("key").GetString()!];
+            return item.GetProperty("enabled").GetBoolean() == rule.GetProperty("enabled").GetBoolean()
+                && item.GetProperty("weight").GetInt32() == rule.GetProperty("weight").GetInt32()
+                && item.GetProperty("direction").GetString() == rule.GetProperty("direction").GetString();
+        });
     }
 
     private static void ValidateExclusions(JsonElement value)
@@ -807,9 +969,9 @@ internal sealed class CompanionDeviceAuthorityStore
             ?? throw new InvalidDataException("Failed to clone companion device authority state.");
     }
 
-    private static void ValidateStoredData(DeviceAuthorityData data)
+    private static void ValidateStoredData(DeviceAuthorityData data, int schemaVersion = StoreSchemaVersion)
     {
-        if (data.Version != StoreSchemaVersion) throw new InvalidDataException($"Unsupported device authority schema version: {data.Version}.");
+        if (data.Version != schemaVersion) throw new InvalidDataException($"Unsupported device authority schema version: {data.Version}.");
         if (data.RegistryId.Length != 32 || data.RegistryId.Any(character => !Uri.IsHexDigit(character)))
         {
             throw new InvalidDataException("Device registry ID is invalid.");
@@ -846,7 +1008,7 @@ internal sealed class CompanionDeviceAuthorityStore
             {
                 throw new InvalidDataException("Stored device profile revision is invalid.");
             }
-            var profile = ValidateAndCloneProfile(device.Profile);
+            var profile = ValidateAndCloneProfile(device.Profile, schemaVersion);
             if (!string.Equals(device.ProfileHash, ComputeProfileHash(profile), StringComparison.Ordinal))
             {
                 throw new InvalidDataException("Stored device profile hash is invalid.");
@@ -892,7 +1054,8 @@ internal sealed class CompanionDeviceAuthorityMutationResult
 
 internal sealed class DeviceAuthorityData
 {
-    public int Version { get; set; } = 1;
+    // 缺少版本的文件不作为 v1 猜测，必须拒绝加载并保留原始内容。
+    public int Version { get; set; }
     public string RegistryId { get; set; } = "";
     public long AuthorityRevision { get; set; }
     public long StateRevision { get; set; }

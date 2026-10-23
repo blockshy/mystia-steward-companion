@@ -29,12 +29,6 @@ const overlayController = readSource(
 const rareGuestInvitations = readSource(
   'mods/bepinex/src/Save/RuntimeRareGuestInvitationService.cs',
 );
-const rareGuestInvitationHook = readSource(
-  'apps/companion/src/companion/hooks/useRareGuestInvitations.ts',
-);
-const companionConnection = readSource(
-  'apps/companion/src/companion/hooks/useCompanionConnection.ts',
-);
 const coreProjection = readSource('mods/bepinex/src/Save/RuntimeCoreMappingProjection.cs');
 const recipeDependencyProjection = readSource(
   'mods/bepinex/src/Save/RuntimeRecipeDependencyProjection.cs',
@@ -43,7 +37,8 @@ const storageProjection = readSource('mods/bepinex/src/Save/RuntimeStorageStateP
 const modCSharpSources = listFilesRecursively(path.join(root, 'mods/bepinex/src'))
   .filter((filePath) => filePath.endsWith('.cs'))
   .map((filePath) => ({
-    filePath: path.relative(root, filePath),
+    // 白名单使用仓库路径；Windows 分隔符不能把合法的精确来源误判为跨模块读取。
+    filePath: path.relative(root, filePath).replaceAll('\\', '/'),
     source: fs.readFileSync(filePath, 'utf8'),
   }));
 
@@ -283,8 +278,7 @@ assert.ok(
   'Runtime data publication must hash the complete serialized catalog once per catalog generation.',
 );
 assert.ok(
-  !overlayController.includes('BuildRuntimeDataSignature')
-  && !companionConnection.includes('buildRuntimeDataCatalogCacheSignature'),
+  !overlayController.includes('BuildRuntimeDataSignature'),
   'Count/edge runtime-data signatures must not replace the authoritative payload hash.',
 );
 
@@ -479,18 +473,7 @@ assert.ok(
   'All-scene invitation candidates must require a non-empty exact day-destination array without reverse lookup.',
 );
 
-for (const requiredAutomaticInvitationLoad of [
-  'buildRareGuestInvitationContextIdentity',
-  'requestGenerationRef',
-  'listAbortControllerRef',
-  'snapshot: LocalApiSnapshot',
-  'visible: boolean',
-]) {
-  assert.ok(
-    rareGuestInvitationHook.includes(requiredAutomaticInvitationLoad),
-    `Passive invitation refresh is missing context or stale-request isolation: ${requiredAutomaticInvitationLoad}`,
-  );
-}
+// Flutter 的请求代次与页面订阅边界由其组件及真实 HTTP 组合测试验证，不再审计旧 React Hook。
 
 assert.ok(
   overlayController.includes('if (_runtimeMappedGuestSnapshot?.IsComplete != true)')

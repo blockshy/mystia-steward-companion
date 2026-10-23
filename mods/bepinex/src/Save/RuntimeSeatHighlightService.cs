@@ -278,7 +278,7 @@ internal static class RuntimeSeatHighlightService
 
     private static bool TryCreateActiveVisualLocked(
         RuntimeUiTargetSetSnapshot targetSet,
-        SeatHighlightClaim target,
+        RuntimeSeatHighlightClaim target,
         out string failure)
     {
         GameObject? selectionClone = null;
@@ -786,6 +786,9 @@ internal static class RuntimeSeatHighlightService
         out int sourceTriangleIndexCount,
         out string failure)
     {
+        // 仅真正创建 Mod 自有视觉时细分计时；活动视觉的逐帧守卫和脉冲路径完全不变。
+        // 固定键沿用主线程五秒窗口，不逐帧格式化或新增写盘。
+        using var creationTiming = RuntimePerformanceDiagnostics.MeasureStage("ui.seat.whiteSprite");
         ownedSprite = null!;
         ownedTexture = null!;
         sourceVertexCount = 0;
@@ -882,12 +885,13 @@ internal static class RuntimeSeatHighlightService
                     Math.Clamp(mappedY, 0f, whiteHeight));
             }
 
-            candidateTexture = new Texture2D(
-                OwnedFillTextureSize,
-                OwnedFillTextureSize,
-                TextureFormat.RGBA32,
-                false,
-                false);
+            using (RuntimePerformanceDiagnostics.MeasureStage("ui.seat.textureCreate"))
+                candidateTexture = new Texture2D(
+                    OwnedFillTextureSize,
+                    OwnedFillTextureSize,
+                    TextureFormat.RGBA32,
+                    false,
+                    false);
             if (candidateTexture == null
                 || candidateTexture.GetType().FullName != "UnityEngine.Texture2D"
                 || !IsLiveUnityObject(candidateTexture)
@@ -902,15 +906,22 @@ internal static class RuntimeSeatHighlightService
             }
             candidateTexture.name = OwnedFillTextureName;
 
-            var whitePixels = new Il2CppStructArray<Color32>(
-                OwnedFillTextureSize * OwnedFillTextureSize);
-            var opaqueWhite = new Color32(byte.MaxValue, byte.MaxValue, byte.MaxValue, byte.MaxValue);
-            for (var index = 0; index < whitePixels.Length; index += 1)
+            Il2CppStructArray<Color32> whitePixels;
+            using (RuntimePerformanceDiagnostics.MeasureStage("ui.seat.pixelFill"))
             {
-                whitePixels[index] = opaqueWhite;
+                whitePixels = new Il2CppStructArray<Color32>(
+                    OwnedFillTextureSize * OwnedFillTextureSize);
+                var opaqueWhite = new Color32(byte.MaxValue, byte.MaxValue, byte.MaxValue, byte.MaxValue);
+                for (var index = 0; index < whitePixels.Length; index += 1)
+                {
+                    whitePixels[index] = opaqueWhite;
+                }
             }
-            candidateTexture.SetPixels32(whitePixels);
-            candidateTexture.Apply(updateMipmaps: false, makeNoLongerReadable: false);
+            using (RuntimePerformanceDiagnostics.MeasureStage("ui.seat.textureUpload"))
+            {
+                candidateTexture.SetPixels32(whitePixels);
+                candidateTexture.Apply(updateMipmaps: false, makeNoLongerReadable: false);
+            }
             if (!IsLiveUnityObject(candidateTexture)
                 || candidateTexture.width != OwnedFillTextureSize
                 || candidateTexture.height != OwnedFillTextureSize
@@ -922,20 +933,23 @@ internal static class RuntimeSeatHighlightService
                 return false;
             }
 
-            candidateSprite = Sprite.Create(
-                candidateTexture,
-                new Rect(0f, 0f, whiteWidth, whiteHeight),
-                destinationPivot,
-                destinationPixelsPerUnit,
-                0u,
-                SpriteMeshType.Tight);
-            if (candidateSprite == null || !IsLiveUnityObject(candidateSprite))
+            using (RuntimePerformanceDiagnostics.MeasureStage("ui.seat.spriteGeometry"))
             {
-                failure = "failed to create the Mod-owned white seat sprite";
-                return false;
+                candidateSprite = Sprite.Create(
+                    candidateTexture,
+                    new Rect(0f, 0f, whiteWidth, whiteHeight),
+                    destinationPivot,
+                    destinationPixelsPerUnit,
+                    0u,
+                    SpriteMeshType.Tight);
+                if (candidateSprite == null || !IsLiveUnityObject(candidateSprite))
+                {
+                    failure = "failed to create the Mod-owned white seat sprite";
+                    return false;
+                }
+                candidateSprite.name = OwnedFillSpriteName;
+                candidateSprite.OverrideGeometry(destinationVertices, sourceTriangles);
             }
-            candidateSprite.name = OwnedFillSpriteName;
-            candidateSprite.OverrideGeometry(destinationVertices, sourceTriangles);
 
             var spriteTexture = candidateSprite.texture;
             if (spriteTexture == null
@@ -1533,7 +1547,7 @@ internal static class RuntimeSeatHighlightService
         return true;
     }
 
-    private static void BeginBindingLogTargetLocked(SeatHighlightClaim target)
+    private static void BeginBindingLogTargetLocked(RuntimeSeatHighlightClaim target)
     {
         if (_bindingLogBusinessGeneration != target.SessionGeneration)
         {
@@ -1546,7 +1560,7 @@ internal static class RuntimeSeatHighlightService
     }
 
     private static void TryLogFillBindingLocked(
-        SeatHighlightClaim target,
+        RuntimeSeatHighlightClaim target,
         int sourceVertexCount,
         int sourceTriangleIndexCount,
         Bounds fillBounds)
@@ -1570,7 +1584,7 @@ internal static class RuntimeSeatHighlightService
     }
 
     private static void TryLogFailureLocked(
-        SeatHighlightClaim target,
+        RuntimeSeatHighlightClaim target,
         string phase,
         string failure)
     {
@@ -1701,25 +1715,11 @@ internal static class RuntimeSeatHighlightService
         return true;
     }
 
-    private static Dictionary<int, SeatHighlightClaim> BuildSeatClaims(
+    private static IReadOnlyDictionary<int, RuntimeSeatHighlightClaim> BuildSeatClaims(
         RuntimeUiTargetSetSnapshot targetSet)
     {
-        var claims = new Dictionary<int, SeatHighlightClaim>();
-        foreach (var target in targetSet.Targets.Where(target =>
-                     target.SeatHighlightEnabled && target.DeskCode >= 0))
-        {
-            var combined = target.Claim;
-            if (claims.TryGetValue(target.DeskCode, out var existing))
-            {
-                combined |= existing.Claims;
-            }
-            claims[target.DeskCode] = new SeatHighlightClaim(
-                targetSet.Generation,
-                targetSet.SessionGeneration,
-                target.DeskCode,
-                combined);
-        }
-        return claims;
+        // 只复用不可变的托管投影；下面的绑定、对象存活和 generation 核验仍按原时序执行。
+        return targetSet.SeatHighlightClaims;
     }
 
     private static bool HasSeatHighlightTargets(RuntimeUiTargetSetSnapshot targetSet)
@@ -1898,12 +1898,6 @@ internal static class RuntimeSeatHighlightService
         var normalized = string.IsNullOrWhiteSpace(value) ? "unknown error" : value.Trim();
         return normalized.Length <= 180 ? normalized : normalized[..180] + "...";
     }
-
-    private readonly record struct SeatHighlightClaim(
-        long TargetSetGeneration,
-        long SessionGeneration,
-        int DeskCode,
-        RuntimeUiTargetKinds Claims);
 
     private sealed class ActiveSeatVisual
     {

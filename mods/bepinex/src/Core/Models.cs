@@ -16,6 +16,12 @@ public sealed class Recipe
     public int RecipeId { get; set; }
     public string Name { get; set; } = "";
     public List<string> Ingredients { get; set; } = new();
+    /// <summary>
+    /// 原生配方的基础食材 ID，顺序与 Ingredients 一致，重复项代表实际份数。
+    /// 自动化只凭该精确身份核对库存，不从显示名称反推 ID；null 表示目录尚未提供，
+    /// 与已确认不需要食材的空数组不同，不能将缺少信息解释为可以开锅。
+    /// </summary>
+    public List<int>? IngredientIds { get; set; }
     public List<string> PositiveTags { get; set; } = new();
     public List<string> NegativeTags { get; set; } = new();
     public string Cooker { get; set; } = "";
@@ -174,6 +180,11 @@ public sealed class NightBusinessContext
     public string? Place { get; init; }
     public string? PlaceLabel { get; init; }
     public List<NightBusinessGuest> ActiveRareGuests { get; init; } = new();
+    /// <summary>
+    /// 当前名单是否已完整读取。只有已核实的控制器集合及其中对象都成功分类才为 true；
+    /// false 时 ActiveRareGuests 仍可包含已确认的部分名单，空列表不能解释为没有稀客。
+    /// </summary>
+    public bool ActiveRareGuestsReadComplete { get; init; }
     public List<NightBusinessOrder> Orders { get; init; } = new();
     public string Source { get; init; } = "";
     public string? Error { get; init; }
@@ -223,6 +234,10 @@ public sealed class NormalBusinessOrder
     public int DeskCode { get; init; }
     public int? GuestId { get; init; }
     public int? RuntimeGuestId { get; init; }
+    /// <summary>精确客人类型核验后的图片命名空间；普通订单也可能由稀客分身提出，未知为空。</summary>
+    public string GuestImageKind { get; init; } = "";
+    /// <summary>对应图片目录中的实体 ID；只读展示使用，不替代订单/运行时客人的执行身份。</summary>
+    public int? GuestImageId { get; init; }
     public string GuestName { get; init; } = "";
     public string SpecialBusinessRole { get; init; } = "";
     public string SpecialBusinessRoleLabel { get; init; } = "";
@@ -270,6 +285,12 @@ public sealed class RecommendationState
 {
     public HashSet<int> AvailableRecipeIds { get; } = new();
     public HashSet<int> AvailableBeverageIds { get; } = new();
+    /// <summary>
+    /// 游戏图鉴的酒水收录列表已在本次实际运行态读取中完整取得。
+    /// 此事实独立于库存与可用候选；未读档、列表缺失或读取中断时必须为 false。
+    /// </summary>
+    public bool BeverageUnlockReadReady { get; set; }
+    public HashSet<int> UnlockedBeverageIds { get; } = new();
     public HashSet<int> AvailableIngredientIds { get; } = new();
     public Dictionary<int, int> OwnedIngredientQty { get; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; } = new();

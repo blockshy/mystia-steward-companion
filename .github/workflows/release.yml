@@ -60,6 +60,7 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
+          dotnet-version: "6.0.428"
 
       - name: Install exact Rust toolchain
         shell: bash
@@ -178,9 +179,9 @@ jobs:
           }
 
           const packageJson = JSON.parse(readFileSync('package.json', 'utf8'));
-          const tauriConfig = JSON.parse(readFileSync('apps/companion/src-tauri/tauri.conf.json', 'utf8'));
-          const cargoToml = readFileSync('apps/companion/src-tauri/Cargo.toml', 'utf8');
-          const cargoLock = readFileSync('apps/companion/src-tauri/Cargo.lock', 'utf8');
+          const flutterPubspec = readFileSync('apps/companion-flutter/pubspec.yaml', 'utf8');
+          const cargoToml = readFileSync('native/updater/Cargo.toml', 'utf8');
+          const cargoLock = readFileSync('native/updater/Cargo.lock', 'utf8');
           const pluginSource = readFileSync(
             'mods/bepinex/src/Plugin/MystiaStewardCompanionPlugin.cs',
             'utf8',
@@ -193,13 +194,13 @@ jobs:
           };
           const versions = new Map([
             ['package.json', packageJson.version],
-            ['tauri.conf.json', tauriConfig.version],
+            ['pubspec.yaml', requireMatch(flutterPubspec, /^version:\s*([^+\s]+)\+[1-9][0-9]*\s*$/m, 'pubspec.yaml')],
             ['Cargo.toml', requireMatch(cargoToml, /^version = "([^"]+)"/m, 'Cargo.toml')],
             [
               'Cargo.lock',
               requireMatch(
                 cargoLock,
-                /name = "mystia-steward-companion"\s+version = "([^"]+)"/s,
+                /name = "mystia-steward-companion-updater"\s+version = "([^"]+)"/s,
                 'Cargo.lock',
               ),
             ],
@@ -258,16 +259,28 @@ jobs:
       - name: Install dependencies
         run: corepack pnpm install --frozen-lockfile
 
-      - name: Lint
-        run: corepack pnpm lint
+      # SDK 包按根锁的大小和 SHA-256 验证，拒绝浮动 action/channel。
+      - name: Install locked Flutter
+        run: |
+          node scripts/install-locked-flutter.mjs --install-root "$RUNNER_TEMP/flutter"
+          echo "MYSTIA_FLUTTER_SDK_ROOT=$RUNNER_TEMP/flutter" >> "$GITHUB_ENV"
 
-      - name: Build frontend
-        run: corepack pnpm build
+      - name: Resolve locked Flutter dependencies
+        run: corepack pnpm flutter:get
+
+      - name: Analyze Flutter and run public unit tests
+        run: |
+          corepack pnpm flutter:format-check
+          corepack pnpm flutter:generated-check
+          corepack pnpm flutter:verify-unit
+          corepack pnpm flutter:contracts-unit
 
       - name: Audit release and workflow policy
         run: |
           corepack pnpm audit:release-policy
-          corepack pnpm audit:release-package
+          corepack pnpm audit:flutter-release
+          corepack pnpm audit:package-manifest
+          corepack pnpm audit:windows-runtime
           corepack pnpm audit:toolchain
           corepack pnpm audit:build-references
           corepack pnpm audit:android-apk-transaction
@@ -318,6 +331,7 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: global.json
+          dotnet-version: "6.0.428"
 
       - name: Install exact Rust toolchain
         shell: pwsh
@@ -419,6 +433,23 @@ jobs:
             --output mods/bepinex/References
           if ($LASTEXITCODE -ne 0) { throw "Build-reference restore failed." }
 
+      - name: Install locked Flutter
+        shell: pwsh
+        run: |
+          node scripts/install-locked-flutter.mjs --install-root "$env:RUNNER_TEMP/flutter"
+          if ($LASTEXITCODE -ne 0) { throw "Locked Flutter installation failed." }
+          "MYSTIA_FLUTTER_SDK_ROOT=$env:RUNNER_TEMP/flutter" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Audit isolated package and install transactions
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -File tests/csharp-business-package/package-transaction.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Package transaction audit failed." }
+          pwsh -NoProfile -File tests/csharp-business-package/install-transaction.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Install transaction audit failed." }
+          dotnet run --project tests/csharp-business-package/CSharpBusinessPackageSmoke.csproj -c Release -p:NuGetAudit=false
+          if ($LASTEXITCODE -ne 0) { throw "C# package-manifest audit failed." }
+
       - name: Build Windows release package
         shell: pwsh
         run: |
@@ -443,7 +474,7 @@ jobs:
         run: |
           $Expected = @(
             "mystia-steward-companion-bepinex.zip",
-            "mystia-steward-companion-companion-windows-x64.exe"
+            "mystia-steward-companion-companion-windows-x64.zip"
           )
           foreach ($Name in $Expected) {
             $Path = Join-Path "mods/bepinex/dist" $Name
@@ -459,7 +490,7 @@ jobs:
           $PackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
             "mods/bepinex/dist/mystia-steward-companion-bepinex.zip").Hash.ToLowerInvariant()
           $CompanionHash = (Get-FileHash -Algorithm SHA256 -LiteralPath `
-            "mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe").Hash.ToLowerInvariant()
+            "mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip").Hash.ToLowerInvariant()
           "mod_package_sha256=$PackageHash" | Out-File `
             -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "companion_sha256=$CompanionHash" | Out-File `
@@ -489,7 +520,7 @@ jobs:
           name: ${{ env.WINDOWS_PACKAGE_ARTIFACT }}
           path: |
             mods/bepinex/dist/mystia-steward-companion-bepinex.zip
-            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip
           if-no-files-found: error
           include-hidden-files: false
           overwrite: false
@@ -501,17 +532,11 @@ jobs:
           node scripts/manage-build-artifacts.mjs clean
           if ($LASTEXITCODE -ne 0) { throw "Desktop build-cache cleanup failed." }
 
-      - name: Setup JDK 21.0.4
+      - name: Setup JDK 21.0.12.1+1
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           distribution: temurin
-          java-version: "21.0.4"
-
-      - name: Install exact Android Rust targets
-        shell: pwsh
-        run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi --toolchain 1.97.1
-          if ($LASTEXITCODE -ne 0) { throw "Android Rust target installation failed." }
+          java-version: "21.0.12.1+1"
 
       - name: Install exact Android SDK packages
         shell: pwsh
@@ -551,11 +576,11 @@ jobs:
         run: |
           node scripts/materialize-android-signing.mjs `
             --keystore-output "$env:RUNNER_TEMP/mystia-release.jks" `
-            --properties-output apps/companion/src-tauri/gen/android/keystore.properties
+            --properties-output apps/companion-flutter/android/keystore.properties
           if ($LASTEXITCODE -ne 0) { throw "Android signing materialization failed." }
 
       - name: Build and verify signed Android APKs
-        run: corepack pnpm tauri:android:apk:signed
+        run: corepack pnpm flutter:android:apk:signed
 
       - name: Reject tracked Android build-input drift
         shell: pwsh
@@ -576,7 +601,7 @@ jobs:
         run: |
           node scripts/materialize-android-signing.mjs `
             --keystore-output "$env:RUNNER_TEMP/mystia-release.jks" `
-            --properties-output apps/companion/src-tauri/gen/android/keystore.properties `
+            --properties-output apps/companion-flutter/android/keystore.properties `
             --cleanup
           if ($LASTEXITCODE -ne 0) { throw "Android signing cleanup failed." }
 
@@ -684,7 +709,7 @@ jobs:
           const expected = new Map([
             ['mystia-steward-companion-bepinex.zip', process.env.EXPECTED_MOD_PACKAGE_SHA256],
             [
-              'mystia-steward-companion-companion-windows-x64.exe',
+              'mystia-steward-companion-companion-windows-x64.zip',
               process.env.EXPECTED_COMPANION_SHA256,
             ],
             ['mystia-steward-companion-android-arm64-v8a.apk', process.env.EXPECTED_ARM64_SHA256],
@@ -765,7 +790,7 @@ jobs:
           const checksumName = 'SHA256SUMS.txt';
           const subjects = [
             'mystia-steward-companion-bepinex.zip',
-            'mystia-steward-companion-companion-windows-x64.exe',
+            'mystia-steward-companion-companion-windows-x64.zip',
             'mystia-steward-companion-android-arm64-v8a.apk',
             'mystia-steward-companion-android-armeabi-v7a.apk',
             'update-manifest.json',
@@ -799,7 +824,7 @@ jobs:
         with:
           subject-path: |
             mods/bepinex/dist/mystia-steward-companion-bepinex.zip
-            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip
             mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
             mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
             mods/bepinex/dist/update-manifest.json
@@ -812,7 +837,7 @@ jobs:
           name: ${{ env.ASSEMBLED_RELEASE_ARTIFACT }}
           path: |
             mods/bepinex/dist/mystia-steward-companion-bepinex.zip
-            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.exe
+            mods/bepinex/dist/mystia-steward-companion-companion-windows-x64.zip
             mods/bepinex/dist/mystia-steward-companion-android-arm64-v8a.apk
             mods/bepinex/dist/mystia-steward-companion-android-armeabi-v7a.apk
             mods/bepinex/dist/update-manifest.json

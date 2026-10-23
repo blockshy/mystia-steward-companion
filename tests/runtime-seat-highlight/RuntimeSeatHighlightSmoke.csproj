@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/RuntimeSeatHighlightService.cs" Link="RuntimeSeatHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePerformanceDiagnostics.cs" Link="RuntimePerformanceDiagnostics.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
   </ItemGroup>

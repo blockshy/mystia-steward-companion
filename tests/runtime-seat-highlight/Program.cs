@@ -174,6 +174,51 @@ static Color BuildRareSeatPulse(float time) =>
             RuntimeTargetHighlightColor.DefaultNormal),
         time);
 
+// 发布时的座位声明属于不可变托管值：同桌两类必须合并，更新代次不能污染旧发布。
+// 纯投影样本使用独立显式代次，不占用下方真实服务夹具的发布计数。
+var projection = new RuntimeUiTargetSetSnapshot(101, 7, new[]
+{
+    CreateSeatTarget(RuntimeUiTargetKind.Rare, 0), CreateSeatTarget(RuntimeUiTargetKind.Normal, 0),
+});
+Assert(projection.SeatHighlightClaims.Count == 1
+       && projection.SeatHighlightClaims[0].Claims == (RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal),
+    "预计算投影必须保留同桌普客/稀客的合并声明。");
+Assert(projection.SeatHighlightClaims[0].TargetSetGeneration == projection.Generation
+       && projection.SeatHighlightClaims[0].SessionGeneration == 7
+       && projection.OrderHighlightTargets.Count == 0,
+    "投影必须保留确切代次并排除未开启订单高亮的目标。");
+var nextProjection = new RuntimeUiTargetSetSnapshot(102, 8,
+    new[] { CreateSeatTarget(RuntimeUiTargetKind.Normal, 1) });
+Assert(nextProjection.SeatHighlightClaims.ContainsKey(1)
+       && !nextProjection.SeatHighlightClaims.ContainsKey(0)
+       && projection.SeatHighlightClaims.ContainsKey(0), "新经营投影不得修改旧发布或沿用旧桌号。");
+var immutableClaims = (IDictionary<int, RuntimeSeatHighlightClaim>)projection.SeatHighlightClaims;
+var mutationRejected = false;
+try { immutableClaims.Clear(); } catch (NotSupportedException) { mutationRejected = true; }
+Assert(mutationRejected, "跨线程发布的投影必须拒绝调用方修改。");
+
+// 对比旧每帧投影的分配量；只测托管数据转换，不作为 Unity 耗时或 FPS 证据。
+static Dictionary<int, RuntimeSeatHighlightClaim> PreviousSeatProjection(RuntimeUiTargetSetSnapshot set)
+{
+    var claims = new Dictionary<int, RuntimeSeatHighlightClaim>();
+    foreach (var target in set.Targets.Where(target => target.SeatHighlightEnabled && target.DeskCode >= 0))
+    {
+        var combined = target.Claim;
+        if (claims.TryGetValue(target.DeskCode, out var previous)) combined |= previous.Claims;
+        claims[target.DeskCode] = new RuntimeSeatHighlightClaim(set.Generation, set.SessionGeneration, target.DeskCode, combined);
+    }
+    return claims;
+}
+_ = PreviousSeatProjection(projection); // 单独预热，避免把首次 JIT 费用记入分配对比。
+var allocationBefore = GC.GetAllocatedBytesForCurrentThread();
+for (var index = 0; index < 10000; index++) GC.KeepAlive(PreviousSeatProjection(projection));
+var previousAllocation = GC.GetAllocatedBytesForCurrentThread() - allocationBefore;
+allocationBefore = GC.GetAllocatedBytesForCurrentThread();
+for (var index = 0; index < 10000; index++) GC.KeepAlive(projection.SeatHighlightClaims);
+var projectedAllocation = GC.GetAllocatedBytesForCurrentThread() - allocationBefore;
+Assert(previousAllocation > 0 && projectedAllocation == 0, "稳定发布读取不应重新分配座位声明。");
+Console.WriteLine($"SEAT-PROJECTION-ALLOC iterations=10000; beforeBytes={previousAllocation}; afterBytes={projectedAllocation}");
+
 var sharedRootPosition = selectionRoot.transform.position;
 var sharedOutlineEnabled = outline.enabled;
 var sharedRegionalEnabled = regional.enabled;
@@ -187,7 +232,16 @@ Time.realtimeSinceStartup = 0f;
 RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(
     7,
     CreateSeatTarget(RuntimeUiTargetKind.Rare, 0)));
-RuntimeSeatHighlightService.Tick();
+// 链接真实诊断作用域，验证它测量的是实际首次创建，而非测试自造的计数。
+var diagnosticOwner = new object();
+var creationStages = new List<(string Key, double Milliseconds)>();
+RuntimePerformanceDiagnostics.BindStageRecorder(diagnosticOwner, (key, elapsed) => creationStages.Add((key, elapsed)));
+try { RuntimeSeatHighlightService.Tick(); }
+finally { RuntimePerformanceDiagnostics.ClearStageRecorder(diagnosticOwner); }
+Assert(creationStages.Select(item => item.Key).SequenceEqual(new[] {
+        "ui.seat.textureCreate", "ui.seat.pixelFill", "ui.seat.textureUpload", "ui.seat.spriteGeometry", "ui.seat.whiteSprite" })
+       && creationStages.All(item => double.IsFinite(item.Milliseconds) && item.Milliseconds >= 0),
+    "真实首次创建应按原执行顺序记录五段有限耗时，不改变资源调用顺序。");
 
 Assert(GameObject.Instantiated.Count == 1, "A target must create exactly one private selection clone.");
 Assert(GameObject.Created.Count == 1, "A target must create exactly one independent SpriteRenderer object.");
@@ -799,7 +853,13 @@ var texturesBeforePixelFailure = Texture2D.Created.Count;
 var destroyedTexturesBeforePixelFailure = Texture2D.Destroyed.Count;
 var spritesBeforePixelFailure = Sprite.Created.Count;
 Time.realtimeSinceStartup = 74f;
-RuntimeSeatHighlightService.Tick();
+creationStages.Clear();
+RuntimePerformanceDiagnostics.BindStageRecorder(diagnosticOwner, (key, elapsed) => creationStages.Add((key, elapsed)));
+try { RuntimeSeatHighlightService.Tick(); }
+finally { RuntimePerformanceDiagnostics.ClearStageRecorder(diagnosticOwner); }
+Assert(creationStages.Select(item => item.Key).SequenceEqual(new[] {
+        "ui.seat.textureCreate", "ui.seat.pixelFill", "ui.seat.textureUpload", "ui.seat.whiteSprite" }),
+    "上传失败也必须结束当前计时，但不能凭诊断继续创建 Sprite。");
 Texture2D.ThrowOnSetPixels32 = false;
 Assert(RuntimeSeatHighlightService.Status.Contains("rejected white pixel upload", StringComparison.Ordinal),
     "SetPixels32 failures must remain precise create failures.");
@@ -1010,8 +1070,8 @@ foreach (var required in new[]
              "Apply(updateMipmaps: false, makeNoLongerReadable: false)",
              "SafeDestroyTexture(fillTexture)",
              "private static readonly Dictionary<int, ActiveSeatVisual> ActiveVisuals",
-             "private static Dictionary<int, SeatHighlightClaim> BuildSeatClaims(",
-             "combined |= existing.Claims",
+             "private static IReadOnlyDictionary<int, RuntimeSeatHighlightClaim> BuildSeatClaims(",
+             "return targetSet.SeatHighlightClaims",
              "private sealed class ActiveSeatVisual",
              "sourceSprite.vertices",
              "sourceSprite.triangles",

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework><LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings><UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- 只链接纯托管生产状态机和存储，不加载 Unity，不读取真实游戏资源或配置。 -->
+    <Compile Include="../../mods/bepinex/src/GameMedia/GameMediaModels.cs" Link="GameMediaModels.cs" />
+    <Compile Include="../../mods/bepinex/src/GameMedia/GameMediaStore.cs" Link="GameMediaStore.cs" />
+    <Compile Include="../../mods/bepinex/src/GameMedia/GameMediaService.cs" Link="GameMediaService.cs" />
+    <Compile Include="../../mods/bepinex/src/GameMedia/GameMediaSourceIdentity.cs" Link="GameMediaSourceIdentity.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeAutomationControlState.cs" Link="RuntimeAutomationControlState.cs" />
+  </ItemGroup>
+</Project>

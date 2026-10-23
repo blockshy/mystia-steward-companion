@@ -17,7 +17,7 @@ internal static class AggregateModLogService
     public const long MaxFileBytes = 10L * 1024L * 1024L;
     public const int DefaultMaxFileCount = 30;
     public const int MinFileCount = 1;
-    public const int MaxFileCountLimit = 9999;
+    public const int MaxFileCountLimit = 30;
 
     private static readonly object SyncRoot = new();
     private static readonly UTF8Encoding Utf8NoBom = new(false);
@@ -26,7 +26,9 @@ internal static class AggregateModLogService
 
     private static AggregateLogListener? _listener;
     private static StreamWriter? _writer;
-    private static string _path = ResolvePath("");
+    // 路径只在 Configure 中解析并在启用 writer 前赋值。读取“日志是否开启”不应触发
+    // BepInEx 启动路径初始化；否则尚未配置的诊断功能会阻断隔离 API 宿主和早期读取。
+    private static string _path = "";
     private static int _maxFileCount = DefaultMaxFileCount;
     private static long _currentBytes;
     private static bool _enabled;
@@ -38,16 +40,12 @@ internal static class AggregateModLogService
     private static DateTime _lastAutomationFirstAt = DateTime.MinValue;
     private static string _pendingWriterRecoveryReason = "";
 
-    public static bool Enabled
-    {
-        get
-        {
-            lock (SyncRoot)
-            {
-                return _enabled;
-            }
-        }
-    }
+    /// <summary>
+    /// 高频诊断只读取已发布的开关快照，不等待后台日志持有的写盘/轮换锁。
+    /// 此值不能代替写入许可：实际 Append/Configure/Shutdown 仍在 SyncRoot 内核验并操作
+    /// writer。开关仅在锁内完成对应状态转换后发布，读线程不接触 writer 或其它可变字段。
+    /// </summary>
+    public static bool Enabled => Volatile.Read(ref _enabled);
 
     public static string ResolvePath(string? configuredPath)
     {
@@ -122,7 +120,7 @@ internal static class AggregateModLogService
                 WriteServiceLineLocked("aggregate log enabled");
                 _listener = new AggregateLogListener();
                 Logger.Listeners.Add(_listener);
-                _enabled = true;
+                Volatile.Write(ref _enabled, true);
             }
             catch
             {
@@ -146,12 +144,30 @@ internal static class AggregateModLogService
             lock (SyncRoot)
             {
                 if (!_enabled) return;
-                WriteLineLocked($"==== {FormatTimestamp()} [{NormalizeChannel(channel)}] {title} ====");
+                // 保留段落的原有逐行文本及即时可读语义，但只提交一次写入。写入器开启
+                // AutoFlush，逐行 Write 会让一次主线程快照产生数十次同步刷新和文件检查。
+                // 整段仍在同一锁内组装、轮换与写入，避免与 HTTP/后台日志相互穿插。
+                var section = new StringBuilder();
+                var header = $"==== {FormatTimestamp()} [{NormalizeChannel(channel)}] {title} ====";
+                section.AppendLine(header);
                 foreach (var line in SplitLines(content))
                 {
-                    WriteLineLocked(line);
+                    section.AppendLine(line);
                 }
-                WriteLineLocked("");
+                section.AppendLine();
+                var text = section.ToString();
+                if (Utf8NoBom.GetByteCount(text) <= MaxFileBytes)
+                {
+                    WriteTextLocked(text);
+                }
+                else
+                {
+                    // 异常大的完整诊断仍沿用原先的逐行轮换规则，不能因合并写入而
+                    // 把多行记录变成一个超出文件上限的记录。常规快照只走上面的单次写入。
+                    WriteLineLocked(header);
+                    foreach (var line in SplitLines(content)) WriteLineLocked(line);
+                    WriteLineLocked("");
+                }
             }
         }
         catch
@@ -244,7 +260,7 @@ internal static class AggregateModLogService
         }
         finally
         {
-            _enabled = false;
+            Volatile.Write(ref _enabled, false);
             CloseWriterLocked();
             _pendingWriterRecoveryReason = "";
             ResetDiagnosticStateLocked();
@@ -294,8 +310,16 @@ internal static class AggregateModLogService
 
     private static void WriteLineLocked(string line)
     {
+        WriteTextLocked(line + Environment.NewLine);
+    }
+
+    /// <summary>
+    /// 按一个完整日志记录执行健康检查、字节计数、轮换和写入。失败仍关闭写入器并由
+    /// 下一次调用恢复，绝不重放可能已经部分写入的内容；每段最多触发一次 AutoFlush。
+    /// </summary>
+    private static void WriteTextLocked(string text)
+    {
         EnsureWriterLocked();
-        var text = line + Environment.NewLine;
         var bytes = Utf8NoBom.GetByteCount(text);
         if (_currentBytes > 0 && _currentBytes + bytes > MaxFileBytes)
         {

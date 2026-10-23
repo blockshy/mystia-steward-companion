@@ -15,11 +15,13 @@ import {
   assertApkSignerCertificateSha256,
   assertRealDirectory,
   commitStagedAndroidApks,
-  computeTauriAndroidVersionCode,
+  readFlutterAndroidVersionCode,
   extractApkSignerCertificateSha256,
   parseAapt2Badging,
   pruneThenCommitAndroidApks,
   resolveReleaseAndroidApkCandidates,
+  verifyAndroidApkAlignment,
+  verifyNoBundledGameMediaInApk,
 } from '../../scripts/build-android-signed-apk.mjs';
 
 const canonicalAssetNames = [
@@ -31,8 +33,10 @@ const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'mystia-android-apk-trans
 try {
   auditRealDirectoryGuard();
   auditSigningCertificateParsing();
+  auditApkAlignmentGate();
+  auditRetiredGameMediaGate();
   auditAndroidApkIdentity();
-  auditTauriAndroidVersionCode();
+  auditFlutterAndroidVersionCode();
   auditAndroidApkCandidateResolution();
   auditPruneFailureDoesNotChangeReleaseAssets();
   auditSecondApkFailureRollsBackBothAssets();
@@ -40,6 +44,55 @@ try {
   console.log('Android APK transaction audit passed.');
 } finally {
   rmSync(fixtureRoot, { recursive: true, force: true });
+}
+
+function auditApkAlignmentGate() {
+  // 固定使用只读 -c 和 16 KiB 页检查；验证工具失败必须向上传播，不能继续交付。
+  let called = false;
+  verifyAndroidApkAlignment('fixture.apk', 'locked-zipalign', (command, args) => {
+    assert.equal(command, 'locked-zipalign');
+    assert.deepEqual(args, ['-c', '-P', '16', '-v', '4', 'fixture.apk']);
+    called = true;
+    return { status: 0 };
+  });
+  assert.equal(called, true);
+  assert.throws(() => verifyAndroidApkAlignment('fixture.apk', 'locked-zipalign', () => {
+    throw new Error('alignment verification failed');
+  }), /alignment verification failed/u);
+}
+
+function auditRetiredGameMediaGate() {
+  // 仅替换外部 jar 调用：生产的条目解析/拒绝逻辑照常运行，测试不需要 Android SDK、
+  // 签名材料或真实 APK。只读命令及工具失败传播也必须明确验证，避免失败后继续发布。
+  const candidate = path.join(fixtureRoot, 'candidate.apk');
+  const previous = path.join(fixtureRoot, 'previous.apk');
+  writeFileSync(candidate, 'candidate-apk-fixture');
+  writeFileSync(previous, 'previous-complete-apk');
+  const cleanEntries = ['AndroidManifest.xml', 'classes.dex', 'assets/flutter_assets/assets/help/zh-CN.json'];
+  const inspect = (entries) => verifyNoBundledGameMediaInApk(candidate, 'locked-jar', (command, args, options) => {
+    assert.equal(command, 'locked-jar');
+    assert.deepEqual(args, ['--list', '--file', candidate]);
+    assert.equal(options.maxBuffer, 8 * 1024 * 1024);
+    return { stdout: `${entries.join('\n')}\n` };
+  });
+  inspect(cleanEntries);
+  // 名称相似的合法目录不得误杀；只拒绝整个退役命名空间，而非所有 PNG 或 game-media 字样。
+  inspect([...cleanEntries, 'assets/flutter_assets/assets/game-media-preview/example.png']);
+  for (const retired of [
+    'assets/flutter_assets/assets/game-media/images/food-1.png',
+    'assets/flutter_assets/assets/game-media/manifest.json',
+    'assets/flutter_assets/assets/game-media/',
+    'ASSETS/FLUTTER_ASSETS/ASSETS/GAME-MEDIA/old.PNG',
+    'assets\\flutter_assets\\assets\\game-media\\old.png',
+  ]) {
+    assert.throws(() => inspect([...cleanEntries, retired]), /retired bundled assets\/game-media/u);
+    assert.equal(readFileSync(candidate, 'utf8'), 'candidate-apk-fixture');
+    assert.equal(readFileSync(previous, 'utf8'), 'previous-complete-apk');
+  }
+  assert.throws(() => inspect([]), /no AndroidManifest.xml/u);
+  assert.throws(() => verifyNoBundledGameMediaInApk(candidate, 'locked-jar', () => {
+    throw new Error('ZIP listing failed');
+  }), /ZIP listing failed/u);
 }
 
 function auditSigningCertificateParsing() {
@@ -151,7 +204,7 @@ function auditAndroidApkIdentity() {
         'com.tyukki.mystia.steward.companion',
         '1.3.0',
         ['arm64-v8a'],
-        '1003001',
+        '1003002',
       ),
       expectedIdentity('arm64-v8a'),
     ),
@@ -217,46 +270,14 @@ function auditAndroidApkIdentity() {
   }
 }
 
-function auditTauriAndroidVersionCode() {
-  assert.equal(computeTauriAndroidVersionCode('1.3.0'), 1_003_000);
-  assert.equal(computeTauriAndroidVersionCode('1.3.0-preview.1'), 1_003_000);
-  assert.equal(computeTauriAndroidVersionCode('1.3.0-preview.999'), 1_003_000);
-  assert.equal(computeTauriAndroidVersionCode('0.0.1'), 1);
-  assert.equal(computeTauriAndroidVersionCode('1.999.999'), 1_999_999);
-  assert.equal(computeTauriAndroidVersionCode('2099.999.999'), 2_099_999_999);
-  assert.equal(computeTauriAndroidVersionCode('2100.0.0'), 2_100_000_000);
-
-  for (const invalidVersion of [
-    '1.3.0-preview.0',
-    '1.3.0-preview.01',
-    '1.3.0-preview',
-    '1.3.0-rc.1',
-    '01.3.0',
-    '1.03.0',
-    '1.3.00',
-    '1.3',
-    '1.3.0.0',
-    ' 1.3.0',
-    '1.3.0 ',
-  ]) {
-    assert.throws(
-      () => computeTauriAndroidVersionCode(invalidVersion),
-      /canonical X\.Y\.Z or X\.Y\.Z-preview\.N/u,
-    );
-  }
-  for (const invalidVersion of ['1.1000.0', '1.0.1000']) {
-    assert.throws(
-      () => computeTauriAndroidVersionCode(invalidVersion),
-      /minor and patch versions must each be between 0 and 999/u,
-    );
-  }
-  for (const invalidVersion of ['0.0.0', '2100.0.1', '2101.0.0']) {
-    assert.throws(
-      () => computeTauriAndroidVersionCode(invalidVersion),
-      /versionCode must be between 1 and 2100000000/u,
-    );
-  }
+function auditFlutterAndroidVersionCode() {
+  const version=JSON.parse(readFileSync(new URL('../../package.json',import.meta.url),'utf8')).version;
+  assert.ok(readFlutterAndroidVersionCode(version)>1003001);
+  assert.throws(() => readFlutterAndroidVersionCode('0.0.0'), /版本不一致/u);
 }
+
+// 人工夹具固定 build number，无需依赖仓库实际版本；版本身份与ABI校验仍走生产函数。
+function computeAndroidVersionCode() { return 1003000; }
 
 function auditAndroidApkCandidateResolution() {
   const arm64Path = path.join(
@@ -265,7 +286,7 @@ function auditAndroidApkCandidateResolution() {
     'apk',
     'arm64',
     'release',
-    'app-arm64-release.apk',
+    'app-arm64-v8a-release.apk',
   );
   const armv7Path = path.join(
     fixtureRoot,
@@ -273,7 +294,7 @@ function auditAndroidApkCandidateResolution() {
     'apk',
     'arm',
     'release',
-    'app-arm-release.apk',
+    'app-armeabi-v7a-release.apk',
   );
   const badgingByPath = new Map([
     [arm64Path, createBadging('com.tyukki.mystia.steward.companion', '1.3.0', ['arm64-v8a'])],
@@ -287,6 +308,7 @@ function auditAndroidApkCandidateResolution() {
       return badgingByPath.get(candidate);
     },
     '1.3.0',
+      1003000,
   );
   assert.deepEqual(resolved.map((item) => item.apkPath), [arm64Path, armv7Path]);
   assert.deepEqual(inspectedPaths, [armv7Path, arm64Path]);
@@ -296,6 +318,7 @@ function auditAndroidApkCandidateResolution() {
       [arm64Path],
       (candidate) => badgingByPath.get(candidate),
       '1.3.0',
+      1003000,
     ),
     /exactly one signed armeabi-v7a release APK, received 0/u,
   );
@@ -306,7 +329,7 @@ function auditAndroidApkCandidateResolution() {
     'apk',
     'arm64',
     'release',
-    'app-arm64-copy-release.apk',
+    'duplicate', 'app-arm64-v8a-release.apk',
   );
   assert.throws(
     () => resolveReleaseAndroidApkCandidates(
@@ -315,6 +338,7 @@ function auditAndroidApkCandidateResolution() {
         ? badgingByPath.get(armv7Path)
         : badgingByPath.get(arm64Path),
       '1.3.0',
+      1003000,
     ),
     /exactly one signed arm64-v8a release APK, received 2/u,
   );
@@ -338,6 +362,7 @@ function auditAndroidApkCandidateResolution() {
           : badgingByPath.get(arm64Path);
       },
       '1.3.0',
+      1003000,
     ),
     /Unconsumed signed Android release APK/u,
   );
@@ -350,6 +375,7 @@ function auditAndroidApkCandidateResolution() {
         ? badgingByPath.get(armv7Path)
         : badgingByPath.get(arm64Path),
       '1.3.0',
+      1003000,
     ),
     /Android APK native-code mismatch/u,
   );
@@ -359,7 +385,7 @@ function createBadging(
   applicationId,
   versionName,
   nativeCodes,
-  versionCode = String(computeTauriAndroidVersionCode(versionName)),
+  versionCode = String(computeAndroidVersionCode(versionName)),
 ) {
   return [
     `package: name='${applicationId}' versionCode='${versionCode}' versionName='${versionName}' compileSdkVersion='36'`,

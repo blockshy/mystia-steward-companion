@@ -13,6 +13,7 @@ try
     AssertLifecycleReconciliationRetainsProjectedPriority();
     AssertRepeatedObservationDoesNotChangeBusinessProjection();
     AssertInvalidContextClearsExistingPriority();
+    AssertGuestReadCompletenessSurvivesProjection();
 
     Console.WriteLine(
         "PASS: mission recipe priority binds only to one current ordinary-business order "
@@ -23,6 +24,26 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+/// <summary>只投影订单任务优先级时，完整、部分和未知的名单状态都必须原样保留。</summary>
+static void AssertGuestReadCompletenessSurvivesProjection()
+{
+    foreach (var complete in new[] { false, true })
+    {
+        var source = new NightBusinessContext
+        {
+            ActiveRareGuestsReadComplete = complete,
+            ActiveRareGuests = new List<NightBusinessGuest> { new() { GuestId = 3 } },
+            Orders = new List<NightBusinessOrder> { CreateOrder() },
+            Error = complete ? null : "partial collection read",
+        };
+        var projected = Project(source);
+        AssertNotSame(source, projected, "Projection was not exercised.");
+        AssertEqual(complete, projected.ActiveRareGuestsReadComplete, "Guest completeness was lost.");
+        AssertEqual(1, projected.ActiveRareGuests.Count, "Confirmed partial guests were lost.");
+        AssertEqual(source.Error, projected.Error, "Guest read failure was lost.");
+    }
 }
 
 static void AssertValidSignalBindsToUniqueLiveOrder()

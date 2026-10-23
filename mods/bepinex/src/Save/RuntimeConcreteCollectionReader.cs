@@ -34,6 +34,7 @@ internal static class RuntimeConcreteCollectionReader
     private static readonly ConcurrentDictionary<Type, DictionaryContainsShape> DictionaryContainsShapes = new();
     private static readonly ConcurrentDictionary<Type, DictionaryLookupShape> DictionaryLookupShapes = new();
     private static readonly ConcurrentDictionary<Type, ListShape> ListShapes = new();
+    private static readonly ConcurrentDictionary<Type, HashSetShape> HashSetShapes = new();
     private static readonly ConcurrentDictionary<Type, ArrayShape> ArrayShapes = new();
     private static readonly ConcurrentDictionary<Type, StringArrayShape> StringArrayShapes = new();
 
@@ -388,6 +389,98 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>
+    /// 严格读取已核实的 HashSet 及其具体 Enumerator，不把 Count 当成整数索引。
+    /// BepInEx 783 的 HashSet 包装不实现托管 IEnumerable；必须调用包装自身的
+    /// GetEnumerator/MoveNext/Current。枚举异常、数量变化或 Dispose 失败均拒绝整次读取。
+    /// </summary>
+    public static bool TryReadHashSet(
+        object? set,
+        out IReadOnlyList<object?> values,
+        out RuntimeCollectionReadFailure failure)
+    {
+        values = Array.Empty<object?>();
+        if (set == null)
+        {
+            failure = RuntimeCollectionReadFailure.Missing;
+            return false;
+        }
+
+        if (!TryResolveHashSetShape(set.GetType(), out var shape))
+        {
+            failure = RuntimeCollectionReadFailure.UnsupportedShape;
+            return false;
+        }
+
+        if (!TryReadIntProperty(set, shape.Count, out var count))
+        {
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        if (!IsSaneCount(count))
+        {
+            failure = RuntimeCollectionReadFailure.CountMismatch;
+            return false;
+        }
+
+        if (!TryInvoke(shape.GetEnumerator, set, Array.Empty<object?>(), out var enumerator)
+            || enumerator == null || enumerator.GetType() != shape.EnumeratorType)
+        {
+            failure = RuntimeCollectionReadFailure.InvocationFailed;
+            return false;
+        }
+
+        var result = new List<object?>(count);
+        var readFailure = RuntimeCollectionReadFailure.None;
+        try
+        {
+            for (var index = 0; index < count; index++)
+            {
+                if (!TryInvokeBool(shape.MoveNext, enumerator, out var hasNext))
+                {
+                    readFailure = RuntimeCollectionReadFailure.InvocationFailed;
+                    break;
+                }
+
+                if (!hasNext)
+                {
+                    readFailure = RuntimeCollectionReadFailure.CountMismatch;
+                    break;
+                }
+
+                if (!TryReadProperty(enumerator, shape.Current, out var current))
+                {
+                    readFailure = RuntimeCollectionReadFailure.InvocationFailed;
+                    break;
+                }
+
+                result.Add(current);
+            }
+
+            if (readFailure == RuntimeCollectionReadFailure.None)
+            {
+                if (!TryInvokeBool(shape.MoveNext, enumerator, out var extra)
+                    || !TryReadIntProperty(set, shape.Count, out var finalCount))
+                    readFailure = RuntimeCollectionReadFailure.InvocationFailed;
+                else if (extra || finalCount != count)
+                    readFailure = RuntimeCollectionReadFailure.CountMismatch;
+            }
+        }
+        finally
+        {
+            // 原生枚举器即便读取失败也必须释放；不能把部分结果误发布成完整集合。
+            if (!TryInvoke(shape.Dispose, enumerator, Array.Empty<object?>(), out _)
+                && readFailure == RuntimeCollectionReadFailure.None)
+                readFailure = RuntimeCollectionReadFailure.InvocationFailed;
+        }
+
+        failure = readFailure;
+        if (readFailure != RuntimeCollectionReadFailure.None) return false;
+        values = result;
+        return true;
+    }
+
     public static bool TryReadList(
         object? list,
         out IReadOnlyList<object?> values,
@@ -626,6 +719,31 @@ internal static class RuntimeConcreteCollectionReader
         if (ListShapes.TryGetValue(type, out shape!)) return true;
         if (!TryBuildListShape(type, out shape)) return false;
         shape = ListShapes.GetOrAdd(type, shape);
+        return true;
+    }
+
+    private static bool TryResolveHashSetShape(Type type, out HashSetShape shape)
+    {
+        if (HashSetShapes.TryGetValue(type, out shape!)) return true;
+        shape = null!;
+        if (!TryGetClosedGenericDefinition(type, out var definitionName, out var arguments)
+            || arguments.Length != 1
+            || (definitionName != ManagedHashSetTypeName && definitionName != Il2CppHashSetTypeName))
+            return false;
+
+        var count = FindProperty(type, "Count", typeof(int));
+        var getEnumerator = FindMethod(type, "GetEnumerator", Type.EmptyTypes);
+        if (count == null || getEnumerator == null
+            || !IsClosedGenericType(getEnumerator.ReturnType, $"{definitionName}+Enumerator", arguments))
+            return false;
+
+        var enumeratorType = getEnumerator.ReturnType;
+        var moveNext = FindMethod(enumeratorType, "MoveNext", Type.EmptyTypes, typeof(bool));
+        var current = FindProperty(enumeratorType, "Current", arguments[0]);
+        var dispose = FindMethod(enumeratorType, "Dispose", Type.EmptyTypes, typeof(void));
+        if (moveNext == null || current == null || dispose == null) return false;
+        shape = HashSetShapes.GetOrAdd(type,
+            new HashSetShape(count, getEnumerator, enumeratorType, moveNext, current, dispose));
         return true;
     }
 
@@ -1027,6 +1145,14 @@ internal static class RuntimeConcreteCollectionReader
         MethodInfo ContainsKey);
 
     private sealed record ListShape(PropertyInfo Count, MethodInfo Indexer);
+
+    private sealed record HashSetShape(
+        PropertyInfo Count,
+        MethodInfo GetEnumerator,
+        Type EnumeratorType,
+        MethodInfo MoveNext,
+        PropertyInfo Current,
+        MethodInfo Dispose);
 
     private sealed record ArrayShape(
         RuntimeArrayKind Kind,

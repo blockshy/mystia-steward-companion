@@ -9,6 +9,7 @@ using BepInEx.Logging;
 using MystiaStewardCompanion.Plugin;
 using MystiaStewardCompanion.Save;
 using MystiaStewardCompanion.Updates;
+using MystiaStewardCompanion.GameMedia;
 
 namespace MystiaStewardCompanion.LocalApi;
 
@@ -20,7 +21,7 @@ namespace MystiaStewardCompanion.LocalApi;
 /// 始终保留回环监听，LAN 监听只能作为显式开启的附加通道。除 <c>/health</c> 外所有端点都要求 Token。
 /// GET 端点只读取状态，任何会修改运行时、配置、文件或外部进程状态的操作都只接受 POST。
 /// </remarks>
-internal sealed class LocalApiServer : IDisposable
+internal sealed partial class LocalApiServer : IDisposable
 {
     private const int MaxRequestHeaderBytes = 32768;
     private const int MaxRequestBodyBytes = 65536;
@@ -36,29 +37,9 @@ internal sealed class LocalApiServer : IDisposable
     private static readonly TimeSpan AutomationLeaseTtl = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ListenerStopTimeout = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ClientHandlerStopTimeout = TimeSpan.FromSeconds(3);
-    private static readonly string[] UiPinningTargetFieldSuffixes =
-    {
-        "Kind",
-        "Revision",
-        "Color",
-        "ListPinningEnabled",
-        "RecipeVariantEnabled",
-        "CookerHighlightEnabled",
-        "SeatHighlightEnabled",
-        "OrderHighlightEnabled",
-        "TraceId",
-        "OrderKey",
-        "OrderLifecycleSequence",
-        "DeskCode",
-        "RecipeId",
-        "IngredientIds",
-        "ExtraIngredientIds",
-        "BeverageId",
-        "CookerTypeId",
-    };
-
     private readonly ManualLogSource _log;
     private readonly object _snapshotLock = new();
+    private readonly LocalApiSnapshotPresentation _snapshotPresentation = new();
     private readonly object _listenerLock = new();
     private readonly object _lanSettingsLock = new();
     private readonly object _automationLeaseLock = new();
@@ -73,10 +54,11 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<bool, BepInExConsoleWindowState> _updateBepInExConsoleVisibility;
     private readonly Func<LocalApiConnectionConfigDto> _getConnectionConfig;
     private readonly Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> _updateConnectionConfig;
-    private readonly Func<LocalApiConnectionConfigDto> _regenerateLocalApiToken;
+    private DiagnosticPackageStore? _diagnosticPackages;
+    private readonly object _diagnosticPackagesLock = new();
     private readonly Func<string, string> _openLogFolder;
-    private readonly Func<string, int, int, RuntimeInventoryEditResult> _editInventory;
-    private readonly Func<string, IReadOnlyList<int>, int, RuntimeInventoryBulkEditResult> _editInventoryBulk;
+    private readonly Func<string, int, int, int?, LocalApiWritePermit, RuntimeInventoryEditResult> _editInventory;
+    private readonly Func<string, IReadOnlyList<int>, int, LocalApiWritePermit, RuntimeInventoryBulkEditResult> _editInventoryBulk;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _prepareOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeOrder;
     private readonly Func<OrderPreparationRequest, OrderPreparationResult> _completeNormalOrder;
@@ -85,12 +67,13 @@ internal sealed class LocalApiServer : IDisposable
     private readonly Func<RuntimeAvailableMissionSnapshot> _readAvailableMissions;
     private readonly Func<RuntimeAvailableMissionSnapshot> _getAvailableMissionSnapshot;
     private readonly Func<string, string, RareGuestInvitationResult> _listRareGuestInvitations;
-    private readonly Func<string, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> _inviteAllRareGuests;
-    private readonly Func<int, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> _inviteRareGuest;
+    private readonly Func<string, string, RareGuestInvitationWriteExpectation, LocalApiWritePermit, RareGuestInvitationResult> _inviteAllRareGuests;
+    private readonly Func<int, string, RareGuestInvitationWriteExpectation, LocalApiWritePermit, RareGuestInvitationResult> _inviteRareGuest;
     private readonly UpdateService _updateService;
     private readonly FavoriteStore _favoriteStore;
     private readonly CustomRecipeStore _customRecipeStore;
     private readonly CompanionDeviceAuthorityStore _deviceAuthorityStore;
+    private readonly GameMediaService? _gameMediaService;
     private readonly BoundedHandlerPool<TcpClient> _clientHandlers;
     private readonly List<LocalApiListenerWorker> _listeners = new();
     private readonly List<LanAddressCandidate> _activeLanCandidates = new();
@@ -147,10 +130,9 @@ internal sealed class LocalApiServer : IDisposable
         Func<bool, BepInExConsoleWindowState> updateBepInExConsoleVisibility,
         Func<LocalApiConnectionConfigDto> getConnectionConfig,
         Func<LocalApiConnectionConfigUpdate, LocalApiConnectionConfigDto> updateConnectionConfig,
-        Func<LocalApiConnectionConfigDto> regenerateLocalApiToken,
         Func<string, string> openLogFolder,
-        Func<string, int, int, RuntimeInventoryEditResult> editInventory,
-        Func<string, IReadOnlyList<int>, int, RuntimeInventoryBulkEditResult> editInventoryBulk,
+        Func<string, int, int, int?, LocalApiWritePermit, RuntimeInventoryEditResult> editInventory,
+        Func<string, IReadOnlyList<int>, int, LocalApiWritePermit, RuntimeInventoryBulkEditResult> editInventoryBulk,
         Func<OrderPreparationRequest, OrderPreparationResult> prepareOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeOrder,
         Func<OrderPreparationRequest, OrderPreparationResult> completeNormalOrder,
@@ -160,13 +142,15 @@ internal sealed class LocalApiServer : IDisposable
         Func<RuntimeAvailableMissionSnapshot> readAvailableMissions,
         Func<RuntimeAvailableMissionSnapshot> getAvailableMissionSnapshot,
         Func<string, string, RareGuestInvitationResult> listRareGuestInvitations,
-        Func<string, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> inviteAllRareGuests,
-        Func<int, string, RareGuestInvitationWriteExpectation, RareGuestInvitationResult> inviteRareGuest,
+        Func<string, string, RareGuestInvitationWriteExpectation, LocalApiWritePermit, RareGuestInvitationResult> inviteAllRareGuests,
+        Func<int, string, RareGuestInvitationWriteExpectation, LocalApiWritePermit, RareGuestInvitationResult> inviteRareGuest,
         UpdateService updateService,
         FavoriteStore favoriteStore,
         CustomRecipeStore customRecipeStore,
         CompanionDeviceAuthorityStore deviceAuthorityStore,
-        ManualLogSource log)
+        ManualLogSource log,
+        GameMediaService? gameMediaService = null,
+        DiagnosticPackageStore? diagnosticPackages = null)
     {
         BindAddress = IPAddress.Loopback;
         Port = Math.Clamp(port, 1024, 65535);
@@ -183,7 +167,7 @@ internal sealed class LocalApiServer : IDisposable
         _updateBepInExConsoleVisibility = updateBepInExConsoleVisibility;
         _getConnectionConfig = getConnectionConfig;
         _updateConnectionConfig = updateConnectionConfig;
-        _regenerateLocalApiToken = regenerateLocalApiToken;
+        _diagnosticPackages = diagnosticPackages;
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
         _editInventoryBulk = editInventoryBulk;
@@ -202,7 +186,14 @@ internal sealed class LocalApiServer : IDisposable
         _favoriteStore = favoriteStore;
         _customRecipeStore = customRecipeStore;
         _deviceAuthorityStore = deviceAuthorityStore;
-        RuntimeAutomationControlState.Reset("本地 API 正在等待主设备注册和自动化控制权。");
+        _gameMediaService = gameMediaService;
+        if (_gameMediaService != null)
+        {
+            _gameMediaReady = () => _gameMediaService.IsReady;
+            _gameMediaService.ReadinessChanged += OnGameMediaReadinessChanged;
+        }
+        RuntimeAutomationControlState.ConfigureResourceReadiness(_gameMediaReady);
+        RuntimeAutomationControlState.Reset("正在等待主设备连接并完成自动化配置同步。");
     }
 
     public IPAddress BindAddress { get; }
@@ -222,6 +213,15 @@ internal sealed class LocalApiServer : IDisposable
             Recommended = index == 0,
         })
         .ToArray();
+
+    /// <summary>读取实际在线私网 IPv4 网卡；不以已启动的监听列表代替可选地址集合。</summary>
+    public IReadOnlyList<LocalApiLanEndpointDto> AvailableLanEndpoints => GetPrivateLanIPv4Candidates()
+        .Select((candidate, index) => new LocalApiLanEndpointDto
+        {
+            Address = candidate.Address.ToString(), Endpoint = $"http://{FormatHostForUrl(candidate.Address)}:{Port}",
+            InterfaceName = candidate.InterfaceName, InterfaceType = candidate.InterfaceType.ToString(),
+            HasGateway = candidate.HasGateway, LinkLocal = candidate.LinkLocal, Recommended = index == 0,
+        }).ToArray();
 
     /// <summary>
     /// 启动本地 API 监听线程。
@@ -244,6 +244,7 @@ internal sealed class LocalApiServer : IDisposable
                 StartListener("loopback", BindAddress, lanCandidate: null);
                 ApplyLanSettingsCore(_lanEnabled, _lanBindHost);
                 _updateService.StartAutoCheckScheduler();
+                StartBusinessHost();
                 _log.LogInfo($"Local API loopback listener is available at {BaseUrl}. LAN listener is an optional add-on for trusted private networks.");
             }
             catch
@@ -270,6 +271,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             _snapshotJson = snapshotJson;
             _snapshotSignature = snapshotSignature;
+            InvalidateBusinessInput();
         }
     }
 
@@ -278,11 +280,15 @@ internal sealed class LocalApiServer : IDisposable
         lock (_snapshotLock)
         {
             _runtimeDataJson = runtimeDataJson;
+            InvalidateBusinessInput();
         }
     }
 
     public void Dispose()
     {
+        if (_gameMediaService != null) _gameMediaService.ReadinessChanged -= OnGameMediaReadinessChanged;
+        // 主线程停止时只撤销未来许可，不等待可能仍在等待主线程结果的后台业务线程。
+        StopBusinessHost();
         RuntimeAutomationControlState.Reset("本地 API 已停止；现有自动料理任务保持暂停。");
         lock (_lanSettingsLock)
         {
@@ -381,7 +387,7 @@ internal sealed class LocalApiServer : IDisposable
 
     public void SetToken(string token)
     {
-        _token = token.Trim();
+        Volatile.Write(ref _token, token);
     }
 
     private void StartListener(string name, IPAddress bindAddress, LanAddressCandidate? lanCandidate)
@@ -528,7 +534,7 @@ internal sealed class LocalApiServer : IDisposable
     /// <param name="client">由监听线程接收到的 TCP 客户端。</param>
     /// <remarks>
     /// 协议支持简单的 GET/POST；设备权威端点使用有界 JSON 请求体，其余既有端点继续使用查询参数。
-    /// Tauri 伴随窗口通过 Header 传入 Token；浏览器开发模式同样走回环地址和 Token，避免把游戏运行时操作暴露给任意网页。
+    /// Flutter 通过 Dart IO 直接发送 Token 与设备身份 Header；写入权限由 Mod 校验，不依赖客户端按钮显隐。
     /// </remarks>
     private void HandleClient(TcpClient client)
     {
@@ -581,8 +587,38 @@ internal sealed class LocalApiServer : IDisposable
 
             if (isPost)
             {
+                var requiresMedia = RequiresGameMediaReady(path);
+                if (requiresMedia) RequireGameMediaReady();
+                var manualWrite = RequiresPrimaryManualWrite(path) ? CaptureManualWritePermit(request, requiresMedia) : null;
+                var queuedWrite = IsQueuedManualWrite(path);
+                var mutatesBusinessInput = IsBusinessInputMutation(path) && !queuedWrite;
+                // 库存/邀请的 HTTP 线程会等待 Unity，不能持锁等待。它们携带许可到实际执行处复核。
+                // 下载/安排安装在入口接收一次明确意图，不让长网络等待阻塞权威切换和业务循环。
+                var holdsAuthority = mutatesBusinessInput || manualWrite != null && !queuedWrite
+                    && path is not ("/updates/download" or "/updates/install-on-exit");
+                if (holdsAuthority) Monitor.Enter(_authorityTransitionLock);
+                try
+                {
+                // 在管理串行锁内再次鉴权，旧密码请求不能先通过入口、排队等待改密完成后再写入。
+                if (holdsAuthority && !IsAuthorized(request))
+                    throw new CompanionDeviceAuthorityException(401, "连接密码已更新，请使用新密码重新连接。");
+                if (manualWrite != null && holdsAuthority) ValidateManualWriteAuthority(request);
+                if (requiresMedia) RequireGameMediaReady();
+                if (mutatesBusinessInput) InvalidateBusinessInput();
                 switch (path)
                 {
+                    case "/game-media/reload":
+                        WriteResponse(stream, 200, "OK", ToJson(new { ok = true, status = RequireGameMediaService().RequestReload() }));
+                        break;
+                    case "/business/page-session/open":
+                        WriteResponse(stream, 200, "OK", OpenBusinessPageSession(request, requestData));
+                        break;
+                    case "/business/page-session/update":
+                        WriteResponse(stream, 200, "OK", UpdateBusinessPageSession(request, requestData));
+                        break;
+                    case "/business/automation/retry":
+                        WriteResponse(stream, 200, "OK", RetryBusinessAutomation(request, requestData));
+                        break;
                     case "/devices/register":
                         WriteResponse(stream, 200, "OK", ToJson(RegisterCompanionDevice(request, requestData)));
                         break;
@@ -611,7 +647,7 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", ToJson(ReleaseAutomationLease(request)));
                         break;
                     case "/automation/barriers/ack":
-                        WriteResponse(stream, 200, "OK", ToJson(AcknowledgeAutomationSafetyBarrier(request, query)));
+                        WriteResponse(stream, 200, "OK", ToJson(AcknowledgeAutomationSafetyBarrier(request, requestData)));
                         break;
                     case "/local-api/config":
                         if (!isLoopbackClient)
@@ -619,22 +655,11 @@ internal sealed class LocalApiServer : IDisposable
                             WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "local configuration is only allowed from the game PC" }));
                             break;
                         }
-                        var updatedConfig = _updateConnectionConfig(new LocalApiConnectionConfigUpdate
-                        {
-                            LanEnabled = ReadBoolQuery(query, "lanEnabled"),
-                            LanBindHost = ReadStringQuery(query, "lanHost"),
-                        });
+                        var connectionUpdate = ReadConnectionConfigUpdate(requestData);
+                        LocalApiConnectionPolicy.Validate(connectionUpdate, AvailableLanEndpoints);
+                        var updatedConfig = _updateConnectionConfig(connectionUpdate);
+                        if (updatedConfig.Ok) SetToken(updatedConfig.Token);
                         WriteResponse(stream, 200, "OK", ToJson(updatedConfig));
-                        break;
-                    case "/local-api/token/regenerate":
-                        if (!isLoopbackClient)
-                        {
-                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "token regeneration is only allowed from the game PC" }));
-                            break;
-                        }
-                        var regeneratedConfig = _regenerateLocalApiToken();
-                        SetToken(regeneratedConfig.Token);
-                        WriteResponse(stream, 200, "OK", ToJson(regeneratedConfig));
                         break;
                     case "/updates/status":
                         WriteResponse(stream, 200, "OK", ToJson(_updateService.GetStatus()));
@@ -654,7 +679,15 @@ internal sealed class LocalApiServer : IDisposable
                     case "/logs/export-diagnostics":
                         WriteResponse(stream, 200, "OK", BuildDiagnosticPackageJson(ReadBoolQuery(query, "open") ?? false));
                         break;
+                    case "/logs/packages/delete":
+                        var deletion = ReadJsonRequest<LocalApiDiagnosticPackageDeleteRequest>(requestData, "id");
+                        WriteResponse(stream, 200, "OK", DeleteDiagnosticPackageJson(deletion.Id));
+                        break;
                     case "/logs/config":
+                        if (HasQueryParameter(query, "aggregateLogMaxFiles")
+                            && (!int.TryParse(ReadStringQuery(query, "aggregateLogMaxFiles"), out var count)
+                                || count is < 1 or > AggregateModLogService.MaxFileCountLimit))
+                            throw new CompanionDeviceAuthorityException(400, "日志文件数须为 1–30 之间的整数。");
                         _updateLogSettings(
                             ReadBoolQuery(query, "aggregateLog"),
                             ReadNullableIntQuery(query, "aggregateLogMaxFiles"));
@@ -672,34 +705,10 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", OpenLogFolderJson(ReadStringQuery(query, "target")));
                         break;
                     case "/inventory/set":
-                        WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query));
+                        WriteResponse(stream, 200, "OK", BuildInventoryEditJson(query, manualWrite!));
                         break;
                     case "/inventory/bulk-set":
-                        WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query));
-                        break;
-                    case "/orders/prepare-next":
-                        if (!TryRequireAutomationLease(request, out var prepareLeaseError, out var prepareEpoch))
-                        {
-                            WriteResponse(stream, 200, "OK", ToJson(prepareLeaseError));
-                            break;
-                        }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _prepareOrder, prepareEpoch));
-                        break;
-                    case "/orders/complete-first":
-                        if (!TryRequireAutomationLease(request, out var completeLeaseError, out var completeEpoch))
-                        {
-                            WriteResponse(stream, 200, "OK", ToJson(completeLeaseError));
-                            break;
-                        }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeOrder, completeEpoch));
-                        break;
-                    case "/orders/normal/complete-first":
-                        if (!TryRequireAutomationLease(request, out var normalLeaseError, out var normalEpoch))
-                        {
-                            WriteResponse(stream, 200, "OK", ToJson(normalLeaseError));
-                            break;
-                        }
-                        WriteResponse(stream, 200, "OK", BuildOrderActionJson(query, _completeNormalOrder, normalEpoch));
+                        WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query, manualWrite!));
                         break;
                     case "/orders/rare/dismiss":
                         WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
@@ -712,7 +721,7 @@ internal sealed class LocalApiServer : IDisposable
                             BuildRareGuestInvitationJson(() => _inviteAllRareGuests(
                                 ReadStringQuery(query, "scope"),
                                 ReadStringQuery(query, "levels"),
-                                ReadRareGuestInvitationWriteExpectation(query))));
+                                ReadRareGuestInvitationWriteExpectation(query), manualWrite!)));
                         break;
                     case "/rare-guests/invite":
                         WriteResponse(
@@ -722,10 +731,7 @@ internal sealed class LocalApiServer : IDisposable
                             BuildRareGuestInvitationJson(() => _inviteRareGuest(
                                 ReadIntQuery(query, "guestId", -1),
                                 ReadStringQuery(query, "scope"),
-                                ReadRareGuestInvitationWriteExpectation(query))));
-                        break;
-                    case "/ui-pinning/targets":
-                        WriteResponse(stream, 200, "OK", UpdateUiPinningTargetsJson(request, query));
+                                ReadRareGuestInvitationWriteExpectation(query), manualWrite!)));
                         break;
                     case "/favorites/add-recipe":
                         WriteResponse(stream, 200, "OK", AddRecipeFavoriteJson(query));
@@ -743,16 +749,18 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", UpsertCustomRecipeJson(query));
                         break;
                     case "/custom-recipes/remove":
-                        WriteResponse(stream, 200, "OK", _customRecipeStore.Remove(ReadStringQuery(query, "id")));
+                        WriteResponse(stream, 200, "OK", _customRecipeStore.Remove(
+                            ReadStringQuery(query, "mode"), ReadCustomRecipeModeRevision(query), ReadStringQuery(query, "id")));
                         break;
                     case "/custom-recipes/settings":
-                        WriteResponse(stream, 200, "OK", SetCustomRecipesEnabledJson(query));
+                        WriteResponse(stream, 200, "OK", SetCustomRecipeSettingsJson(query));
                         break;
                     case "/custom-recipes/update-flags":
                         WriteResponse(stream, 200, "OK", UpdateCustomRecipeFlagsJson(query));
                         break;
                     case "/custom-recipes/move":
                         WriteResponse(stream, 200, "OK", _customRecipeStore.Move(
+                            ReadStringQuery(query, "mode"), ReadCustomRecipeModeRevision(query),
                             ReadStringQuery(query, "id"),
                             ReadStringQuery(query, "direction")));
                         break;
@@ -760,11 +768,29 @@ internal sealed class LocalApiServer : IDisposable
                         WriteResponse(stream, 404, "Not Found", ToJson(new LocalApiErrorDto { Error = "not found" }));
                         break;
                 }
+                }
+                finally
+                {
+                    if (mutatesBusinessInput) InvalidateBusinessInput();
+                    if (holdsAuthority) Monitor.Exit(_authorityTransitionLock);
+                }
                 return;
             }
 
             switch (path)
             {
+                case "/game-media/status":
+                    WriteResponse(stream, 200, "OK", ToJson(RequireGameMediaService().Status));
+                    break;
+                case "/game-media/manifest":
+                    WriteResponse(stream, 200, "OK", ToJson(RequireGameMediaService().Manifest()));
+                    break;
+                case "/game-media/image":
+                    WriteGameMediaImage(stream, query);
+                    break;
+                case "/business/status":
+                    WriteResponse(stream, 200, "OK", GetBusinessStatusJson(query));
+                    break;
                 case "/health":
                     WriteResponse(stream, 200, "OK", BuildHealthJson());
                     break;
@@ -797,6 +823,9 @@ internal sealed class LocalApiServer : IDisposable
                 case "/logs/settings":
                     WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
                     break;
+                case "/logs/packages":
+                    WriteResponse(stream, 200, "OK", ListDiagnosticPackagesJson());
+                    break;
                 case "/favorites":
                     WriteResponse(stream, 200, "OK", _favoriteStore.GetJson());
                     break;
@@ -826,6 +855,10 @@ internal sealed class LocalApiServer : IDisposable
         {
             TryWriteErrorResponse(stream, ex.StatusCode, HttpStatusReason(ex.StatusCode), ex.Message);
         }
+        catch (GameMediaException ex)
+        {
+            TryWriteErrorResponse(stream, ex.StatusCode, HttpStatusReason(ex.StatusCode), ex.Message);
+        }
         catch (Exception ex)
         {
             _log.LogWarning($"Local API request failed: {ex.Message}");
@@ -839,27 +872,30 @@ internal sealed class LocalApiServer : IDisposable
 
     private string GetSnapshotJson(string query = "", string request = "", bool logRequest = true)
     {
-        string knownSignature;
+        var knownSignature = ReadStringQuery(query, "knownSignature");
+        var knownPresentation = ReadStringQuery(query, "knownOrderPresentationSignature");
         string currentSignature;
         string snapshotJson;
-        string responseJson;
-        bool unchanged;
         lock (_snapshotLock)
         {
-            knownSignature = ReadStringQuery(query, "knownSignature");
             currentSignature = _snapshotSignature;
             snapshotJson = _snapshotJson;
-            unchanged = !string.IsNullOrWhiteSpace(knownSignature)
-                && !string.IsNullOrWhiteSpace(_snapshotSignature)
-                && string.Equals(knownSignature, _snapshotSignature, StringComparison.Ordinal);
-            responseJson = unchanged
-                ? ToJson(new LocalApiSnapshotUnchangedDto
-                {
-                    Unchanged = true,
-                    SnapshotSignature = _snapshotSignature,
-                })
-                : _snapshotJson;
         }
+        // 仅 HTTP 展示使用新顺序。原始正文/签名仍留给业务配对；在独立显示锁中处理少量订单，
+        // 不持有 Unity 发布锁，不等待慢方案。显示协议版本单独入令牌，不能混作执行快照签名。
+        var presentationSignature = LocalApiSnapshotPresentation.Signature(currentSignature);
+        var unchanged = !string.IsNullOrWhiteSpace(knownSignature)
+            && !string.IsNullOrWhiteSpace(currentSignature)
+            && string.Equals(knownSignature, currentSignature, StringComparison.Ordinal)
+            && string.Equals(knownPresentation, presentationSignature, StringComparison.Ordinal);
+        var responseJson = unchanged
+            ? ToJson(new LocalApiSnapshotUnchangedDto
+            {
+                Unchanged = true,
+                SnapshotSignature = currentSignature,
+                OrderPresentationSignature = presentationSignature,
+            })
+            : _snapshotPresentation.Get(snapshotJson, currentSignature).Json;
 
         if (logRequest)
         {
@@ -1039,6 +1075,7 @@ internal sealed class LocalApiServer : IDisposable
         {
             Ok = true,
             PluginVersion = _pluginVersion,
+            ClientProtocolVersion = MystiaStewardCompanion.Contracts.ClientProtocol.Version,
             BindAddress = BindAddress.ToString(),
             Port = Port,
             AuthRequired = true,
@@ -1066,7 +1103,7 @@ internal sealed class LocalApiServer : IDisposable
                 state.ActiveProfile,
                 state.AuthorityRevision,
                 "automation-authority-unavailable",
-                "主设备已注册，正在等待其取得自动化控制权；已开始的料理保持暂停。");
+                "主设备已注册，正在同步自动化运行状态；已开始的料理保持暂停。");
             return state;
         }
     }
@@ -1096,7 +1133,7 @@ internal sealed class LocalApiServer : IDisposable
                 InvalidateRuntimeAuthority(
                     state,
                     "automation-profile-changing",
-                    "主设备生效配置正在切换；已开始的料理会保留在原厨具，配置应用并重新取得控制权后继续。",
+                    "主设备的自动化配置正在更新；已开始的料理会保留在原厨具，等待新配置同步完成。",
                     "primary companion functional profile changed");
             }
             return state;
@@ -1119,7 +1156,7 @@ internal sealed class LocalApiServer : IDisposable
                 InvalidateRuntimeAuthority(
                     result.State,
                     "automation-primary-device-changing",
-                    "主设备正在切换；已开始的料理会保留在原厨具，新主设备取得控制权后继续。",
+                    "主设备正在切换；已开始的料理会保留在原厨具，等待新主设备完成连接与配置同步。",
                     "primary companion device changed");
             }
             return result.State;
@@ -1381,7 +1418,7 @@ internal sealed class LocalApiServer : IDisposable
                         clientId,
                         clientLabel,
                         authorityRevision,
-                        $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能释放其控制权。");
+                        $"自动化当前由 {_automationLease.ClientLabel} 控制，本设备不能代替该设备停止自动化。");
                 }
 
                 if (_automationLease != null)
@@ -1389,7 +1426,7 @@ internal sealed class LocalApiServer : IDisposable
                     _automationLease = null;
                     RuntimeAutomationControlState.RevokeLease(
                         "automation-lease-released",
-                        "主设备正在应用新的自动化配置；已开始的料理会保留在原厨具，配置生效并重新取得控制权后继续。");
+                        "自动化已暂停；已开始的料理会保留在原厨具，等待主设备连接与配置重新就绪。");
                     _automationCommandEpoch++;
                     _advanceAutomationCommandEpoch(_automationCommandEpoch);
                 }
@@ -1399,9 +1436,12 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(string request, string query)
+    private AutomationSafetyBarrierAckResult AcknowledgeAutomationSafetyBarrier(string request, HttpRequestData requestData)
     {
-        if (!long.TryParse(ReadStringQuery(query, "sequence"), out var sequence) || sequence <= 0)
+        var intent = ReadJsonRequest<BusinessBarrierAckRequest>(requestData,
+            "protocolVersion", "automationSessionId", "businessGeneration", "sequence");
+        var sequence = intent.Sequence;
+        if (sequence <= 0)
         {
             return new AutomationSafetyBarrierAckResult
             {
@@ -1414,6 +1454,7 @@ internal sealed class LocalApiServer : IDisposable
         var (clientId, _, identityError) = ReadClientIdentity(request);
         lock (_authorityTransitionLock)
         {
+            RequireBusinessInteractionScope(intent.ProtocolVersion, intent.AutomationSessionId, intent.BusinessGeneration);
             var now = DateTime.UtcNow;
             var authorityRevision = 0L;
             var authorityError = "";
@@ -1440,12 +1481,15 @@ internal sealed class LocalApiServer : IDisposable
                         Ok = false,
                         Sequence = sequence,
                         Error = _automationLease == null
-                            ? "自动化控制权已失效，不能确认安全栅栏。"
-                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，本窗口不能确认其安全栅栏。",
+                            ? "自动化控制已暂停，请等待主设备连接与配置同步完成后，再处理人工确认事项。"
+                            : $"自动化当前由 {_automationLease.ClientLabel} 控制，请在该设备处理人工确认事项。",
                     };
                 }
 
-                return _ackAutomationSafetyBarrier(sequence);
+                var result = _ackAutomationSafetyBarrier(sequence);
+                _businessCoordinator.AcknowledgeResult(sequence,
+                    System.Text.Json.Nodes.JsonNode.Parse(ToJson(result))!.AsObject(), BusinessNow);
+                return result;
             }
         }
     }
@@ -1490,12 +1534,59 @@ internal sealed class LocalApiServer : IDisposable
                     Prepared = false,
                     Error = status.Error
                         ?? (string.IsNullOrWhiteSpace(status.OwnerClientId)
-                            ? "自动化控制权不可用，请先在本窗口开启自动化。"
+                            ? "请确认此设备为主设备，并等待连接与自动化配置同步完成后重试。"
                             : $"自动化当前由 {status.OwnerLabel} 控制，本窗口仅查看。"),
                 };
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// 与 Flutter 手工写入口保持同一权限表。查看设备仍能读取、查询推荐和检查更新；
+    /// 设备切主/同步等由各自 CAS 协议处理，自动化另有 lease，不能混用这三类权限。
+    /// </summary>
+    private static bool RequiresPrimaryManualWrite(string path) => path is
+        "/favorites/add-recipe" or "/favorites/remove-recipe" or "/favorites/add-beverage" or "/favorites/remove-beverage"
+        or "/custom-recipes/upsert" or "/custom-recipes/remove" or "/custom-recipes/settings" or "/custom-recipes/update-flags" or "/custom-recipes/move"
+        or "/inventory/set" or "/inventory/bulk-set" or "/rare-guests/invite" or "/rare-guests/invite-all" or "/orders/rare/dismiss"
+        or "/logs/config" or "/logs/console" or "/logs/open-folder" or "/logs/export-diagnostics" or "/logs/packages/delete" or "/diagnostics/automation-decision"
+        or "/local-api/config" or "/updates/download" or "/updates/install-on-exit" or "/game-media/reload";
+
+    private static bool IsQueuedManualWrite(string path) => path is
+        "/inventory/set" or "/inventory/bulk-set" or "/rare-guests/invite" or "/rare-guests/invite-all";
+
+    /// <summary>先拒绝缺失身份/旧修订；闭包只捕获本请求不可变字符串，不读取后续客户端凭据。</summary>
+    private LocalApiWritePermit CaptureManualWritePermit(string request, bool requiresMedia = false)
+    {
+        lock (_authorityTransitionLock)
+        {
+            ValidateManualWriteAuthority(request);
+            if (requiresMedia) RequireGameMediaReady();
+            var mediaGeneration = requiresMedia ? _gameMediaService?.Manifest().Generation : null;
+            return new LocalApiWritePermit(_authorityTransitionLock,
+                () =>
+                {
+                    ValidateManualWriteAuthority(request);
+                    if (!requiresMedia) return;
+                    RequireGameMediaReady();
+                    // 已入 Unity 队列的请求不得跨图片重读代次获得追认，即使新代现在已经 ready。
+                    if (_gameMediaService != null && _gameMediaService.Manifest().Generation != mediaGeneration)
+                        throw new GameMediaException(409, "game-media-generation-stale");
+                }, InvalidateBusinessInput);
+        }
+    }
+
+    /// <summary>调用方持有权威锁。手工写无需自动化 lease，但必须来自当前主设备和精确修订。</summary>
+    private void ValidateManualWriteAuthority(string request)
+    {
+        // 排入 Unity 的写许可也必须复核密码，改密后旧请求不能绕过 HTTP 入口继续执行。
+        if (!IsAuthorized(request)) throw new CompanionDeviceAuthorityException(401, "连接密码已更新，请重新连接后重试。");
+        var (clientId, _, identityError) = ReadClientIdentity(request);
+        if (!string.IsNullOrWhiteSpace(identityError))
+            throw new CompanionDeviceAuthorityException(403, identityError);
+        if (!TryAuthorizeRuntimeWriter(request, clientId, DateTime.UtcNow, out _, out var error))
+            throw new CompanionDeviceAuthorityException(403, error);
     }
 
     private bool TryAuthorizeRuntimeWriter(
@@ -1642,8 +1733,8 @@ internal sealed class LocalApiServer : IDisposable
                     ? "automation-authority-revision-changed"
                     : "automation-lease-expired",
                 revisionChanged
-                    ? "主设备配置权威已经变化；已开始的料理会保留在原厨具，新权威取得控制权后继续。"
-                    : "主设备自动化租约已过期；已开始的料理会保留在原厨具，续约成功后继续。");
+                    ? "主设备或共享配置已变化；已开始的料理会保留在原厨具，当前主设备完成同步后继续。"
+                    : "主设备未能及时保持连接，自动化已暂停；已开始的料理会保留在原厨具，连接恢复后继续。");
         }
     }
 
@@ -1715,14 +1806,13 @@ internal sealed class LocalApiServer : IDisposable
         try
         {
             var settings = _getLogSettings();
-            var packageDirectory = ResolveDiagnosticPackageDirectory();
-            Directory.CreateDirectory(packageDirectory);
-            var packagePath = Path.Combine(
-                packageDirectory,
-                "mystia-steward-companion-diagnostics-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
+            // 创建与返回目录必须来自同一存储实例；生产默认目录仍由工厂解析，
+            // 注入的隔离存储则完全不依赖尚未初始化的 BepInEx 全局路径。
+            var packages = DiagnosticPackages;
+            var packageDirectory = packages.DirectoryPath;
             var added = new List<string>();
 
-            using (var archive = ZipFile.Open(packagePath, ZipArchiveMode.Create))
+            var packagePath = packages.Create(archive =>
             {
                 AddTextEntry(archive, "manifest.json", BuildDiagnosticManifestJson(settings), added);
                 AddTextEntry(archive, "snapshot/current-snapshot.json", GetSnapshotJson(logRequest: false), added);
@@ -1753,7 +1843,7 @@ internal sealed class LocalApiServer : IDisposable
                     ToJson(RuntimeServeInWorkMissionDiagnosticCapture.Snapshot()),
                     added);
                 AddAggregateLogEntries(archive, settings.AggregateModLogPath, DiagnosticTailMaxBytes, DiagnosticTailMaxLines, added);
-            }
+            });
 
             if (openFolder)
             {
@@ -1789,7 +1879,7 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private string BuildInventoryEditJson(string query)
+    private string BuildInventoryEditJson(string query, LocalApiWritePermit permit)
     {
         var itemType = ReadStringQuery(query, "type");
         if (!int.TryParse(ReadStringQuery(query, "id"), out var itemId)
@@ -1798,9 +1888,19 @@ internal sealed class LocalApiServer : IDisposable
             return ToJson(new LocalApiErrorDto { Error = "invalid inventory edit parameters" });
         }
 
+        // 可选数量前提用于单项快捷加减；显式传入空值、非法值或负数必须拒绝，
+        // 不能静默退回没有比较条件的绝对设置。真正的比较在主线程实读库存时完成。
+        int? expectedQuantity = null;
+        if (HasQueryParameter(query, "expectedQuantity"))
+        {
+            if (!int.TryParse(ReadStringQuery(query, "expectedQuantity"), out var expected) || expected < 0)
+                return ToJson(new LocalApiErrorDto { Error = "库存校验数量无效，本次未修改。请刷新后再调整。" });
+            expectedQuantity = expected;
+        }
+
         try
         {
-            var result = _editInventory(itemType, itemId, quantity);
+            var result = _editInventory(itemType, itemId, quantity, expectedQuantity, permit);
             var ok = string.IsNullOrWhiteSpace(result.Error);
             return ToJson(new LocalApiInventoryEditDto
             {
@@ -1820,7 +1920,7 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private string BuildInventoryBulkEditJson(string query)
+    private string BuildInventoryBulkEditJson(string query, LocalApiWritePermit permit)
     {
         var itemType = ReadStringQuery(query, "type");
         var itemIds = ReadIntListQuery(query, "ids");
@@ -1832,7 +1932,7 @@ internal sealed class LocalApiServer : IDisposable
         RuntimeInventoryBulkEditResult result;
         try
         {
-            result = _editInventoryBulk(itemType, itemIds, quantity);
+            result = _editInventoryBulk(itemType, itemIds, quantity, permit);
         }
         catch (Exception ex)
         {
@@ -1849,20 +1949,26 @@ internal sealed class LocalApiServer : IDisposable
             Unchanged = result.Unchanged,
             Failed = result.Failed,
             Errors = result.Errors,
-            Error = result.Failed == 0 ? null : string.Join("; ", result.Errors),
+            // 批量写入可能已完成其中一部分。明确保留计数与逐项原因，不能让调用方
+            // 将失败理解为全量回滚，也不能仅因某项 changed 就宣称整批成功。
+            Error = result.Failed == 0 ? null
+                : $"库存修改未全部成功：变更 {result.Changed} 项，未变 {result.Unchanged} 项，失败 {result.Failed} 项。"
+                    + string.Join("; ", result.Errors),
         });
     }
 
     private string BuildOrderActionJson(
         string query,
         Func<OrderPreparationRequest, OrderPreparationResult> action,
-        long automationEpoch)
+        long automationEpoch,
+        Func<bool>? isBusinessInputCurrent = null)
     {
         try
         {
             var request = new OrderPreparationRequest
             {
                 AutomationEpoch = automationEpoch,
+                IsBusinessInputCurrent = isBusinessInputCurrent,
                 TraceId = ReadStringQuery(query, "traceId"),
                 OrderKey = ReadStringQuery(query, "orderKey"),
                 OrderLifecycleSequence = ReadLongQuery(query, "orderLifecycleSequence", -1),
@@ -2017,92 +2123,6 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private static RuntimeUiTargetSnapshot ReadUiPinningTarget(string query, int index)
-    {
-        var prefix = $"target{index}";
-        var requiredKeys = UiPinningTargetFieldSuffixes.Select(suffix => prefix + suffix);
-        var missing = requiredKeys.FirstOrDefault(key => !HasQueryParameter(query, key));
-        if (missing != null)
-        {
-            throw new FormatException($"Missing required UI target parameter {missing}.");
-        }
-
-        var kindValue = ReadStringQuery(query, $"{prefix}Kind");
-        var kind = kindValue switch
-        {
-            "rare" => RuntimeUiTargetKind.Rare,
-            "normal" => RuntimeUiTargetKind.Normal,
-            _ => throw new FormatException($"{prefix}Kind must be exactly rare or normal."),
-        };
-        var colorValue = ReadStringQuery(query, $"{prefix}Color");
-        if (!RuntimeTargetHighlightColor.TryParseExactHex(colorValue, out var color))
-        {
-            throw new FormatException($"{prefix}Color must be exactly six uppercase hexadecimal RGB digits.");
-        }
-
-        return new RuntimeUiTargetSnapshot(
-            kind,
-            color,
-            ReadRequiredExactBoolQuery(query, $"{prefix}ListPinningEnabled"),
-            ReadRequiredExactBoolQuery(query, $"{prefix}RecipeVariantEnabled"),
-            ReadRequiredExactBoolQuery(query, $"{prefix}CookerHighlightEnabled"),
-            ReadRequiredExactBoolQuery(query, $"{prefix}SeatHighlightEnabled"),
-            ReadRequiredExactBoolQuery(query, $"{prefix}OrderHighlightEnabled"),
-            ReadStringQuery(query, $"{prefix}TraceId"),
-            ReadStringQuery(query, $"{prefix}OrderKey"),
-            ReadRequiredPositiveLongQuery(query, $"{prefix}OrderLifecycleSequence"),
-            ReadRequiredNonNegativeIntQuery(query, $"{prefix}DeskCode"),
-            ReadRequiredOptionalIdQuery(query, $"{prefix}RecipeId"),
-            ReadExactNonNegativeIntListQuery(query, $"{prefix}IngredientIds", 12),
-            ReadExactNonNegativeIntListQuery(query, $"{prefix}ExtraIngredientIds", 5),
-            ReadRequiredOptionalIdQuery(query, $"{prefix}BeverageId"),
-            ReadRequiredOptionalIdQuery(query, $"{prefix}CookerTypeId"),
-            ReadStringQuery(query, $"{prefix}Revision"));
-    }
-
-    private static void ValidateUiPinningTargetParameters(string query, int targetCount)
-    {
-        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var separator = pair.IndexOf('=');
-            var encodedName = separator < 0 ? pair : pair[..separator];
-            var name = Uri.UnescapeDataString(encodedName.Replace("+", " ", StringComparison.Ordinal));
-            if (string.Equals(name, "businessGeneration", StringComparison.Ordinal)
-                || string.Equals(name, "targetCount", StringComparison.Ordinal))
-            {
-                continue;
-            }
-            if (!name.StartsWith("target", StringComparison.Ordinal))
-            {
-                throw new FormatException($"Unexpected UI target parameter {name}.");
-            }
-
-            var digitStart = "target".Length;
-            var digitEnd = digitStart;
-            while (digitEnd < name.Length && name[digitEnd] is >= '0' and <= '9') digitEnd++;
-            if (digitEnd == digitStart
-                || !int.TryParse(
-                    name[digitStart..digitEnd],
-                    System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var index))
-            {
-                throw new FormatException($"Invalid indexed UI target parameter {name}.");
-            }
-
-            var suffix = name[digitEnd..];
-            if (!UiPinningTargetFieldSuffixes.Contains(suffix, StringComparer.Ordinal)
-                || !string.Equals(name, $"target{index}{suffix}", StringComparison.Ordinal))
-            {
-                throw new FormatException($"Invalid indexed UI target parameter {name}.");
-            }
-            if (index >= targetCount)
-            {
-                throw new FormatException($"UI target parameter {name} exceeds targetCount {targetCount}.");
-            }
-        }
-    }
-
     private string AddRecipeFavoriteJson(string query)
     {
         if (!int.TryParse(ReadStringQuery(query, "customerId"), out var customerId)
@@ -2158,8 +2178,14 @@ internal sealed class LocalApiServer : IDisposable
 
         try
         {
+            if ((HasQueryParameter(query, "enabled") && ReadBoolQuery(query, "enabled") == null)
+                || (HasQueryParameter(query, "pinToTop") && ReadBoolQuery(query, "pinToTop") == null)
+                || (HasQueryParameter(query, "sortOrder") && ReadNullableIntQuery(query, "sortOrder") == null))
+                return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe flags or sort order" });
             return _customRecipeStore.Upsert(new CustomRecipeMutation
             {
+                Mode = ReadStringQuery(query, "mode"),
+                ExpectedModeRevision = ReadCustomRecipeModeRevision(query),
                 Id = ReadStringQuery(query, "id"),
                 CustomerId = customerId,
                 CustomerName = ReadStringQuery(query, "customerName"),
@@ -2167,7 +2193,7 @@ internal sealed class LocalApiServer : IDisposable
                 FoodId = foodId,
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
-                ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
+                ExtraIngredientIds = ReadExactNonNegativeIntListQuery(query, "extraIngredientIds", 5),
                 Enabled = ReadBoolQuery(query, "enabled"),
                 PinToTop = ReadBoolQuery(query, "pinToTop"),
                 SortOrder = ReadNullableIntQuery(query, "sortOrder"),
@@ -2179,33 +2205,45 @@ internal sealed class LocalApiServer : IDisposable
         }
     }
 
-    private string SetCustomRecipesEnabledJson(string query)
+    private string SetCustomRecipeSettingsJson(string query)
     {
         var enabled = ReadBoolQuery(query, "enabled");
-        return enabled == null
+        if (HasQueryParameter(query, "enabled") && enabled == null)
+            return ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe enabled setting" });
+        var mode = HasQueryParameter(query, "activeMode") ? ReadStringQuery(query, "activeMode") : null;
+        return enabled == null && mode == null
             ? ToJson(new LocalApiCustomRecipeMutationDto { Ok = false, Error = "invalid custom recipe enabled setting" })
-            : _customRecipeStore.SetEnabled(enabled.Value);
+            : _customRecipeStore.SetSettings(enabled, mode, ReadCustomRecipeModeRevision(query));
     }
+
+    // 修订由读取到的配置提供；缺失、负数或解析失败均不能使用默认修订绕过切模栅栏。
+    private static long ReadCustomRecipeModeRevision(string query) =>
+        long.TryParse(ReadStringQuery(query, "expectedModeRevision"), out var revision) && revision >= 0 ? revision : -1;
 
     private string UpdateCustomRecipeFlagsJson(string query)
     {
         var scope = ReadStringQuery(query, "scope");
+        var mode = ReadStringQuery(query, "mode");
+        var revision = ReadCustomRecipeModeRevision(query);
         var selection = scope switch
         {
-            "all" => new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.All },
+            "all" => new CustomRecipeSelection { Kind = CustomRecipeSelectionKind.All, Mode = mode, ExpectedModeRevision = revision },
             "customer" => new CustomRecipeSelection
             {
                 Kind = CustomRecipeSelectionKind.Customer,
+                Mode = mode, ExpectedModeRevision = revision,
                 CustomerId = ReadIntQuery(query, "customerId", -1),
             },
             "recipe" => new CustomRecipeSelection
             {
                 Kind = CustomRecipeSelectionKind.Recipe,
+                Mode = mode, ExpectedModeRevision = revision,
                 FoodId = ReadIntQuery(query, "foodId", -1),
             },
             "entry" => new CustomRecipeSelection
             {
                 Kind = CustomRecipeSelectionKind.Entry,
+                Mode = mode, ExpectedModeRevision = revision,
                 Id = ReadStringQuery(query, "id"),
             },
             _ => null,
@@ -2556,8 +2594,9 @@ internal sealed class LocalApiServer : IDisposable
     /// <returns>Token 与当前插件生成或配置的值完全一致时返回 <c>true</c>。</returns>
     private bool IsAuthorized(string request)
     {
-        if (string.IsNullOrWhiteSpace(_token)) return false;
-        return string.Equals(ReadHeader(request, "X-Mystia-Steward-Companion-Token"), _token, StringComparison.Ordinal);
+        var token = Volatile.Read(ref _token);
+        if (string.IsNullOrWhiteSpace(token)) return false;
+        return string.Equals(ReadHeader(request, "X-Mystia-Steward-Companion-Token"), token, StringComparison.Ordinal);
     }
 
     private static (string ClientId, string ClientLabel, string? Error) ReadClientIdentity(string request)
@@ -2568,7 +2607,10 @@ internal sealed class LocalApiServer : IDisposable
             return ("", "伴随窗口", "请求缺少有效的伴随设备 ID。");
         }
 
-        var label = (ReadHeader(request, ClientLabelHeaderName) ?? "").Trim();
+        // 新客户端在 ASCII 请求头中发送 URI 编码后的 UTF-8 名称。先解码再校验字符数，
+        // 避免中文被 HTTP 解析器替换为问号；控制字符不能经百分号编码绕过头校验。
+        var label = Uri.UnescapeDataString((ReadHeader(request, ClientLabelHeaderName) ?? "").Trim());
+        if (label.Any(char.IsControl)) return ("", "伴随窗口", "设备名称不能包含控制字符。");
         if (string.IsNullOrWhiteSpace(label)) label = "伴随窗口";
         if (label.Length > 48) label = label[..48];
         return (clientId, label, null);
@@ -2640,81 +2682,6 @@ internal sealed class LocalApiServer : IDisposable
         return null;
     }
 
-    private static bool ReadRequiredExactBoolQuery(string query, string key)
-    {
-        if (!HasQueryParameter(query, key))
-        {
-            throw new FormatException($"Missing required UI target parameter {key}.");
-        }
-
-        return ReadStringQuery(query, key) switch
-        {
-            "true" => true,
-            "false" => false,
-            _ => throw new FormatException($"{key} must be exactly true or false."),
-        };
-    }
-
-    private static long ReadRequiredPositiveLongQuery(string query, string key)
-    {
-        var raw = ReadRequiredAsciiDecimalQuery(query, key);
-        if (!long.TryParse(
-                raw,
-                System.Globalization.NumberStyles.None,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out var value)
-            || value <= 0)
-        {
-            throw new FormatException($"{key} must be a positive 64-bit ASCII decimal integer.");
-        }
-        return value;
-    }
-
-    private static int ReadRequiredNonNegativeIntQuery(string query, string key)
-    {
-        var raw = ReadRequiredAsciiDecimalQuery(query, key);
-        if (!int.TryParse(
-                raw,
-                System.Globalization.NumberStyles.None,
-                System.Globalization.CultureInfo.InvariantCulture,
-                out var value))
-        {
-            throw new FormatException($"{key} must be a non-negative 32-bit ASCII decimal integer.");
-        }
-        return value;
-    }
-
-    private static int ReadRequiredOptionalIdQuery(string query, string key)
-    {
-        if (!HasQueryParameter(query, key))
-        {
-            throw new FormatException($"Missing required UI target parameter {key}.");
-        }
-
-        var raw = ReadStringQuery(query, key);
-        return raw == "-1" ? -1 : ReadRequiredNonNegativeIntQuery(query, key);
-    }
-
-    private static string ReadRequiredAsciiDecimalQuery(string query, string key)
-    {
-        if (!HasQueryParameter(query, key))
-        {
-            throw new FormatException($"Missing required UI target parameter {key}.");
-        }
-
-        var raw = ReadStringQuery(query, key);
-        if (raw.Length == 0 || raw.Any(character => character is < '0' or > '9'))
-        {
-            throw new FormatException($"{key} must contain ASCII decimal digits only.");
-        }
-        return raw;
-    }
-
-    private static int ReadIntQuery(string query, string key, int fallback)
-    {
-        return int.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
-    }
-
     private static long ReadLongQuery(string query, string key, long fallback)
     {
         return long.TryParse(ReadStringQuery(query, key), out var value) ? value : fallback;
@@ -2731,35 +2698,6 @@ internal sealed class LocalApiServer : IDisposable
     private static int? ReadNullableIntQuery(string query, string key)
     {
         return int.TryParse(ReadStringQuery(query, key), out var value) ? value : null;
-    }
-
-    private static string ReadStringQuery(string query, string key)
-    {
-        if (string.IsNullOrWhiteSpace(query)) return "";
-        foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var parts = pair.Split('=', 2);
-            if (parts.Length == 0) continue;
-            var name = Uri.UnescapeDataString(parts[0].Replace("+", " ", StringComparison.Ordinal));
-            if (!string.Equals(name, key, StringComparison.OrdinalIgnoreCase)) continue;
-            return parts.Length == 1
-                ? ""
-                : Uri.UnescapeDataString(parts[1].Replace("+", " ", StringComparison.Ordinal));
-        }
-
-        return "";
-    }
-
-    private static bool HasQueryParameter(string query, string key)
-    {
-        if (string.IsNullOrWhiteSpace(query)) return false;
-        return query.Split('&', StringSplitOptions.RemoveEmptyEntries).Any(pair =>
-        {
-            var separator = pair.IndexOf('=');
-            var encodedName = separator < 0 ? pair : pair[..separator];
-            var name = Uri.UnescapeDataString(encodedName.Replace("+", " ", StringComparison.Ordinal));
-            return string.Equals(name, key, StringComparison.OrdinalIgnoreCase);
-        });
     }
 
     private static IReadOnlyList<string> ReadDiagnosticLines(string query, string key)
@@ -2807,40 +2745,6 @@ internal sealed class LocalApiServer : IDisposable
             .Distinct()
             .OrderBy(id => id)
             .ToList();
-    }
-
-    private static List<int> ReadExactNonNegativeIntListQuery(
-        string query,
-        string key,
-        int maxCount)
-    {
-        var value = ReadStringQuery(query, key);
-        if (value.Length == 0) return new List<int>();
-
-        var parts = value.Split(',', StringSplitOptions.None);
-        if (parts.Length > maxCount)
-        {
-            throw new ArgumentOutOfRangeException(key, $"{key} cannot contain more than {maxCount} values.");
-        }
-
-        var result = new List<int>(parts.Length);
-        foreach (var part in parts)
-        {
-            if (part.Length == 0
-                || part.Any(character => character is < '0' or > '9')
-                || !int.TryParse(
-                    part,
-                    System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture,
-                    out var id))
-            {
-                throw new FormatException($"{key} must contain only comma-separated ASCII decimal ids without whitespace or signs.");
-            }
-
-            result.Add(id);
-        }
-
-        return result;
     }
 
     private static List<string> ReadStringListQuery(string query, string key)

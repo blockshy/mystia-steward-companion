@@ -1,4 +1,3 @@
-using System.Collections;
 using System.Reflection;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 
@@ -7,58 +6,17 @@ namespace MystiaStewardCompanion.Save;
 public static class RuntimeInventoryEditor
 {
     private const string RuntimeStorageTypeName = "GameData.RunTime.Common.RunTimeStorage";
-    private const int MaxTargetQuantity = 9999;
 
-    public static RuntimeInventoryEditResult SetQuantity(string itemType, int itemId, int quantity)
+    public static RuntimeInventoryEditResult SetQuantity(string itemType, int itemId, int quantity,
+        int? expectedQuantity = null)
     {
         if (itemId < 0) throw new ArgumentOutOfRangeException(nameof(itemId), "Inventory item id must be non-negative.");
         var normalizedType = NormalizeItemType(itemType);
-        var targetQuantity = Math.Clamp(quantity, 0, MaxTargetQuantity);
-        var currentQuantity = GetQuantity(normalizedType, itemId);
-
-        if (currentQuantity < 0)
-        {
-            return new RuntimeInventoryEditResult
-            {
-                ItemType = normalizedType,
-                ItemId = itemId,
-                RequestedQuantity = targetQuantity,
-                PreviousQuantity = currentQuantity,
-                Quantity = currentQuantity,
-                Changed = false,
-                Error = "This inventory item is infinite or not editable.",
-            };
-        }
-
-        if (currentQuantity == targetQuantity)
-        {
-            return new RuntimeInventoryEditResult
-            {
-                ItemType = normalizedType,
-                ItemId = itemId,
-                RequestedQuantity = targetQuantity,
-                PreviousQuantity = currentQuantity,
-                Quantity = currentQuantity,
-                Changed = false,
-            };
-        }
-
-        var delta = targetQuantity - currentQuantity;
-        ApplyDelta(normalizedType, itemId, delta);
-
-        var nextQuantity = GetQuantity(normalizedType, itemId);
-        return new RuntimeInventoryEditResult
-        {
-            ItemType = normalizedType,
-            ItemId = itemId,
-            RequestedQuantity = targetQuantity,
-            PreviousQuantity = currentQuantity,
-            Quantity = nextQuantity,
-            Changed = nextQuantity != currentQuantity,
-            Error = nextQuantity == targetQuantity
-                ? null
-                : $"Native inventory operation returned quantity {nextQuantity} instead of {targetQuantity}.",
-        };
+        // 读、写和回读仍全部在原有主线程许可内同步执行。纯托管规则单独抽出，
+        // 使无限库存/未知读取/部分执行等路径可在不加载游戏或 IL2CPP 的环境回归。
+        return RuntimeInventoryMutation.SetQuantity(normalizedType, itemId, quantity,
+            () => GetQuantity(normalizedType, itemId),
+            delta => ApplyDelta(normalizedType, itemId, delta), expectedQuantity);
     }
 
     private static string NormalizeItemType(string itemType)
@@ -75,7 +33,7 @@ public static class RuntimeInventoryEditor
     {
         var methodName = itemType == "ingredient" ? "GetIngredientCountById" : "GetBeverageCountById";
         var value = InvokeStatic(methodName, new object?[] { itemId });
-        return ToInt(value);
+        return RuntimeInventoryMutation.ReadQuantity(value);
     }
 
     private static void ApplyDelta(string itemType, int itemId, int delta)
@@ -216,17 +174,6 @@ public static class RuntimeInventoryEditor
         }
     }
 
-    private static int ToInt(object? value)
-    {
-        if (value == null) return 0;
-        if (value is int intValue) return intValue;
-        if (value is long longValue) return (int)Math.Clamp(longValue, int.MinValue, int.MaxValue);
-        if (value is short shortValue) return shortValue;
-        if (value is byte byteValue) return byteValue;
-
-        if (value is IDictionary dictionary && dictionary.Count == 0) return 0;
-        return value is IConvertible convertible ? Convert.ToInt32(convertible) : 0;
-    }
 }
 
 internal sealed class RuntimeStorageInvocation
@@ -239,26 +186,4 @@ internal sealed class RuntimeStorageInvocation
 
     public MethodInfo Method { get; }
     public object?[] Args { get; }
-}
-
-public sealed class RuntimeInventoryEditResult
-{
-    public string ItemType { get; init; } = "";
-    public int ItemId { get; init; }
-    public int RequestedQuantity { get; init; }
-    public int PreviousQuantity { get; init; }
-    public int Quantity { get; init; }
-    public bool Changed { get; init; }
-    public string? Error { get; init; }
-}
-
-public sealed class RuntimeInventoryBulkEditResult
-{
-    public string ItemType { get; init; } = "";
-    public int RequestedQuantity { get; init; }
-    public int Total { get; init; }
-    public int Changed { get; init; }
-    public int Unchanged { get; init; }
-    public int Failed { get; init; }
-    public List<string> Errors { get; init; } = new();
 }

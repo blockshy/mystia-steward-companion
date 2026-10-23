@@ -160,7 +160,7 @@ internal static partial class RuntimeOrderPreparationService
                 {
                     Ok = false,
                     Sequence = sequence,
-                    Error = "未找到对应的未确认自动化安全栅栏；不会解除订单阻断。",
+                    Error = "未找到对应的待确认事项；不会因此恢复订单执行。",
                 };
             }
 
@@ -172,7 +172,7 @@ internal static partial class RuntimeOrderPreparationService
                 Sequence = sequence,
                 AcknowledgedCount = acknowledgement.Sequences.Count,
                 AcknowledgedSequences = acknowledgement.Sequences,
-                Status = $"已确认并解除 {acknowledgement.Sequences.Count} 个同订单自动化安全栅栏。",
+                Status = $"已处理此订单的 {acknowledgement.Sequences.Count} 个待确认事项。",
             };
         }
     }
@@ -936,9 +936,13 @@ internal static partial class RuntimeOrderPreparationService
         var sessionGeneration = automationGate.Generation;
 
         var traceId = ResolveRequestTraceId(OrderTraceKind.Normal, request);
-        AppendWackyRequestDiagnostic("normal-complete-start", request, traceId, "normal");
-        AppendYuyukoRequestDiagnostic("normal-complete-start", request, traceId, "normal");
-        AppendYuumaAutomationDiagnostic("normal-complete-start", request, traceId, "received");
+        // 固定阶段只记录原同步调用的真实耗时，不提前读取运行时、不改变动作/日志顺序。
+        using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.requestLog"))
+        {
+            AppendWackyRequestDiagnostic("normal-complete-start", request, traceId, "normal");
+            AppendYuyukoRequestDiagnostic("normal-complete-start", request, traceId, "normal");
+            AppendYuumaAutomationDiagnostic("normal-complete-start", request, traceId, "received");
+        }
         var result = new OrderPreparationResult
         {
             Order = new OrderPreparationOrder
@@ -984,9 +988,11 @@ internal static partial class RuntimeOrderPreparationService
         var yuumaSettlement = IsYuumaBossRequest(request);
         var autoCompleteOrder = request.AutoCompleteOrder;
 
-        var runtimeOrder = yuumaSettlement
-            ? FindRuntimeNormalOrder(request, RuntimeOrderLookupPurpose.YuumaSettlement)
-            : FindRuntimeNormalOrder(request);
+        RuntimeOrderMatch runtimeOrder;
+        using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.lookup"))
+            runtimeOrder = yuumaSettlement
+                ? FindRuntimeNormalOrder(request, RuntimeOrderLookupPurpose.YuumaSettlement)
+                : FindRuntimeNormalOrder(request);
         if (runtimeOrder.Order == null || runtimeOrder.Manager == null)
         {
             var diagnostic = string.IsNullOrWhiteSpace(runtimeOrder.Diagnostic) ? "" : $"（{runtimeOrder.Diagnostic}）";
@@ -1168,11 +1174,13 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 else if (pendingBeverage != null && IsSellable(pendingBeverage, sellableType: 1, id: request.BeverageId))
                 {
-                    var delivery = TryCommitRuntimeDelivery(
-                        runtimeOrder,
-                        pendingBeverage,
-                        RuntimeDeliveryItemKind.Beverage,
-                        request.BeverageName);
+                    RuntimeDeliveryCommitResult delivery;
+                    using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.beverage"))
+                        delivery = TryCommitRuntimeDelivery(
+                            runtimeOrder,
+                            pendingBeverage,
+                            RuntimeDeliveryItemKind.Beverage,
+                            request.BeverageName);
                     if (delivery.Ok)
                     {
                         deliveredNormalItemCount++;
@@ -1202,12 +1210,14 @@ internal static partial class RuntimeOrderPreparationService
                 }
                 else
                 {
-                    var beverageResult = TryDeliverOrderBeverage(
-                        runtimeOrder,
-                        request.BeverageId,
-                        request.BeverageName,
-                        "普客订单",
-                        orderAutomationTarget);
+                    (bool Ok, string Message, string Code) beverageResult;
+                    using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.beverage"))
+                        beverageResult = TryDeliverOrderBeverage(
+                            runtimeOrder,
+                            request.BeverageId,
+                            request.BeverageName,
+                            "普客订单",
+                            orderAutomationTarget);
                     if (beverageResult.Ok)
                     {
                         deliveredNormalItemCount++;
@@ -1251,6 +1261,7 @@ internal static partial class RuntimeOrderPreparationService
 
         if (deliveredNormalItemCount > 0 && autoCompleteOrder && !yuumaSettlement)
         {
+            using var settleTiming = RuntimePerformanceDiagnostics.MeasureStage("action.normal.settle");
             result.Automation.Stage = "order";
             var freshRuntimeOrder = FindRuntimeNormalOrder(request);
             if (!TryEvaluateMatchedAutomationOrderIfReady(
@@ -1324,11 +1335,13 @@ internal static partial class RuntimeOrderPreparationService
                     }
 
                     result.Automation.Stage = "cooking-delivery";
-                    var delivery = TryCommitRuntimeDelivery(
-                        runtimeOrder,
-                        pendingFood,
-                        RuntimeDeliveryItemKind.Food,
-                        request.RecipeName);
+                    RuntimeDeliveryCommitResult delivery;
+                    using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.delivery"))
+                        delivery = TryCommitRuntimeDelivery(
+                            runtimeOrder,
+                            pendingFood,
+                            RuntimeDeliveryItemKind.Food,
+                            request.RecipeName);
                     if (delivery.Ok)
                     {
                         deliveredNormalItemCount++;
@@ -1364,9 +1377,11 @@ internal static partial class RuntimeOrderPreparationService
             else if (HasNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, runtimeOrder.Controller, request.DeskCode, expectedFoodId, request.BeverageId, out var cookingJobMessage))
             {
                 result.Automation.Stage = "cooking-delivery";
-                var cookingJobResult = autoDeliverFood
-                    ? TryProcessNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, runtimeOrder.Controller, request.DeskCode, expectedFoodId, request.BeverageId)
-                    : (Delivered: false, CompletedOrder: false, StepName: "普客开始料理", Message: cookingJobMessage, Code: OrderPreparationStepCodes.CookingPending);
+                (bool Delivered, bool CompletedOrder, string StepName, string Message, string Code) cookingJobResult;
+                using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.collect"))
+                    cookingJobResult = autoDeliverFood
+                        ? TryProcessNormalOrderCookingJob(request.OrderKey, runtimeOrder.Order, runtimeOrder.Controller, request.DeskCode, expectedFoodId, request.BeverageId)
+                        : (Delivered: false, CompletedOrder: false, StepName: "普客开始料理", Message: cookingJobMessage, Code: OrderPreparationStepCodes.CookingPending);
                 if (cookingJobResult.CompletedOrder)
                 {
                     result.ServedFood = true;
@@ -1461,16 +1476,18 @@ internal static partial class RuntimeOrderPreparationService
                     }
                     else
                     {
-                        var cookingResult = TryStartCooking(
-                            recipeId,
-                            request.RecipeName,
-                            request.ExtraIngredientIds,
-                            request.CookerControllerIndex,
-                            request.CookerControllerIdentity,
-                            request.CookerGridX,
-                            request.CookerGridY,
-                            request.CookerGridZ,
-                            target);
+                        CookingStartResult cookingResult;
+                        using (RuntimePerformanceDiagnostics.MeasureStage("action.normal.cook"))
+                            cookingResult = TryStartCooking(
+                                recipeId,
+                                request.RecipeName,
+                                request.ExtraIngredientIds,
+                                request.CookerControllerIndex,
+                                request.CookerControllerIdentity,
+                                request.CookerGridX,
+                                request.CookerGridY,
+                                request.CookerGridZ,
+                                target);
                         if (cookingResult.Ok)
                         {
                             result.Automation.Stage = cookingResult.ExistingJob
@@ -1526,6 +1543,7 @@ internal static partial class RuntimeOrderPreparationService
             && autoCompleteOrder
             && !yuumaSettlement)
         {
+            using var settleTiming = RuntimePerformanceDiagnostics.MeasureStage("action.normal.settle");
             result.Automation.Stage = "order";
             var freshRuntimeOrder = FindRuntimeNormalOrder(request);
             if (!TryEvaluateMatchedAutomationOrderIfReady(
@@ -1568,6 +1586,8 @@ internal static partial class RuntimeOrderPreparationService
             result.Automation.Stage = "order";
         }
 
+        // 此最终评价分支可能同步进入游戏结算；计时包含原结果收尾，仍在原调用栈内结束。
+        using var finalSettlementTiming = RuntimePerformanceDiagnostics.MeasureStage("action.normal.settle");
         if (yuumaSettlement)
         {
             AddSkipped(
@@ -1954,6 +1974,8 @@ internal static partial class RuntimeOrderPreparationService
 
     private static void AppendAutomationLog(string action, CookingCollectionTarget? target, string message)
     {
+        // 该公共日志出口不新写日志；只把现有同步 sink 的等待单独计时，便于与动作总量区分。
+        using var timing = RuntimePerformanceDiagnostics.MeasureStage("action.log");
         AggregateModLogService.AppendAutomation(action, target?.ToLogContext(), message);
     }
 
@@ -2294,8 +2316,8 @@ internal static partial class RuntimeOrderPreparationService
         result.Automation.Stage = barrier.Stage;
         AddFailure(
             result,
-            "自动化安全栅栏",
-            $"该订单仍有未人工确认的游戏副作用（事件 #{barrier.Sequence}）：{barrier.Message} 请检查游戏状态并在伴随窗口点击“确认已处理”；Mod 确认 ACK 前不会再次执行该订单。",
+            "需要人工确认",
+            $"该订单仍有需要核对的游戏操作结果（事件 #{barrier.Sequence}）：{barrier.Message} 请检查游戏状态并在伴随窗口点击“确认已人工处理”；确认成功前不会再次执行该订单。",
             barrier.Code);
         return true;
     }
@@ -2373,7 +2395,7 @@ internal static partial class RuntimeOrderPreparationService
                 ? "business-lifecycle-ended"
                 : string.IsNullOrWhiteSpace(reasonCode) ? code : reasonCode;
             var effectiveMessage = requestsSafetyBarrier && !canRegisterSafetyBarrier
-                ? message + " 当前经营生命周期已结束；仅保留有界诊断，不创建人工确认栅栏。"
+                ? message + " 本次营业已结束；已保留诊断记录，无需为此项单独确认。"
                 : message;
 
             AutomationRuntimeEventSequence++;

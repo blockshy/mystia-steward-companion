@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePerformanceDiagnostics.cs" Link="RuntimePerformanceDiagnostics.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeFrameStallDiagnostics.cs" Link="RuntimeFrameStallDiagnostics.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeInactiveVisualSweep.cs" Link="RuntimeInactiveVisualSweep.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePeriodicSnapshotRefresh.cs" Link="RuntimePeriodicSnapshotRefresh.cs" />
+    <EmbeddedResource Include="../../mods/bepinex/src/Ui/StewardOverlayController.cs" LogicalName="StewardOverlayController.cs" />
+  </ItemGroup>
+</Project>

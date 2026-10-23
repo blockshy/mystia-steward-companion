@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+  <!-- 必须测试实际生产业务程序集，避免源链接遗漏导致测试与 Mod 使用不同实现。 -->
+  <ItemGroup>
+    <ProjectReference Include="../../modules/companion-business/MystiaStewardCompanion.Business.csproj" />
+  </ItemGroup>
+</Project>

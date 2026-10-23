@@ -22,19 +22,18 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDir, '..');
 
 const androidCachePaths = [
-  'apps/companion/src-tauri/gen/android/.gradle',
-  'apps/companion/src-tauri/gen/android/build',
-  'apps/companion/src-tauri/gen/android/app/build',
-  'apps/companion/src-tauri/gen/android/app/.cxx',
-  'apps/companion/src-tauri/gen/android/app/.kotlin',
-  'apps/companion/src-tauri/gen/android/buildSrc/.gradle',
-  'apps/companion/src-tauri/gen/android/buildSrc/.kotlin',
-  'apps/companion/src-tauri/gen/android/buildSrc/build',
+  'apps/companion-flutter/android/.gradle',
+  'apps/companion-flutter/android/.kotlin',
+  'apps/companion-flutter/android/app/.cxx',
+  'apps/companion-flutter/build/app',
 ];
 
 const frontendArtifactPaths = [
-  'apps/companion/dist',
-  'apps/companion/.vite',
+  'apps/companion-flutter/build/windows',
+  'apps/companion-flutter/build/flutter_assets',
+  'apps/companion-flutter/build/test_cache',
+  'apps/companion-flutter/build/unit_test_assets',
+  'apps/companion-flutter/build/native_assets',
 ];
 
 const protectedPathPrefixes = [
@@ -43,7 +42,7 @@ const protectedPathPrefixes = [
   'temp',
   'node_modules',
   '.playwright-cli',
-  'apps/companion/src-tauri/gen/android/keystore.properties',
+  'apps/companion-flutter/android/keystore.properties',
 ];
 
 const categoryLabels = {
@@ -269,7 +268,7 @@ async function collectCandidates(root) {
 }
 
 async function discoverCargoBuckets(root) {
-  const relativeTargetRoot = 'apps/companion/src-tauri/target';
+  const relativeTargetRoot = 'native/updater/target';
   const targetRoot = path.join(root, relativeTargetRoot);
   const targetStats = await lstat(targetRoot).catch((error) => {
     if (error.code === 'ENOENT') return null;
@@ -299,7 +298,7 @@ async function discoverCargoBuckets(root) {
 
 async function discoverDotnetOutputs(root) {
   const projectDirectories = new Set();
-  for (const relativeSearchRoot of ['mods', 'tests']) {
+  for (const relativeSearchRoot of ['mods', 'modules', 'tests']) {
     const searchRoot = path.join(root, relativeSearchRoot);
     const stats = await lstat(searchRoot).catch((error) => {
       if (error.code === 'ENOENT') return null;

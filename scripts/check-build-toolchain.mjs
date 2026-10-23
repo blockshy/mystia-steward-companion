@@ -8,7 +8,7 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const supportedProfiles = new Set([
   'frontend',
   'mod',
-  'tauri',
+  'updater',
   'android',
   'full',
   'release',
@@ -34,10 +34,11 @@ const globalJson = await readJson('global.json');
 const dotnet6GlobalJson = await readJson('tests/dotnet6-harmony/global.json');
 const nvmVersion = (await readText('.nvmrc')).trim();
 const rustToolchain = await readText('rust-toolchain.toml');
-const cargoManifest = await readText('apps/companion/src-tauri/Cargo.toml');
-const androidGradleManifest = await readText('apps/companion/src-tauri/gen/android/app/build.gradle.kts');
+const cargoManifest = await readText('native/updater/Cargo.toml');
+const androidGradleManifest = await readText('apps/companion-flutter/android/app/build.gradle.kts');
+const androidSettings = await readText('apps/companion-flutter/android/settings.gradle.kts');
 const androidGradleWrapper = await readText(
-  'apps/companion/src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties',
+  'apps/companion-flutter/android/gradle/wrapper/gradle-wrapper.properties',
 );
 
 validateLockedVersion('Node.js', toolchain.node);
@@ -47,7 +48,8 @@ validateLockedVersion('PowerShell', toolchain.powershell);
 validateLockedVersion('GitHub CLI', toolchain.githubCli);
 validateLockedVersion('.NET SDK', toolchain.dotnetSdk);
 validateLockedVersion('Rust', toolchain.rust);
-validateLockedVersion('Android Temurin JDK', toolchain.android?.jdkVersion);
+// Temurin 的紧急修订版包含第四段；使用 release 文件中的完整值，不能截断到 21.0.12。
+if (!/^\d+\.\d+\.\d+(?:\.\d+)?$/u.test(toolchain.android?.jdkVersion ?? '')) failures.push('Android Temurin JDK must pin its complete release version.');
 validateLockedVersion('Android Gradle', toolchain.android?.gradle);
 validateLockedVersion('Android Build Tools', toolchain.android?.buildTools);
 validateLockedVersion('Android NDK package', toolchain.android?.ndkPackage);
@@ -58,7 +60,7 @@ if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(toolchain.corepackIntegrity ?? '')) {
   failures.push('Corepack package integrity must be a canonical sha512 Subresource Integrity value.');
 }
 
-expectEqual('toolchain schema version', toolchain.schemaVersion, 3);
+expectEqual('toolchain schema version', toolchain.schemaVersion, 6);
 expectEqual('.nvmrc Node.js version', nvmVersion, toolchain.node);
 expectEqual('package.json engines.node', packageJson.engines?.node, toolchain.node);
 expectEqual('package.json engines.pnpm', packageJson.engines?.pnpm, toolchain.pnpm);
@@ -102,17 +104,16 @@ expectEqual(
   toolchain.android?.ndkRevision?.split('-')[0],
   toolchain.android?.ndkPackage,
 );
-expectEqual(
-  'Android Rust targets',
-  JSON.stringify(toolchain.android?.rustTargets),
-  JSON.stringify(['aarch64-linux-android', 'armv7-linux-androideabi']),
-);
 expectGradleInteger(
   'Android Gradle compileSdk',
   androidGradleManifest,
   'compileSdk',
   toolchain.android?.compileSdk,
 );
+for (const [plugin, version] of [['com.android.application', toolchain.flutterAndroid?.androidGradlePlugin], ['org.jetbrains.kotlin.android', toolchain.flutterAndroid?.kotlin]]) {
+  // AGP/Kotlin 也是根锁的一部分，不能仅校验 Gradle wrapper 而遗漏插件漂移。
+  if (!androidSettings.includes(`id("${plugin}") version "${version}"`)) failures.push(`Android plugin ${plugin} must be exactly ${version}.`);
+}
 expectGradleInteger(
   'Android Gradle targetSdk',
   androidGradleManifest,
@@ -230,7 +231,7 @@ if (failures.length > 0) {
 
 function failUsage() {
   console.error(
-    'Usage: node scripts/check-build-toolchain.mjs [frontend|mod|tauri|android|full|release|release-tools] [--policy-only] [--require-corepack-invocation]',
+    'Usage: node scripts/check-build-toolchain.mjs [frontend|mod|updater|android|full|release|release-tools] [--policy-only] [--require-corepack-invocation]',
   );
   process.exit(2);
 }
@@ -241,19 +242,16 @@ function profileTools(selectedProfile) {
       return new Set(['node', 'corepack', 'pnpm']);
     case 'mod':
       return new Set(['dotnet']);
-    case 'tauri':
+    case 'updater':
       return new Set(['node', 'corepack', 'pnpm', 'cargo', 'rustc']);
     case 'android':
       return new Set([
         'node',
         'corepack',
         'pnpm',
-        'cargo',
-        'rustc',
         'java',
         'androidSdk',
         'androidNdk',
-        'androidRustTargets',
       ]);
     case 'full':
       return new Set(['node', 'corepack', 'pnpm', 'dotnet', 'cargo', 'rustc']);

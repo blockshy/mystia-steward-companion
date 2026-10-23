@@ -6,3 +6,24 @@ This repository is therefore distributed under AGPL-3.0-only.
 
 Touhou Mystia's Izakaya and related game assets belong to their respective
 rightsholders. This project is an unofficial community tool.
+
+The Flutter client uses Flutter/Dart and the official animations package
+(BSD-3-Clause), Forui (MIT), Riverpod (MIT), and material_ui (BSD-3-Clause).
+Forui bundles Inter (SIL Open Font License 1.1); Forui Lucide includes Lucide
+(ISC) and Feather portions (MIT). Their complete license notices are retained
+in the Flutter-generated data/flutter_assets/NOTICES.Z of distributed bundles.
+System Chinese fonts used for display and local screenshot tests are not copied
+into the product. Locked dependency identities are recorded in pubspec.lock.
+
+Windows distributions include the unmodified Microsoft Visual C++ Runtime
+files msvcp140.dll, vcruntime140.dll, and vcruntime140_1.dll from the locked
+Visual Studio x64 VC/Redist directory. These files are Microsoft software,
+copyright Microsoft Corporation, redistributed under the applicable Visual
+Studio license and its Distributable Code list; they are not licensed under
+this project's AGPL license. Windows system/UCRT files and debug runtimes
+are not redistributed by this project. The standalone updater statically
+links the Microsoft C/C++ runtime and does not require these companion DLLs.
+Distributable Code lists and license terms:
+https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution
+https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+https://visualstudio.microsoft.com/license-terms/

@@ -1,0 +1,9 @@
+name: companion_client
+description: Mystia 伴随客户端的 HTTP、会话、配置和租约状态机。
+version: 1.0.0
+publish_to: none
+environment:
+  sdk: '>=3.13.5 <4.0.0'
+dependencies:
+  companion_protocol:
+    path: ../companion_protocol
