@@ -13,6 +13,14 @@ const packageJson=JSON.parse(read('package.json'));
 assert.ok(Object.keys(packageJson.scripts).every(name=>!name.startsWith('tauri:')));
 assert.match(packageJson.scripts.build,/flutter-workspace/u);
 assert.match(read('mods/bepinex/tools/build-release.ps1'),/cargo' @\('test', '--locked'/u);
+// 干净 runner 必须先恢复锁定测试依赖，再构建真实 HTTP 宿主，不能依赖开发机临时文件。
+assert.match(read('mods/bepinex/tools/build-release.ps1'), /restore-bepinex-test-runtime\.ps1[\s\S]*dotnet' @\('build', 'tests\/flutter-contracts\/host\/FlutterContractsHost\.csproj'/u);
+const runtimeRestore=read('scripts/restore-bepinex-test-runtime.ps1');
+assert.match(runtimeRestore,/references\.lock\.json/u);
+assert.match(runtimeRestore,/BepInExRuntime\.props/u);
+assert.match(runtimeRestore,/Get-FileHash -LiteralPath \$ArchivePath -Algorithm SHA256/u);
+assert.match(runtimeRestore,/Test-RuntimeFile \$temporary/u);
+assert.match(workflow,/Remove restored host test runtime[\s\S]*if: \$\{\{ always\(\) \}\}/u);
 assert.match(read('mods/bepinex/tools/package-release.ps1'),/package-manifest\.json/u);
 assert.match(read('mods/bepinex/tools/release-common.ps1'),/companion-windows-x64\.zip/u);
 const version=/^version:\s*([^+\s]+)\+([1-9][0-9]*)$/mu.exec(read('apps/companion-flutter/pubspec.yaml'));

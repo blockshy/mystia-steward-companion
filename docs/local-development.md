@@ -14,7 +14,7 @@ corepack pnpm references:verify
 
 首次新增依赖时在对应应用或包目录运行锁定 Flutter 的 `pub get`，审查并提交该目录的 `pubspec.lock`；日常 get 强制 lockfile。Pigeon 生成源与三端结果一起提交。密钥只通过本机安全存储或 CI 签名环境提供，不写进普通偏好、日志或源码。
 
-`.NET SDK` 与测试运行时是两个前置条件：`global.json` 选择锁定 SDK，`net6.0` 隔离宿主还要求已安装 .NET 6 运行时。完整 Flutter 测试和整包构建会启动真实 HTTP 宿主；除 7 个正式编译引用外，必须先按 [协议测试说明](../tests/flutter-contracts/README.md#执行)从锁定 BepInEx #783 原始分发包恢复测试专用 `SemanticVersioning.dll`。只执行 `references:verify` 不能证明这个额外运行库已经就绪。
+`.NET SDK` 与测试运行时是两个前置条件：`global.json` 选择锁定 SDK，`net6.0` 隔离宿主还要求已安装 .NET 6 运行时。完整 Flutter 测试和整包构建会启动真实 HTTP 宿主；除 7 个正式编译引用外，还需测试专用 `SemanticVersioning.dll`。完整构建入口会自动从锁定 BepInEx #783 原始分发包恢复，单独构建宿主先按[协议测试说明](../tests/flutter-contracts/README.md#执行)执行恢复脚本。只执行 `references:verify` 不能证明这个额外运行库已经就绪。
 
 ## 检查与构建
 
@@ -41,7 +41,7 @@ Android 交付入口是 `scripts/build-android-signed-apk.mjs`；普通 Android 
 pwsh -File mods/bepinex/tools/build-release.ps1 -FlutterSdkRoot <Flutter目录>
 ```
 
-该入口无条件构建 HTTP 宿主并运行完整应用/契约测试，`-SkipFlutterBuild` 只跳过 Windows 客户端编译，不能跳过测试运行库准备。默认宿主运行库目录为 `temp/flutter-mod-host-runtime`；单独构建宿主时可用 `-p:BepInExRuntimeDirectory=<目录>` 指定其他位置。当前发布 workflow 尚缺少该额外运行库的恢复步骤，不能将本机缓存已补齐后的构建结果表述成全新 CI 环境可直接通过；发布前待办见[发布流程](local-release.md#发布前待办)。
+该入口自动核验或恢复测试运行库，再构建 HTTP 宿主并运行完整应用/契约测试；`-SkipFlutterBuild` 只跳过 Windows 客户端编译，不跳过这些前置验证。默认宿主运行库目录为 `temp/flutter-mod-host-runtime`，离线可向恢复脚本传入锁定原始 ZIP；单独构建宿主也可用 `-p:BepInExRuntimeDirectory=<目录>` 指定已核验的其他目录。发布 workflow 的隔离目录清理及来源约束见[发布流程](local-release.md#隔离宿主测试依赖)。
 
 构建只生成本地产物，不部署游戏、不创建标签、不发布 GitHub Release。完整 Windows 运行树 ZIP、Mod ZIP 与可选双 ABI APK 输出到 `mods/bepinex/dist`。安装入口为 `mods/bepinex/tools/install-local-package.ps1`，接收包含完整运行树与 `package-manifest.json` 的解包目录并核对全部载荷，默认只读校验，显式 `-Execute` 才执行安装；不能直接把 ZIP 路径传作包目录，也不能单独复制主 EXE 或 DLL。
 

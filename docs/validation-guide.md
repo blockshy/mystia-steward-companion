@@ -18,7 +18,8 @@
 ## 非游戏验证入口
 
 ```powershell
-# 先设置 MYSTIA_FLUTTER_SDK_ROOT，并按下文准备宿主测试运行库。
+# 先设置 MYSTIA_FLUTTER_SDK_ROOT；运行库恢复只写隔离测试目录，不连接游戏。
+pwsh -File scripts/restore-bepinex-test-runtime.ps1
 dotnet build tests/flutter-contracts/host/FlutterContractsHost.csproj -c Release -p:NuGetAudit=false
 corepack pnpm flutter:format-check
 corepack pnpm flutter:generated-check
@@ -34,7 +35,9 @@ corepack pnpm audit:business
 
 真实HTTP宿主直接编译当前Mod reader/router/store，运行于.NET6，使用随机回环端口、独占临时目录与公开合成Token。游戏写入委托明确拒绝，不启动游戏。详情见[协议测试说明](../tests/flutter-contracts/README.md)。
 
-连接与诊断管理专项使用真实BepInEx配置保存，构建宿主前还须按协议测试说明恢复锁定 #783 分发包中的 `SemanticVersioning.dll`，或传入 `BepInExRuntimeDirectory`；编译前校验固定摘要，不能依赖某台机器已有的未校验临时DLL。新包列举/删除、凭据更新及配置保存的正反向边界由完整runner一并执行。
+连接与诊断管理专项使用真实 BepInEx 配置保存。上述恢复脚本从锁定 #783 原始分发包验证整包及成员摘要，独立准备 `SemanticVersioning.dll`；正确缓存复用，错误缓存保留并报错。离线使用 `-ArchivePath <已下载原始ZIP>`，自定义目录使用 `-OutputDirectory` 并在宿主构建时传相同的 `-p:BepInExRuntimeDirectory`；完整发布构建入口自动调用恢复。具体约束见[协议测试说明](../tests/flutter-contracts/README.md#执行)。新包列举/删除、凭据更新及配置保存的正反向边界由完整 runner 一并执行。
+
+恢复脚本自身的隔离事务检查为 `pwsh -File tests/build-artifacts/bepinex-test-runtime-audit.ps1 -ArchivePath <锁定原始ZIP>`，覆盖空目录恢复、正确缓存复用、错误包拒绝、错误缓存保留和临时文件清理。该检查不运行发布 workflow、不清理用户工作区缓存；发布工作流与脚本策略另由 `node tests/github-actions/release-workflow-audit.mjs` 和 `node tests/flutter-release/release-policy-audit.mjs` 静态核对。
 
 Widget截图可设置 `MYSTIA_UI_FONT` 为本机中文字体文件、`MYSTIA_UI_EVIDENCE` 为临时输出目录；字体仅用于本机审阅，不打包。截图之外仍需断言命令次数、权限、焦点、滚动与状态边界。
 

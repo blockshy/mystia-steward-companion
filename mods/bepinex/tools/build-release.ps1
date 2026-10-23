@@ -44,6 +44,8 @@ try {
     Invoke-Checked 'node' ($flutter + 'format-check')
     Invoke-Checked 'node' ($flutter + 'generated-check')
     Invoke-Checked 'node' @('tests/build-artifacts/windows-runtime-audit.mjs')
+    # 干净 runner 与本机走同一路线：从锁定分发包恢复宿主运行依赖，再构建真实 HTTP 宿主。
+    & (Join-Path $repository 'scripts/restore-bepinex-test-runtime.ps1')
     # 真实 HTTP 测试链接当前 Mod 源码，必须在严格参考包预检后生成宿主，不允许拿旧DLL充数。
     Invoke-Checked 'dotnet' @('build', 'tests/flutter-contracts/host/FlutterContractsHost.csproj', '-c', 'Release', "-p:ReferenceDir=$ReferenceDir", '-p:NuGetAudit=false')
     Invoke-Checked 'node' ($flutter + 'verify')

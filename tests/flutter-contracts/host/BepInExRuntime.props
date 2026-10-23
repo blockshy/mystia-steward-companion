@@ -1,0 +1,9 @@
+<Project>
+  <!-- 隔离 HTTP 宿主的真实运行依赖。恢复脚本与 MSBuild 共读此锁，避免摘要双写漂移。 -->
+  <PropertyGroup>
+    <BepInExRuntimeFileName>SemanticVersioning.dll</BepInExRuntimeFileName>
+    <BepInExRuntimeArchiveEntry>BepInEx/core/SemanticVersioning.dll</BepInExRuntimeArchiveEntry>
+    <BepInExRuntimeFileSize>34816</BepInExRuntimeFileSize>
+    <BepInExRuntimeSha256>A5B57607225A0EBDE049E93469F49E5B2D07A7D602A03864CE3A72CCF57103A2</BepInExRuntimeSha256>
+  </PropertyGroup>
+</Project>

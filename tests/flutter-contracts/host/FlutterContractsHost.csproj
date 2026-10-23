@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="BepInExRuntime.props" />
   <!-- 复用 migration/flutter 的真实 HTTP 隔离宿主路线；链接当前生产源码，不复制路由或存储协议。 -->
   <PropertyGroup>
     <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework><LangVersion>10.0</LangVersion>
@@ -28,7 +29,7 @@
     <GetFileHash Files="$(BepInExRuntimeDirectory)/SemanticVersioning.dll" Algorithm="SHA256">
       <Output TaskParameter="Items" ItemName="LockedBepInExRuntimeHash" />
     </GetFileHash>
-    <Error Condition="'%(LockedBepInExRuntimeHash.FileHash)' != 'A5B57607225A0EBDE049E93469F49E5B2D07A7D602A03864CE3A72CCF57103A2'"
+    <Error Condition="'%(LockedBepInExRuntimeHash.FileHash)' != '$(BepInExRuntimeSha256)'"
       Text="SemanticVersioning.dll 与锁定 BepInEx #783 原始分发包不一致。" />
   </Target>
 </Project>

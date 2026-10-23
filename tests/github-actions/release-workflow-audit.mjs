@@ -302,6 +302,21 @@ requireMatch(
   /Private build-reference cleanup did not complete\./u,
   'The package job must fail closed when private build references cannot be removed.',
 );
+// 测试运行库独立于私有编译引用；构建失败也必须清理，且删除前核对 checkout 归属及链接。
+requireMatch(
+  jobs.build,
+  /name: Remove restored host test runtime\s+if: \$\{\{ always\(\) \}\}[\s\S]*temp\/flutter-mod-host-runtime/u,
+  'The package job must always clean its isolated host runtime cache.',
+);
+for (const guard of [
+  'GetFullPath($env:GITHUB_WORKSPACE)',
+  '$RuntimeDirectory.StartsWith($WorkspacePrefix',
+  'Resolve-Path -LiteralPath $RuntimeDirectory',
+  '[IO.FileAttributes]::ReparsePoint',
+  'Host test-runtime cleanup did not complete.',
+]) {
+  if (!jobs.build.includes(guard)) fail(`Missing host runtime cleanup guard: ${guard}`);
+}
 if (jobs.build.includes('SilentlyContinue')) {
   fail('The package job must not suppress private build-reference cleanup failures.');
 }

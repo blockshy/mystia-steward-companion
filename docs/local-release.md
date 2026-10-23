@@ -13,11 +13,11 @@
 - 发布是 create-only：同名 tag 或 Release 已存在时停止，不覆盖、不续传、不自动删除。
 - 预览版可从已推送的 `dev` 提交在本机发布，必须使用 canonical `X.Y.Z-preview.N`。
 
-## 发布前待办
+## 隔离宿主测试依赖
 
-当前受保护 Windows 构建尚缺少一个可复现的测试依赖恢复步骤。`build-release.ps1` 会无条件构建 `tests/flutter-contracts/host/FlutterContractsHost.csproj`，该项目要求锁定 BepInEx #783 的 `SemanticVersioning.dll`；默认读取 `temp/flutter-mod-host-runtime`，缺少文件或 SHA-256 不符立即失败。私有 `references.lock.json` bundle 只包含 7 个正式编译 DLL，不含这个测试运行库，而当前 `release.yml` 只恢复该 bundle 后就进入构建。
+`build-release.ps1` 在构建真实 HTTP 宿主前自动调用 `scripts/restore-bepinex-test-runtime.ps1`。脚本按 `references.lock.json` 中的固定版本下载 BepInEx 原始分发包，验证整包 SHA-256，再按 `tests/flutter-contracts/host/BepInExRuntime.props` 的唯一成员路径、长度及摘要提取 `SemanticVersioning.dll` 到 `temp/flutter-mod-host-runtime`。已有正确文件可复用；已有文件不匹配时保留并停止，不静默覆盖。宿主编译还会再次核验摘要。
 
-因此，全新 runner 的正式发布链尚未闭合。正式触发前应补齐从锁定原始分发包恢复、精确摘要校验及清理的自动步骤，再验证干净环境；不能依赖本机已有缓存，也不能跳过真实 HTTP 测试。现有本机手工准备方法见[契约测试前置条件](../tests/flutter-contracts/README.md#执行)。下文描述其余现有发布事务规则，不表示这项待办已经完成。
+该运行库不属于私有编译引用的 7-DLL bundle，也不进入 Mod 成套包。恢复脚本在退出时清理本次下载与提取临时文件；发布 workflow 无论构建成败均清理隔离运行库目录，删除前核对 checkout 内的绝对路径与重解析点。离线环境可以先显式提供同一原始 ZIP，详见[契约测试前置条件](../tests/flutter-contracts/README.md#执行)。这一步只准备测试依赖，不跳过真实 HTTP 验证，也不代替完整发布 workflow 的实际执行证据。
 
 ## 一次性 GitHub 配置
 
@@ -140,7 +140,7 @@ Release 必须恰好包含：
 
 ## 本地预览版发布
 
-预览版通过同一版本脚本设置 `X.Y.Z-preview.N` 和递增 Android 构建号；`pubspec` 仍保留 `+构建号`。提交并推送 `dev` 后，准备 UTF-8、无 BOM 的 Release Note 文件；不要手工创建 tag。先完成[发布前待办](#发布前待办)中的运行库准备，并显式设置 `MYSTIA_FLUTTER_SDK_ROOT`；涉及 Android 时还须设置锁定 JDK 的 `JAVA_HOME`。
+预览版通过同一版本脚本设置 `X.Y.Z-preview.N` 和递增 Android 构建号；`pubspec` 仍保留 `+构建号`。提交并推送 `dev` 后，准备 UTF-8、无 BOM 的 Release Note 文件；不要手工创建 tag。显式设置 `MYSTIA_FLUTTER_SDK_ROOT`；涉及 Android 时还须设置锁定 JDK 的 `JAVA_HOME`。离线构建先按[隔离宿主测试依赖](#隔离宿主测试依赖)准备已核验运行库，在线构建由入口自动恢复。
 
 ```powershell
 $tag = "vX.Y.Z-preview.N"
@@ -192,9 +192,9 @@ IncludePrerelease = true
 
 Windows 树必须包含与 EXE 同级的三个小写 VC DLL：`msvcp140.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`，以及 `THIRD-PARTY-NOTICES.txt`。构建从精确锁定的 VS Redist x64 目录补齐并验证签名、实际版本和 SHA-256；打包只读复核，遗漏或与来源不同即失败。独立 updater 静态链接 CRT，打包读取实际 PE 导入，拒绝仍依赖 VC DLL 的产物。详细来源与命令见[本地开发](local-development.md)，许可来源见根 [NOTICE](../NOTICE) 和微软 [2026](https://learn.microsoft.com/en-us/visualstudio/releases/2026/redistribution)/[2022](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution) 可分发代码清单。
 
-`pwsh -File mods/bepinex/tools/build-release.ps1 -FlutterSdkRoot <绝对SDK路径>` 在前述运行库已经准备后，依次验证参考包、格式与 Pigeon 生成一致性、构建真实 HTTP 宿主、运行完整 Flutter 与 Dart 契约测试、构建 Flutter Windows/updater/三个 C# DLL、事务打包。Android 正式签名另加 `-BuildAndroidApk`；缺少现有正式密钥材料会失败，不生成 debug 签名替代品。
+`pwsh -File mods/bepinex/tools/build-release.ps1 -FlutterSdkRoot <绝对SDK路径>` 依次验证参考包、格式与 Pigeon 生成一致性，自动恢复并核验测试运行库，构建真实 HTTP 宿主，运行完整 Flutter 与 Dart 契约测试，构建 Flutter Windows/updater/三个 C# DLL 并事务打包。Android 正式签名另加 `-BuildAndroidApk`；缺少现有正式密钥材料会失败，不生成 debug 签名替代品。
 
-公共 CI 和发布前无密钥验证显式运行 `flutter:verify-unit` 与 `flutter:contracts-unit`；`production-http` 标签测试由受保护 Windows 构建的完整验证执行，前提是私有编译引用与额外测试运行库都已准备。发布仍要求原有两道环境审批和七个精确资产，不因 Flutter 迁移降低来源校验。
+公共 CI 和发布前无密钥验证显式运行 `flutter:verify-unit` 与 `flutter:contracts-unit`；`production-http` 标签测试由受保护 Windows 构建的完整验证执行，私有编译引用由 workflow 恢复，额外测试运行库由构建入口恢复。发布仍要求原有两道环境审批和七个精确资产，不因 Flutter 迁移降低来源校验。
 
 包内 `package-manifest.json` 是唯一安装清单，包含所有受管理 DLL、Flutter data 与插件、大小和 SHA-256，以及 sourceCommit、sourceDigest、toolchainSha256、businessProtocolVersion=1 和 clientProtocolVersion=2。旧五文件清单不再作为新包格式接受。
 

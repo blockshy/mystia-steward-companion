@@ -514,6 +514,42 @@ jobs:
             throw "Private build-reference cleanup did not complete."
           }
 
+      - name: Remove restored host test runtime
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # 只清理本次 checkout 下的隔离宿主缓存；先核对绝对路径和目录链，拒绝链接越界。
+          if ([string]::IsNullOrWhiteSpace($env:GITHUB_WORKSPACE)) {
+            throw "Missing checkout path for host runtime cleanup."
+          }
+          $WorkspaceRoot = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd([IO.Path]::DirectorySeparatorChar)
+          $RuntimeDirectory = [IO.Path]::GetFullPath((Join-Path $WorkspaceRoot "temp/flutter-mod-host-runtime"))
+          $WorkspacePrefix = $WorkspaceRoot + [IO.Path]::DirectorySeparatorChar
+          if (-not $RuntimeDirectory.StartsWith($WorkspacePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Host runtime cleanup escaped the checkout."
+          }
+          for ($Directory = [IO.DirectoryInfo]::new($RuntimeDirectory); $null -ne $Directory; $Directory = $Directory.Parent) {
+            if ($Directory.Exists -and ($Directory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+              throw "Host runtime cleanup refuses a reparse point: $($Directory.FullName)"
+            }
+          }
+          if (Test-Path -LiteralPath $RuntimeDirectory) {
+            $ResolvedRuntime = (Resolve-Path -LiteralPath $RuntimeDirectory).ProviderPath
+            if (-not [string]::Equals($ResolvedRuntime, $RuntimeDirectory, [StringComparison]::OrdinalIgnoreCase) -or
+                -not (Test-Path -LiteralPath $RuntimeDirectory -PathType Container)) {
+              throw "Host runtime cleanup target is not the expected directory."
+            }
+            if (@(Get-ChildItem -LiteralPath $RuntimeDirectory -Recurse -Force |
+                Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -ne 0) {
+              throw "Host runtime cleanup refuses linked contents."
+            }
+            Remove-Item -LiteralPath $RuntimeDirectory -Recurse -Force
+          }
+          if (Test-Path -LiteralPath $RuntimeDirectory) {
+            throw "Host test-runtime cleanup did not complete."
+          }
+
       - name: Upload Windows package inputs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

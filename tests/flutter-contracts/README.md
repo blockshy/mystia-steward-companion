@@ -6,11 +6,14 @@
 
 在仓库根目录构建（SDK 由 `global.json` 锁定，宿主启动时强制 runtime major=6）：
 
-管理专项调用真实BepInEx `ConfigFile`，还需其锁定运行库 `SemanticVersioning.dll`。从 `references.lock.json` 指定且整包SHA256通过校验的BepInEx #783原始ZIP中，恢复成员 `BepInEx/core/SemanticVersioning.dll` 到 `temp/flutter-mod-host-runtime/SemanticVersioning.dll`；也可在下方构建命令增加 `-p:BepInExRuntimeDirectory=<包含该DLL的目录>`。该文件34816字节，SHA256为 `a5b57607225a0ebde049e93469f49e5b2d07a7d602a03864ce3a72ccf57103a2`，项目在编译前强制核验。原私有编译引用包不含它；不得用其他版本代替或把临时目录存在当作已完成校验。此依赖只供隔离宿主测试，Mod成套包不额外携带。
+管理专项调用真实 BepInEx `ConfigFile`，还需其锁定运行库 `SemanticVersioning.dll`。执行下方恢复脚本后再构建宿主；完整 `build-release.ps1` 已自动包含这一步。脚本只下载 `references.lock.json` 指定的 BepInEx #783 原始 ZIP，验证整包 SHA-256，再按共用 `host/BepInExRuntime.props` 核对唯一成员路径、长度和摘要，提取到 `temp/flutter-mod-host-runtime`。正确缓存可复用；错误缓存保留并报错，缺失或损坏不能悄悄使用其他版本。宿主编译前再次校验摘要，依赖不进入 Mod 成套包。
 
 ```powershell
+pwsh -File scripts/restore-bepinex-test-runtime.ps1
 dotnet build tests/flutter-contracts/host/FlutterContractsHost.csproj -c Release -m:1 -nr:false -p:UseSharedCompilation=false -p:NuGetAudit=false --ignore-failed-sources
 ```
+
+离线恢复传 `-ArchivePath <已下载的原始ZIP>`，仍执行整包与成员验证。可选 `-OutputDirectory <独立目录>` 需与宿主构建的 `-p:BepInExRuntimeDirectory=<同一目录>` 配对；目录链含重解析点时拒绝写入。恢复脚本只清理本次创建的下载/提取临时文件，不删除传入 ZIP 或已有缓存。发布 workflow 另在成功及失败路径清理其 checkout 内的隔离运行库目录。原有私有编译引用 bundle 不含该依赖，不能用是否存在旧临时目录替代校验。
 
 在 `tests/flutter-contracts` 使用根工具锁指定 SDK 内的 Dart（不能从 PATH 选择另一套版本）：
 
