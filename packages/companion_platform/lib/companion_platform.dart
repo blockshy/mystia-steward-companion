@@ -19,7 +19,8 @@ class PlatformEvent {
   final PlatformInput input;
 }
 
-/// 单一平台服务。所有持久化操作串行执行，避免 profile ACK 与 UI 偏好写入覆盖。
+/// 单一平台服务。持久化写入与删除串行执行，普通偏好读取等待此前写入结束；
+/// 安全存储读取直接交给原生层，调用者仍须按身份初始化顺序等待必要的前置写入。
 class CompanionPlatform {
   CompanionPlatform({PlatformHostApi? host})
     : _host = host ?? PlatformHostApi();
@@ -118,6 +119,7 @@ class CompanionPlatform {
     _initializeBackoff = null;
   }
 
+  /// 输入轮询单次在途；慢原生调用不会积累轮询队列，关闭后的迟到结果直接丢弃。
   Future<void> _poll() async {
     if (_polling || _disposed || _events.isClosed) return;
     _polling = true;
@@ -192,6 +194,7 @@ class CompanionPlatform {
           throw StateError('偏好持久化回读不一致，不能确认同步。');
       });
 
+  /// 前次失败不阻塞后续独立写入，但每次返回的 Future 仍携带自身异常，不能据此发送 ACK。
   Future<void> _serialize(Future<void> Function() action) {
     final next = _writeTail.catchError((Object _) {}).then((_) => action());
     _writeTail = next;
@@ -206,6 +209,7 @@ class CompanionPlatform {
     return Map<String, Object?>.from(value);
   }
 
+  /// 幂等停止初始化等待和输入事件发布；不会替调用方关闭业务 HTTP 或释放自动化租约。
   Future<void> dispose() => _disposing ??= _dispose();
 
   Future<void> _dispose() async {

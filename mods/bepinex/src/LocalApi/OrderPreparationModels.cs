@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.LocalApi;
 
+/// <summary>从业务宿主传入主线程的动作计划，携带订单、厨具及特殊挑战身份；请求值不替代执行前的实时验证。</summary>
 internal sealed class OrderPreparationRequest
 {
     /// <summary>
@@ -62,6 +63,7 @@ internal sealed class OrderPreparationRequest
     public bool BeverageFavorite { get; init; }
 }
 
+/// <summary>动作流水的执行回执，区分准备、料理/酒水送达和订单完成，失败时仍保留此前已发生的步骤事实。</summary>
 internal sealed class OrderPreparationResult
 {
     public bool Ok { get; set; }

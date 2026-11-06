@@ -38,6 +38,8 @@ def main():
         for entry in read(checked_path(args.legacy_external_table, args.work_directory)):
             external_tables[entry["file"]] = {external["fileId"]: external["name"] for external in entry["externals"]}
 
+    # PathID 只在所属序列化文件内唯一；非零 FileID 必须先经该文件的 external 表解析。
+    # 不跨文件按 PathID 或显示名搜索，否则同号对象可能被绑定到另一个角色。
     def resolve(owner, pointer):
         file_id, path_id = pointer["m_FileID"], pointer["m_PathID"]
         if type(file_id) is not int or type(path_id) is not int or not path_id:

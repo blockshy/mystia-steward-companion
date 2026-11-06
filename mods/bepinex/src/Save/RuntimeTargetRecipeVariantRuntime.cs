@@ -7,9 +7,10 @@ using Il2CppInterop.Runtime.InteropTypes.Arrays;
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
-/// Exact BepInEx 783 reflection bindings for the cooking-panel recipe variant transaction.
-/// This runtime caches metadata only; native wrappers never leave the active hook stack.
+/// 为料理面板配方变体事务提供 BepInEx 783 的精确反射绑定。
+/// 运行时适配器仅缓存元数据；原生对象包装器只在当前 Hook 调用栈内使用。
 /// </summary>
+/// <remarks>Try 方法将已识别的形状不符返回为 false；绑定或原生调用异常仍可能抛出，由上层事务统一处理。</remarks>
 internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVariantRuntime
 {
     private const int MaximumIngredientSlots = 5;
@@ -38,6 +39,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return instance is Il2CppObjectBase native ? native.Pointer : 0;
     }
 
+    /// <summary>为调用方当前仍有效的面板地址创建新包装器，并校验原生类及地址保持一致；不会取得原生对象所有权。</summary>
     public bool TryWrapPanel(nint panelPointer, out object panel, out string error)
     {
         panel = null!;
@@ -66,6 +68,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>将当前匹配组合地址重新包装为精确嵌套类型；地址为零或原生类不匹配时拒绝。</summary>
     public bool TryWrapMatchedCombo(nint comboPointer, out object combo, out string error)
     {
         combo = null!;
@@ -94,6 +97,8 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>在调用方给定的行数上限内完整读取配方列表，拒绝重复原生配方地址以保持行与对象一一对应。</summary>
+    /// <remarks>输出描述仍含借用包装器；失败时不得使用中途取得的列表执行插入。</remarks>
     public bool TryReadRecipeList(
         object panel,
         int maximumCount,
@@ -157,6 +162,8 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>读取配方身份、原材料顺序及剩余次数；次数 -1 为原生无限哨兵，小于 -1 的值无效。</summary>
+    /// <remarks>材料数组复制为托管值，但快照中的配方包装器仍只供当前调用使用。</remarks>
     public bool TryReadRecipeSnapshot(
         object recipe,
         out TargetRecipeSnapshot snapshot,
@@ -213,6 +220,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>基于权威配方创建独立原生身份的变体，并读回配方字段和材料顺序确认，不修改权威配方本体。</summary>
     public bool TryCreateSyntheticRecipe(
         object authoritativeRecipe,
         IReadOnlyList<int> fullIngredientIds,
@@ -271,6 +279,8 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>设置次数并回读确认；调用方须先证明该对象是自己创建的变体，本方法只校验类型及非零身份。</summary>
+    /// <remarks>回读不一致或抛异常不代表 setter 未发生，不能据此直接重试整个变体事务。</remarks>
     public bool TrySetSyntheticCookCount(
         object syntheticRecipe,
         int cookCount,
@@ -299,6 +309,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>对精确类型的当前列表执行一次原生插入；索引、重复插入与失败后的恢复由上层事务管理。</summary>
     public void InsertRecipe(object recipeList, int index, object recipe)
     {
         var bindings = GetBindings();
@@ -313,6 +324,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         Invoke(bindings.InsertRecipeListItem, recipeList, index, recipe);
     }
 
+    /// <summary>撤销按钮提交回调并确认不再存在非零回调身份，供失效变体阻断后续提交。</summary>
     public bool TryCleanSubmitCallback(object button, out string error)
     {
         error = "";
@@ -333,6 +345,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>将按钮设为不可交互；成功仅表示 setter 正常返回，此处没有额外回读或清除提交回调。</summary>
     public bool TryDisableButton(object button, out string error)
     {
         error = "";
@@ -349,6 +362,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>在选料状态基础上要求同步导入配方的标记和实例都可读，形成当前烹饪事务的输入证据。</summary>
     public bool TryReadPanelCookingState(
         object panel,
         out TargetRecipePanelCookingState state,
@@ -406,6 +420,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>读取实际选料列表、额外消耗与免费烹饪标记；不从可见图标推断扣料输入。</summary>
     public bool TryReadPanelSelectionState(
         object panel,
         out TargetRecipePanelSelectionState state,
@@ -448,6 +463,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>独立读取用于显示的材料实例列表及非负编号，供上层与逻辑选料列表交叉核验。</summary>
     public bool TryReadSelectedVisualState(
         object panel,
         out TargetRecipeSelectedVisualState state,
@@ -527,6 +543,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return InvokeRequired<int>(bindings.GetIngredientQuantity, null, ingredientId);
     }
 
+    /// <summary>调用原生扣料入口；输入已按份数展开，调用方负责库存预检及不可重复提交屏障。</summary>
     public void DebitIngredients(IReadOnlyList<int> expandedIngredientIds)
     {
         ArgumentNullException.ThrowIfNull(expandedIngredientIds);
@@ -536,6 +553,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         Invoke(bindings.DebitIngredients, null, enumerable, false);
     }
 
+    /// <summary>把材料编号追加到当前选料列表，保持输入顺序和重复项；不扣库存，也不替调用方验证追加后的总槽位数。</summary>
     public void AddSelectedIngredients(
         object selectedIngredientList,
         IReadOnlyList<int> ingredientIds)
@@ -555,6 +573,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         Invoke(bindings.AddSelectedIngredients, selectedIngredientList, enumerable);
     }
 
+    /// <summary>读取解算组合实际引用的配方身份与修饰材料；不重新求解配方，也不把料理编号相同视为同一配方。</summary>
     public bool TryReadMatchedCombo(
         object matchedCombo,
         out TargetRecipeMatchedComboSnapshot snapshot,
@@ -594,6 +613,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>同时核对提交委托的方法指针、闭包原生类型及其面板/组合/产物身份，避免仅凭按钮外观认领提交。</summary>
     public bool TryReadExactOutputSubmitClosure(
         object button,
         out TargetRecipeOutputClosureBindingSnapshot snapshot,
@@ -691,6 +711,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>在闭包执行边界重读面板、组合和产物身份，供上层与先前按钮绑定逐项比较。</summary>
     public bool TryReadOutputSubmitClosureState(
         object closure,
         out TargetRecipeOutputClosureState state,
@@ -798,6 +819,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
         return true;
     }
 
+    /// <summary>在元数据锁内一次性构建完整绑定，只有全部成员验证完成才缓存；该锁不允许后台访问游戏对象。</summary>
     private ExactBindings GetBindings(Type? panelType = null)
     {
         lock (_bindingRoot)
@@ -1157,7 +1179,7 @@ internal sealed class ReflectionTargetRecipeVariantRuntime : ITargetRecipeVarian
             }
             catch
             {
-                // An unrelated generated interop assembly can fail during lookup.
+                // 无关互操作程序集的类型查找失败不终止其他程序集的同名类型查找。
             }
         }
         return null;

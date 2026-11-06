@@ -43,6 +43,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 使用正反两种签名夹具检查目标筛选；这是反射匹配测试，不等于向游戏方法安装补丁。
 static void VerifyManualSetterHookUsesExact783Signature()
 {
     var exact = typeof(NightScene.GuestManagementUtility.GuestsManager).GetMethod(
@@ -1407,6 +1408,7 @@ static void VerifyTerminalReceiptsUseExactHookIdentity()
     }
 }
 
+// 相同订单和控制器指针可被新生命周期复用；旧回调携带的序号不能删除新绑定。
 static void VerifyCapturedOrderLifecycleAbaKeepsTheNewBinding()
 {
     var wasActive = RuntimeNightBusinessLifecycle.IsActive;
@@ -1629,6 +1631,7 @@ static void VerifyBoundStatusObserversDoNotAdvanceLifecycle()
     }
 }
 
+// 已绑定生命周期中的原始标签发生漂移，说明身份不再可信；不得用新的展示内容修补旧绑定。
 static void VerifyRawTagDriftQuarantinesTheLifecycle()
 {
     var wasActive = RuntimeNightBusinessLifecycle.IsActive;

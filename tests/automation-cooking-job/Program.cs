@@ -581,7 +581,7 @@ static void VerifyHarmonyMutationCompletionSemantics()
         }
         catch (InvalidOperationException ex) when (ex.Message == HarmonyMutationTargetProbe.ThrowMessage)
         {
-            // Expected: an original exception bypasses the ordinary postfix.
+            // 原方法抛出异常时不会经过普通 postfix；不能把进入原方法等同于成功完成变更。
         }
 
         AssertHarmonyMutationReceipt(
@@ -838,8 +838,8 @@ static void VerifySameGenerationCanAdoptFinalResult()
         progressed: true,
         "The original result did not advance normally.");
 
-    // The game's native finalization may replace Result through GetFinalFood. The SetCook generation,
-    // rather than the managed Result wrapper, owns the cooking job.
+    // 原生完成阶段可能通过 GetFinalFood 替换 Result；任务归属由 SetCook 代次确定，
+    // 不应要求结果的托管包装对象始终保持同一引用。
     var ready = tracker.Observe(Observe(
         startedAt.AddSeconds(2),
         generation: 41,
@@ -1582,6 +1582,8 @@ static void VerifyPlayerOwnershipLossManualHandoffIsBarrierFree()
     }
 }
 
+// 预约、锁锅状态或内容修订失效后，旧控制器和替代控制器都不得收到动作调用。
+// 以调用次数而非仅返回值检查拒绝路径，防止先产生副作用再报告失败。
 static void VerifyInvalidatedCookerReservationsNeverInvokeOldWrappers()
 {
     if (!RuntimeCookerReservation.TryCreate(
@@ -1896,6 +1898,7 @@ static void VerifyNormalWaitingIsNotReportedAsProgressOrFailure()
     }
 }
 
+// 停滞预算只累计有效观测区间；人工暂停的墙钟时间不能导致恢复后立即判为制作失败。
 static void VerifyPausedIntervalsDoNotConsumeStallBudget()
 {
     var startedAt = Utc(13, 0, 0);
@@ -2044,6 +2047,7 @@ static void VerifyCommittedCleanupRetriesAreBounded()
     }
 }
 
+// 无法确认原生提交结果时，重试和清理都可能重复或破坏副作用，因此均须被状态机拒绝。
 static void VerifyUncertainCommitCannotBeRetriedOrCleaned()
 {
     var tracker = new AutomationBoundedCleanupTracker(maxAttempts: 2);

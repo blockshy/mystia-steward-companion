@@ -30,6 +30,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
         super.onResume()
         inputManager.registerInputDeviceListener(this, null)
     }
+    // 在取消设备监听前撤销所有按住状态，后台期间的旧输入不能在恢复时继续驱动页面。
     override fun onPause() {
         controller.reset()
         inputManager.unregisterInputDeviceListener(this)
@@ -110,6 +111,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
         require(Regex("[a-z0-9-]{1,64}").matches(key)) { "无效的安全存储键。" }
         return file("$key.aesgcm")
     }
+    /** 读取密文时禁止补建密钥；只有新写入可创建密钥，避免覆盖无法解密的既有身份。 */
     private fun secretKey(create: Boolean): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         (store.getKey(alias, null) as? SecretKey)?.let { return it }
@@ -121,6 +123,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
                 .setRandomizedEncryptionRequired(true).build())
         }.generateKey()
     }
+    /** 由 AtomicFile 恢复未完成事务的备份；null 仅表示主文件和备份均不存在。 */
     private fun read(file: File): ByteArray? {
         validateAtomicPaths(file)
         if (!file.exists() && !File(file.path + ".bak").exists()) return null
@@ -137,6 +140,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
             return output.toByteArray()
         }
     }
+    /** 写入、同步、提交后再逐字节回读；任何异常都不能向 Dart 报告持久化成功。 */
     private fun write(file: File, bytes: ByteArray) {
         require(bytes.size <= 1024 * 1024) { "持久化内容过大。" }
         validateAtomicPaths(file)
@@ -177,6 +181,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
         return try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))); true }
         catch (_: android.content.ActivityNotFoundException) { false }
     }
+    /** 密文信封为版本字节、12 字节 IV 和 GCM 密文；存储键作为 AAD 防止跨键置换。 */
     override fun readSecret(key: String): String? {
         val bytes = read(keyFile(key)) ?: return null
         require(bytes.size in 30..65536 && bytes[0].toInt() == 1) { "安全存储格式损坏，原文件已保留。" }
@@ -188,6 +193,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
     }
     override fun writeSecret(key: String, value: String) {
         require(value.toByteArray(Charsets.UTF_8).size in 1..60000) { "安全存储内容长度无效。" }
+        // 写前先验证旧密文可读；损坏文件或失效密钥不能因一次保存操作被静默替换。
         readSecret(key)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey(true))
@@ -197,6 +203,7 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
         finally { plain.fill(0) }
         check(readSecret(key) == value) { "安全存储回读不一致。" }
     }
+    /** 删除前仍验证原密文，避免把读取失败误当成不存在或删除成功。 */
     override fun deleteSecret(key: String) {
         if (readSecret(key) != null) check(keyFile(key).delete()) { "安全存储删除失败。" }
     }

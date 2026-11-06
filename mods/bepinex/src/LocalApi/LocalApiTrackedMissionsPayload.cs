@@ -57,6 +57,7 @@ internal sealed class LocalApiTrackedMissionsContentDto
         Array.Empty<LocalApiTrackedMissionDto>();
 }
 
+/// <summary>将追踪任务的条件描述与完成事实按同一索引配对，校验长度和展示状态后生成可缓存响应。</summary>
 internal static class LocalApiTrackedMissionsPayload
 {
     public static string BuildJson(

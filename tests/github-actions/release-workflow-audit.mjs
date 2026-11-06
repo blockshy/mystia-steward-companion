@@ -27,6 +27,7 @@ const requireCount = (content, pattern, expected, message) => {
   if (count !== expected) fail(`${message} Expected ${expected}, actual ${count}.`);
 };
 
+// 权限集合必须精确相等，不能仅检查必要权限存在而放过额外的写权限。
 const requireExactJobPermissions = (content, expected, label) => {
   const match = /^    permissions:\n((?:      [A-Za-z0-9_-]+: (?:read|write|none)\n?)*)/mu.exec(content);
   if (!match) fail(`${label} is missing an explicit permissions block.`);
@@ -56,6 +57,7 @@ const extractJob = (content, jobName) => {
   return lines.slice(start, end).join('\n');
 };
 
+// 只提取当前工作流采用的缩进式 run 文本块，供命令策略检查；不会执行其中命令。
 const extractLiteralRunBlocks = (content) => {
   const lines = content.split('\n');
   const blocks = [];

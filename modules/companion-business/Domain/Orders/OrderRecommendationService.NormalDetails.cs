@@ -25,6 +25,10 @@ public static partial class OrderRecommendationService
         return Object(("order", order), ("originalFood", originalFood), ("originalBeverage", originalDrink), ("executionFood", executionFood), ("executionBeverage", executionBeverage), ("executionReason", Str(target?["reason"])), ("selectionMessage", selection["message"]), ("usesSpecialExecution", target != null), ("hasExecutionOverride", target != null && (Num(executionFood["foodId"]) != Num(order["foodId"]) || Num(executionBeverage["beverageId"]) != Num(order["beverageId"]) || Count(target, "extraIngredientIds") > 0)));
     }
     private static JsonObject? ResolveRecipe(JsonObject data, double foodId, double? recipeId) => Objects(data["recipes"]).LastOrDefault(x => Num(x["id"]) == foodId) ?? (recipeId == null ? null : Objects(data["recipes"]).FirstOrDefault(x => Num(x["recipeId"]) == recipeId));
+    /// <summary>
+    /// 使用当前配方、加料和流行规则重算详情标签；目录缺少配方时仅保留已有展示标签。
+    /// 后备标签不补造配方或库存，因此详情可读不代表该料理已具备执行条件。
+    /// </summary>
     private static JsonObject FoodDetail(JsonObject data, JsonObject runtime, JsonObject? recipe, double id, JsonNode? recipeId, string name, JsonArray extraIds, JsonNode? fallback, JsonNode? target)
     {
         var byId = Objects(data["ingredients"]).GroupBy(x => Num(x["id"])).ToDictionary(x => x.Key, x => x.Last()); var extras = Array(Numbers(extraIds).Where(byId.ContainsKey).Select(x => byId[x]));

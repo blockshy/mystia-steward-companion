@@ -23,6 +23,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 限制跨边界快照的公开成员类型，防止诊断状态意外携带原生包装对象或可变业务集合。
 static void AssertSnapshotContractIsManaged()
 {
     var allowedTypes = new HashSet<Type>
@@ -89,6 +90,7 @@ static void AssertLoadTokenAndMetrics()
         "A stale load token changed the replacement phase.");
 }
 
+// 非空存档必须经过完整初始化提交后才可发布；局部读取结果不能成为可用任务状态。
 static void AssertNonEmptyLoadSeedCommitsAtomically()
 {
     var state = CreateAttachedState();
@@ -364,6 +366,7 @@ static void AssertFreshnessRequiresVerifiedStateAndExactDefinition()
         fulfilled: true);
 }
 
+// 对比合法的已结束实例指针复用与活动实例冲突；旧实例迟到回调不得重绑定到新任务。
 static void AssertInitializedBindingAndPointerReuse()
 {
     var state = CreateReadyState(
@@ -572,6 +575,7 @@ static void AssertFinishedSetGate()
     AssertEqual(0, invalidState.Snapshot().FinishedUniqueMissionCount, "Invalid FinishNode data was partially committed.");
 }
 
+// 使用显式代次与线程编号驱动门禁，只验证状态机拒绝规则，不模拟 Unity 主线程调度。
 static void AssertGenerationAndThreadGates()
 {
     var state = CreateReadyState(threadId: 25);

@@ -11,6 +11,8 @@ using Il2CppInterop.Generator.Runners;
 using LibCpp2IL;
 using Microsoft.Extensions.Logging.Abstractions;
 
+// 离线读取指定游戏二进制、metadata 和 Unity 基础程序集，生成 interop 包装程序集。
+// 输出用于类型与调用边界分析；生成的托管方法体不能替代 Native 实现或真实游戏执行证据。
 if (args.Length != 5)
 {
     Console.Error.WriteLine(
@@ -79,6 +81,7 @@ try
     Console.WriteLine($"Generated {generatedCount} interop assemblies in {outputPath}");
     return generatedCount > 0 ? 0 : 1;
 }
+// Cpp2IL 使用进程级上下文；即使生成失败，也清除本次加载状态，避免后续分析误用旧模型。
 finally
 {
     LibCpp2IlMain.Reset();
@@ -101,6 +104,7 @@ static string RequireDirectory(string path, string label)
         : throw new DirectoryNotFoundException($"{label} does not exist: {fullPath}");
 }
 
+// 只扩展当前分析进程的程序集解析集合；调用方必须提供与游戏 Unity 版本配套的可信基础库。
 static void AddTrustedPlatformAssemblies(string assemblyDirectory)
 {
     var current = AppDomain.CurrentDomain.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;

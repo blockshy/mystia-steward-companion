@@ -4,6 +4,8 @@ using BepInEx.Logging;
 
 namespace MystiaStewardCompanion.LocalApi;
 
+/// <summary>在实例锁内串行执行收藏的读取、去重和保存；每次操作重新读取文件，保存成功后才返回变更结果。</summary>
+/// <remarks>无效版本或损坏内容保留原文件并向上抛错，不用空收藏覆盖无法读取的用户数据。</remarks>
 internal sealed class FavoriteStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
@@ -35,6 +37,7 @@ internal sealed class FavoriteStore
         }
     }
 
+    /// <summary>以客人、标签、料理及规范化加料集合判定重复；已有收藏只更新展示名称和更新时间。</summary>
     public string AddRecipe(int customerId, string customerName, string foodTag, int recipeId, IReadOnlyList<int> extraIngredientIds)
     {
         lock (_lock)
@@ -172,6 +175,7 @@ internal sealed class FavoriteStore
         }, JsonOptions);
     }
 
+    // 收藏身份按食材集合比较：排除负编号、去重并排序，使输入顺序不影响同一方案的去重结果。
     private static List<int> NormalizeIds(IEnumerable<int>? ids)
     {
         return (ids ?? Array.Empty<int>())

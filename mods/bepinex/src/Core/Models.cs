@@ -10,6 +10,7 @@ public static class PlaceNames
     };
 }
 
+/// <summary>料理目录项及其制作配方；Id 表示料理身份，RecipeId 表示配方身份，两者不可假定相同。</summary>
 public sealed class Recipe
 {
     public int Id { get; set; }
@@ -60,6 +61,7 @@ public sealed class SpecialFoodProduct
     public int Price { get; init; }
 }
 
+/// <summary>运行时静态目录的托管投影；IsComplete 表示读取完整性，空集合本身不能证明目录已就绪。</summary>
 public sealed class RuntimeDataCatalog
 {
     public bool IsComplete { get; init; }
@@ -93,6 +95,7 @@ public sealed class TagPriorityRule
     public List<string> Tags { get; init; } = new();
 }
 
+/// <summary>同次采集得到的厨具位置、能力与可用性；显示名称用于展示，执行定位使用控制器身份及格位。</summary>
 public sealed class PlacedCookerInfo
 {
     public int ControllerIndex { get; init; }

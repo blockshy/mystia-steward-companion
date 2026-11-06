@@ -12,6 +12,8 @@ typedef DataMap = Map<String, Object?>;
 /// 安全读取可选的展示对象。缺失数据保持为空，不伪造业务状态或编号。
 DataMap object(Object? value) =>
     value is Map ? value.cast<String, Object?>() : const {};
+
+/// 仅供展示适配：忽略非对象成员，保留对象顺序；不能用于证明服务端集合完整或授权写入。
 List<DataMap> records(Object? value) => value is List
     ? value
           .whereType<Map<Object?, Object?>>()
@@ -54,6 +56,7 @@ DataMap gameFocusContentFromPreferences(DataMap preferences) => {
 String gameFocusTheme(DataMap preferences, Brightness brightness) =>
     workbenchDark(preferences, brightness) ? 'dark' : 'light';
 
+/// 校验完整布局及设置形状；可读包括明确可恢复的损坏状态，不等同于允许普通编辑。
 bool gameFocusOverlayReadable(DataMap state) {
   final settings = object(state['settings']);
   final content = object(settings['content']);
@@ -126,6 +129,7 @@ enum ConnectionSource { unknown, launchArguments, saved, manual, preview }
 /// unknown 表示请求可能已被执行而响应无法确认，界面不得将其改写为“没有修改”。
 enum WorkbenchOperationResult { success, failed, unknown }
 
+/// 一次人工动作的只读摘要；序号用于界面关联，结果未知时不能由时间戳推断是否已执行。
 class WorkbenchOperation {
   const WorkbenchOperation({
     required this.id,

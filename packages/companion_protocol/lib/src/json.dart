@@ -3,6 +3,8 @@ import 'dart:convert';
 /// 线路对象只保存 JSON 值。对象进入 DTO 时递归冻结，页面不能修改共享快照。
 typedef JsonMap = Map<String, Object?>;
 
+/// 验证对象形状并递归复制、冻结内容，使调用方后续修改原 Map 不会污染 DTO。
+/// [field] 仅用于定位格式错误，不应传入凭据或完整响应正文。
 JsonMap jsonMap(Object? value, [String field = '响应']) {
   if (value is! Map<String, Object?>) {
     throw FormatException('$field 必须是 JSON 对象。');
@@ -12,6 +14,8 @@ JsonMap jsonMap(Object? value, [String field = '响应']) {
   );
 }
 
+/// 仅接收 JSON 可表示的标量、字符串键对象及列表；拒绝非有限浮点数和任意业务对象。
+/// 整数的跨语言精度约束由 [jsonInt] 在读取协议字段时单独检查。
 Object? freezeJson(Object? value) {
   if (value is Map<String, Object?>) return jsonMap(value);
   if (value is List<Object?>)
@@ -25,6 +29,7 @@ Object? freezeJson(Object? value) {
   throw const FormatException('线路数据包含非 JSON 值。');
 }
 
+/// 只有缺失或 null 才使用显式默认值；错误类型不会被字符串化后继续传播。
 String jsonString(JsonMap value, String key, {String? fallback}) {
   final item = value[key];
   if (item == null && fallback != null) return fallback;
@@ -32,6 +37,8 @@ String jsonString(JsonMap value, String key, {String? fallback}) {
   return item;
 }
 
+/// 限制在 IEEE 754 可精确表示的整数范围，保持 Dart、JavaScript 与服务端的身份比较一致。
+/// 不接受浮点形式的整数或数字字符串，避免静默修复破坏协议版本校验。
 int jsonInt(JsonMap value, String key, {int? fallback}) {
   final item = value[key];
   if (item == null && fallback != null) return fallback;
@@ -41,6 +48,7 @@ int jsonInt(JsonMap value, String key, {int? fallback}) {
   return item;
 }
 
+/// 布尔字段严格按类型读取；仅调用者明确允许缺省时才返回 [fallback]。
 bool jsonBool(JsonMap value, String key, {bool? fallback}) {
   final item = value[key];
   if (item == null && fallback != null) return fallback;
@@ -48,6 +56,7 @@ bool jsonBool(JsonMap value, String key, {bool? fallback}) {
   return item;
 }
 
+/// 列表及每个对象均生成不可变副本；任一成员无效时整次解析失败，不丢弃坏项后返回残缺集合。
 List<JsonMap> jsonObjects(Object? value) {
   if (value is! List<Object?>) throw const FormatException('字段必须是对象列表。');
   return List<JsonMap>.unmodifiable(value.map((item) => jsonMap(item)));

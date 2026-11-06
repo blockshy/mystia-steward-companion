@@ -43,7 +43,11 @@ public static class SpecialBusinessRules
         ("highEvaluationMinPreferenceMatches", 0), ("preferHighFoodLevel", false), ("preferHighBeverageLevel", false),
         ("preferKoishiDamage", false), ("preferYuyukoPositiveSpell", false), ("yuyukoProgressEvaluationMode", "none"), ("reason", ""));
 
-    /// <summary>严格使用快照确认的挑战和订单角色；缺失挑战类型立即阻止推荐。</summary>
+    /// <summary>根据快照中的挑战、阶段与订单角色构造约束；挑战类型不可读时返回明确阻断原因。</summary>
+    /// <remarks>
+    /// 可读性检查通过后，未激活经营或未命中特定规则的挑战保留默认规则。调用方仍须使用 <see cref="IsRegistered"/>
+    /// 判断挑战是否受支持，不能把默认规则解释为未知挑战已经通过执行审核。
+    /// </remarks>
     public static JsonObject BuildOrderRule(JsonNode? specialBusiness, string? role)
     {
         var s = Obj(specialBusiness); var r = EmptyRule(); role = (role ?? "").Trim();
@@ -115,6 +119,8 @@ public static class SpecialBusinessRules
         return r;
     }
 
+    /// <summary>按规范化后的标签判断交集或全包含；空目标始终不构成命中。</summary>
+    /// <remarks>仅 <c>all</c> 使用全包含语义；其他值沿用任一命中。无约束应由上层显式声明，而非借助空集合通过。</remarks>
     public static bool MatchesTags(JsonNode? tags, JsonNode? targetTags, string match)
     { var a = NormalizeTags(tags).ToHashSet(StringComparer.Ordinal); var t = NormalizeTags(targetTags); return t.Length > 0 && (match == "all" ? t.All(a.Contains) : t.Any(a.Contains)); }
     public static bool MatchesFoodTarget(JsonNode? tags, JsonNode? target) => Str(Obj(target)["enforcement"]) == "none" || MatchesTags(tags, Obj(target)["tags"], Str(Obj(target)["match"]));
@@ -125,7 +131,11 @@ public static class SpecialBusinessRules
         role = role.Trim(); return role is "mizuchi-story-possessed-order" or "mizuchi-trial-possessed-order" ? 0 : role is "mizuchi-story-ordinary-order" or "mizuchi-trial-ordinary-order" ? 1 : role is "mizuchi-story-unverified-order" or "mizuchi-trial-unverified-order" ? 2 : 3;
     }
 
-    /// <summary>生成绑定经营轮次及目标修订的不可变线路策略；没有完整证据时返回空策略。</summary>
+    /// <summary>生成绑定经营轮次的协议策略，并携带尤魔目标修订；不满足必需字段条件时返回空策略。</summary>
+    /// <remarks>
+    /// 输出是新建的 JSON 对象，供调用方序列化。目标标签排序使签名不受输入顺序影响；
+    /// 尤魔修订号通过独立字段传递，并不拼入签名，接收端需要一并核对。
+    /// </remarks>
     public static JsonObject BuildWirePolicy(JsonNode? special, string role, double generation)
     {
         var s = Obj(special); var target = Obj(BuildOrderRule(special, role)["foodTarget"]);
@@ -137,6 +147,11 @@ public static class SpecialBusinessRules
         return Object(("specialTargetChallenge", challenge), ("specialTargetOwner", owner), ("specialTargetGeneration", generation), ("specialTargetRevision", revision), ("specialTargetFoodTags", Array(tags)), ("specialTargetMatchMode", match), ("specialTargetSignature", $"{challenge}|{owner}|generation:{Key(generation)}|match:{match}|food:{string.Join(",", tags)}"));
     }
     public static JsonObject EmptyWirePolicy() => Object(("specialTargetChallenge", ""), ("specialTargetOwner", ""), ("specialTargetGeneration", 0), ("specialTargetRevision", 0), ("specialTargetFoodTags", new JsonArray()), ("specialTargetMatchMode", ""), ("specialTargetSignature", ""));
+    /// <summary>判断当前特殊经营是否必须通过显式普通订单目标入口处理。</summary>
+    /// <remarks>
+    /// 激活状态下，挑战类型不可读或未注册均返回 <see langword="true"/>，防止退回通用选择路径。
+    /// 该结果表示路径要求，具体目标是否可用仍须由目标构建与执行准入确认。
+    /// </remarks>
     public static bool RequiresNormalTarget(JsonNode? special, string role)
     {
         var s = Obj(special); if (!Bool(s["active"])) return false; if (!Bool(s["challengeTypeAvailable"])) return true;
@@ -146,6 +161,8 @@ public static class SpecialBusinessRules
         if (c == YuumaChallenge) return role.Trim() is YuumaRole or "yuuma-order-unverified";
         return false;
     }
+    /// <summary>已知目标标签剩余时间比例低于阈值时生成暂缓原因；未知比例不在此处额外阻断。</summary>
+    /// <remarks>本方法只解释时间比例，不验证挑战类型；调用方负责限定适用的特殊经营阶段。</remarks>
     public static string CountdownDeferral(JsonNode? special)
     {
         var progress = NullableNumber(Obj(special)["targetTagTimeProgress"]);
@@ -153,6 +170,11 @@ public static class SpecialBusinessRules
     }
     /// <summary>破防完整投食只接受明确的挑战、本体角色和破防标志，不使用显示名称推断。</summary>
     public static bool IsKoishiFullFeed(JsonNode? special, string? role) => Bool(Obj(special)["active"]) && Str(Obj(special)["challengeType"]) == WackyChallenge && Bool(Obj(special)["wackyKoishiShieldBroken"]) && (role ?? "").Trim() == KoishiRole;
+    /// <summary>构造目标标签、料理、配方和额外材料组合的拒绝记录键，消除标签及材料输入顺序的影响。</summary>
+    /// <remarks>
+    /// 标签为空或料理 ID 为负时不生成键；配方 ID 为负时沿用料理 ID。额外材料过滤无效值后取整数部分并排序，
+    /// 保留重复项以区分材料份数。键不含订单或经营轮次，记录的作用域与失效时间由调用方管理。
+    /// </remarks>
     public static string RejectedRecipeKey(JsonNode? targetTags, double foodId, double recipeId, IEnumerable<double> extras)
     {
         var tags = NormalizeTags(targetTags).OrderBy(x => x, StringComparer.Create(CultureInfo.GetCultureInfo("zh-Hans-CN"), false)).ToArray();

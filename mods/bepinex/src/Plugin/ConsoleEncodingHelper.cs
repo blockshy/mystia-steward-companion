@@ -4,6 +4,8 @@ using BepInEx.Logging;
 
 namespace MystiaStewardCompanion.Plugin;
 
+/// <summary>尽力统一托管控制台与 Windows 控制台代码页，降低中文日志乱码的概率。</summary>
+/// <remarks>编码设置失败只记录警告，不应阻止插件加载；Win32 返回值未作为成功确认。</remarks>
 internal static class ConsoleEncodingHelper
 {
     private const uint Utf8CodePage = 65001;

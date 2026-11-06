@@ -2,12 +2,14 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>提供怪诞料理挑战的执行模式判定和拒绝方案键；具体目标与评价链仍在原生执行入口核验。</summary>
 internal static class WackyCookingCompetitionRuntimePolicy
 {
     public const string ChallengeType = SpecialBusinessChallengeTypes.WackyCookingCompetition;
     public const string KoishiBossRole = SpecialBusinessOrderRoles.WackyKoishiBoss;
     public const int MaxRecentRejectedRecipeKeys = 128;
 
+    /// <summary>宽范围识别需要挑战校验的请求线索；原因文本或非空目标标识只能触发检查，不能证明挑战身份。</summary>
     public static bool IsChallengeContext(string challengeType, string executionReason, string targetSignature)
     {
         return string.Equals(challengeType, ChallengeType, StringComparison.Ordinal)
@@ -63,6 +65,7 @@ internal static class WackyCookingCompetitionRuntimePolicy
             .ToArray();
     }
 
+    /// <summary>将目标标签、料理、配方和加料集合规范化为拒绝记录键，避免仅因输入排列不同重复尝试同一方案。</summary>
     public static string BuildRejectedRecipeKey(
         int foodId,
         int recipeId,

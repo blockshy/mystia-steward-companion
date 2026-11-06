@@ -197,6 +197,7 @@ function validateReferenceLock(lock) {
   }
 }
 
+/** 校验锁中列出的每个正式引用的类型、大小与摘要；目录内其他文件不在此函数的验证范围。 */
 function validateReferenceDirectory(referenceDirectory, lock) {
   const resolvedDirectory = assertRealDirectory(referenceDirectory, 'Reference directory');
   for (const expected of lock.files) {
@@ -217,6 +218,7 @@ function validateReferenceDirectory(referenceDirectory, lock) {
   return resolvedDirectory;
 }
 
+/** 先核对整包大小及 SHA-256，再按严格 ZIP 规则解析成员；不执行压缩包中的任何程序集。 */
 function readAndValidateReferenceBundle(archivePath, lock) {
   const resolvedArchivePath = path.resolve(archivePath);
   const archiveStats = assertRegularFile(resolvedArchivePath, 'Reference bundle archive');
@@ -240,6 +242,10 @@ function readAndValidateReferenceBundle(archivePath, lock) {
   return parseStrictZip(archive, lock.files);
 }
 
+/**
+ * 只接受锁定引用包所需的 ZIP 子集，核对中央目录、局部头、成员集合和解压结果。
+ * 这不是通用解压器：额外成员、非平面路径和不支持的 ZIP 特性应明确失败，不能宽松修复。
+ */
 function parseStrictZip(archive, expectedFiles) {
   if (archive.length < zipEndLength) {
     throw new Error('Reference bundle ZIP is truncated before the end record.');
@@ -418,6 +424,11 @@ function parseStrictZip(archive, expectedFiles) {
   return extracted;
 }
 
+/**
+ * 完整验证暂存文件后逐项备份并替换受管引用，最后重新校验目标目录。
+ * 回滚失败时保留暂存备份供检查；下一次恢复会拒绝未收尾事务，不自动删除恢复证据。
+ * 多文件替换不是对并发读取者原子可见的目录切换，应在未运行相关构建时调用。
+ */
 function restoreReferenceBundle(archivePath, outputDirectory, lock) {
   const extracted = readAndValidateReferenceBundle(archivePath, lock);
   const resolvedOutput = assertRealDirectory(outputDirectory, 'Reference output directory');
@@ -517,6 +528,7 @@ function assertRealDirectory(directoryPath, label) {
   return resolvedPath;
 }
 
+/** 从卷根逐层核对现有路径，拒绝符号链接或 junction；不能只检查最终文件而忽略祖先重定向。 */
 function assertNoSymlinkPathComponents(resolvedPath, label) {
   const parsed = path.parse(resolvedPath);
   const relativeParts = resolvedPath.slice(parsed.root.length).split(path.sep).filter(Boolean);

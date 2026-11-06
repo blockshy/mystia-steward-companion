@@ -90,6 +90,7 @@ function flattenReleasePages(input) {
   return input;
 }
 
+/** 仅收录规范版本标签且非草稿的发布；预览标记与版本渠道冲突时拒绝生成，避免错误渠道传播。 */
 function normalizeRelease(rawRelease, repository) {
   if (!rawRelease || typeof rawRelease !== 'object' || Array.isArray(rawRelease)) {
     throw new Error('GitHub releases JSON contains a non-object entry.');
@@ -131,6 +132,10 @@ function normalizeRelease(rawRelease, repository) {
   };
 }
 
+/**
+ * 将已发布记录与本次待发布版本组合为有界目录；本次版本必须严格高于已发布的规范版本。
+ * 只构造并校验数据，不上传资产或修改 Release；公开链接由已校验的仓库与标签构造。
+ */
 export function buildUpdateCatalog({
   githubReleases,
   repository,

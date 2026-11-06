@@ -13,8 +13,8 @@ internal readonly record struct AutomationSafetyBarrierAcknowledgement(
     IReadOnlyList<long> Sequences);
 
 /// <summary>
-/// Retains non-idempotent automation failures until the lease owner explicitly confirms the game state.
-/// Callers synchronize access with the automation job lock so event publication and barrier registration stay atomic.
+/// 保留不可重复操作的失败屏障，等待租约所有者明确确认游戏状态，或所属经营代次结束。
+/// 调用方以自动料理任务锁同步访问，使事件发布与屏障登记处于同一临界区。
 /// </summary>
 internal sealed class AutomationSafetyBarrierRegistry
 {
@@ -53,8 +53,8 @@ internal sealed class AutomationSafetyBarrierRegistry
     }
 
     /// <summary>
-    /// Retires every unresolved barrier owned by one business generation at its exact lifecycle boundary.
-    /// Active-generation barriers are never silently evicted by capacity.
+    /// 在经营生命周期结束边界移除该代次全部未确认屏障。
+    /// 活跃代次的屏障不会因容量限制而被静默淘汰。
     /// </summary>
     public IReadOnlyList<long> RetireBusinessGeneration(long businessGeneration)
     {
@@ -82,6 +82,7 @@ internal sealed class AutomationSafetyBarrierRegistry
         return barrier != null;
     }
 
+    /// <summary>确认所选屏障及同一目标不晚于它的屏障；其他目标或更新的屏障继续保留。</summary>
     public AutomationSafetyBarrierAcknowledgement Acknowledge(long sequence)
     {
         if (!_barriers.TryGetValue(sequence, out var selected))

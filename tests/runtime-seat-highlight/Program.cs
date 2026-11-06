@@ -10,7 +10,7 @@ const string standardShaderName = "Sprites/Default";
 const string cloneName = "MystiaStewardCompanion.TargetDeskFill";
 const string fillObjectName = "MystiaStewardCompanion.TargetDeskStandardFill";
 
-// A player build does not need Shader.Find for the new path: the blank SpriteRenderer supplies this material.
+// 夹具让新建 SpriteRenderer 提供默认材质，验证此路径不依赖按名称查找着色器。
 Shader.ClearRegistered();
 var standardShader = new Shader { name = standardShaderName };
 var defaultMaterial = new Material(standardShader)
@@ -45,9 +45,8 @@ var sourceSprite = new Sprite(
     name = "DeskSourceSprite",
 };
 
-// Unity 2021.3 treats a Sprite smaller than 32x32 as FullRect even when Tight is
-// requested, then keeps that geometry unchanged when OverrideGeometry is called.
-// Lock the exact 2x2 shared-white failure before exercising the owned 64x64 path.
+// 替身将小于 32×32 的 Tight 请求退化为 FullRect，并保持几何覆盖失败后的原矩形。
+// 先固定共享 2×2 白纹理的失败夹具，再验证私有 64×64 纹理路径；这不是实际引擎执行证据。
 var smallTightProbe = Sprite.Create(
     Texture2D.whiteTexture,
     new Rect(0f, 0f, Texture2D.whiteTexture.width, Texture2D.whiteTexture.height),
@@ -366,7 +365,7 @@ for (var frame = 0; frame < 120; frame++)
 }
 Assert(firstFill.ColorWriteCount == steadySeatWrites, "单目标桌位颜色不变时不得每帧重复写入SpriteRenderer。");
 
-// Target switches retire the clone, fill object, owned texture/Sprite, and owned material.
+// 切换目标时应成组回收克隆、填充节点及私有纹理、Sprite 和材质，避免资源残留。
 Time.realtimeSinceStartup = 0.5f;
 RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(
     7,
@@ -383,7 +382,7 @@ Assert(Sprite.Destroyed.Contains(firstOwnedSprite)
     "Switching desks must destroy the Mod-owned sprite/texture and retain all source/shared assets.");
 Assert(GameObject.Instantiated.Count == 2 && GameObject.Created.Count == 2, "Switching desks must create exactly one replacement pair.");
 
-// Wrapper loss is diagnosed once for this target/phase and reacquires a clean pair without duplicate success evidence.
+// 包装对象失效按目标和阶段记录一次诊断；重新建立显示后不能重复报告相同成功证据。
 var secondClone = FindLatestClone();
 var secondFillObject = FindLatestFillObject();
 var secondOwnedSprite = GetFillRenderer(secondFillObject).sprite!;
@@ -401,7 +400,7 @@ Assert(secondFillObject.m_CachedPtr == IntPtr.Zero
 Assert(SuccessLogs(log, 7).Length == successCountBeforeRebind, "Rebinding one target generation must not duplicate success evidence.");
 Assert(FailureLogs(log, 7, "health").Length == 1, "Destroyed-wrapper health failure must be logged once.");
 
-// Active health requires both disabled templates plus exact geometry and owned material identity.
+// 健康检查同时核对两个模板的禁用状态、精确几何和私有材质身份，不能仅检查对象存在。
 var driftClone = FindLatestClone();
 var driftFillObject = FindLatestFillObject();
 var driftFill = GetFillRenderer(driftFillObject);
@@ -439,7 +438,7 @@ RuntimeSeatHighlightService.Tick();
 Assert(RuntimeSeatHighlightService.Status.Contains("parent or local transform", StringComparison.Ordinal), "Independent fill transform drift must fail closed.");
 Assert(parentDriftClone.m_CachedPtr == IntPtr.Zero && parentDriftFillObject.m_CachedPtr == IntPtr.Zero, "Transform drift must clean the complete owned group.");
 
-// Pulse, create, and health failures each get a bounded target/phase diagnostic.
+// 分别注入颜色写入、创建和健康检查失败，要求按目标和阶段记录有界诊断并回收完整资源组。
 Time.realtimeSinceStartup = 5.4f;
 RuntimeSeatHighlightService.Tick();
 var pulseClone = FindLatestClone();
@@ -483,7 +482,7 @@ Time.realtimeSinceStartup = 8.3f;
 RuntimeSeatHighlightService.Tick();
 Assert(FailureLogs(log, 7, "create").Length == createFailures, "Retrying the same target/phase/failure must not duplicate failure evidence.");
 
-// A different failure in the same target/phase remains observable, while the shared result is never destroyed.
+// 同一目标阶段出现不同故障仍应保留证据；材质创建失败不能销毁共享默认材质。
 SpriteRenderer.DefaultMaterial = defaultMaterial;
 SpriteRenderer.RejectMaterialInstantiation = true;
 Time.realtimeSinceStartup = 10f;
@@ -500,7 +499,7 @@ Assert(FailureLogs(log, 7, "create").Length == createFailures + 1,
     "A distinct failure in the same target and create phase must receive its own bounded diagnostic.");
 SpriteRenderer.RejectMaterialInstantiation = false;
 
-// A listener-thread target update during the last local Unity read must win before ownership publication.
+// 在主线程最后一次读取期间从监听线程发布新目标，旧显示事务必须在公布所有权前失效。
 var successLogsBeforeMidCreateSwitch = SuccessLogs(log, 7).Length;
 var createFailuresBeforeMidCreateSwitch = FailureLogs(log, 7, "create").Length;
 var midSwitchClonesBefore = GameObject.Instantiated.Count;
@@ -545,7 +544,7 @@ Assert(SuccessLogs(log, 7).Length == successLogsBeforeMidCreateSwitch + 1
        && SuccessLogs(log, 7)[^1].Contains("targetGeneration=4; desk=1", StringComparison.Ordinal),
     "The next main-thread reconcile must bind only the replacement target generation.");
 
-// The native clone shape remains exact, while shader-role binding stays independent of serialized order.
+// 保持克隆形状约束，同时改变序列化排列，检查着色器角色不会由列表位置决定。
 ConfigureSelectionClone(selectionRoot, (_, cluster) =>
 {
     var renderers = cluster.GetObjects<SpriteRenderer>();
@@ -606,7 +605,7 @@ Assert(toggleClone.m_CachedPtr == IntPtr.Zero
     "Disabling the feature must destroy both objects, the white sprite/texture, and the owned material.");
 Assert(!Material.Destroyed.Contains(defaultMaterial), "Toggle cleanup must retain Unity's default material.");
 
-// Failure evidence is capped at eight per business and resets independently with the business generation.
+// 每个经营代次最多保留八条失败证据；新经营代次应独立重置该预算。
 const long failureBudgetBusiness = 70;
 RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, failureBudgetBusiness, Environment.CurrentManagedThreadId);
 SpriteRenderer.DefaultMaterial = null;
@@ -751,8 +750,8 @@ Assert(!Material.Destroyed.Contains(defaultMaterial)
        && Texture2D.whiteTexture.m_CachedPtr != IntPtr.Zero,
     "No lifecycle path may destroy a Unity-owned shared asset.");
 
-// A dynamically created SpriteRenderer must be recovered only through an exact same-pointer
-// native cast. Every ambiguity fails before material ownership and cleans both partial objects.
+// 动态创建的 SpriteRenderer 只允许通过同指针的精确类型转换恢复。
+// 歧义必须在取得材质所有权前拒绝，并清理两个已部分创建的节点。
 var castFailureCases = new[]
 {
     (Mode: SpriteRendererCastMode.Reject, Failure: "cannot exact-cast to a live SpriteRenderer"),
@@ -902,7 +901,7 @@ Assert(Texture2D.Created.Count == texturesBeforeApplyFailure + 1
        && Sprite.Created.Count == spritesBeforeApplyFailure,
     "An Apply failure must destroy the partial texture before any Sprite is created.");
 
-// Distinct rare and normal desks own independent complete resource groups and colors.
+// 不同桌位的普客与稀客分别拥有完整资源组和颜色，撤回其中一组不得影响另一组。
 ConfigureSelectionClone(selectionRoot, null);
 RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(
     true,
@@ -973,7 +972,7 @@ Assert(dualNormalClone.m_CachedPtr != IntPtr.Zero
        && ReferenceEquals(dualNormalFill.sharedMaterial, retainedNormalMaterial),
     "Removing one desk claim must preserve the other desk's object, texture, Sprite, and material identities.");
 
-// When both order kinds claim one desk, exactly one group round-trips between both colors.
+// 两类订单指向同一桌位时共用一个资源组，切换显示颜色不应叠加重复节点。
 RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100));
 RuntimeSeatHighlightService.Tick();
 var clonesBeforeSharedDesk = LiveSeatClones().Length;

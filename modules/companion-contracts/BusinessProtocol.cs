@@ -48,6 +48,10 @@ public static class BusinessProtocol
             throw new ArgumentException("业务协议版本不兼容，请更新伴随客户端。");
     }
 
+    /// <summary>
+    /// 在 JSON 元素层检查精确字段集合及重复键，避免映射为对象后丢失重复字段证据。
+    /// 此处只验证信封结构，各字段的类型与业务取值由对应解析入口继续校验。
+    /// </summary>
     private static void RequireFields(JsonElement root, params string[] fields)
     {
         if (root.ValueKind != JsonValueKind.Object) throw new ArgumentException("页面订阅必须为 JSON 对象。");

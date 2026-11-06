@@ -87,6 +87,8 @@ impl InstallControl {
         Ok(true)
     }
 
+    /// 原子取得替换阶段的执行权；false 表示取消已先发生，错误表示调用顺序或锁状态异常。
+    /// 调用成功后不再接受中途取消，调用方必须负责完成替换或执行回滚。
     pub fn begin_replacement(&self) -> Result<bool, String> {
         let mut state = self
             .state
@@ -102,6 +104,7 @@ impl InstallControl {
         Ok(true)
     }
 
+    /// 在轮询间隔内等待取消或超时；返回只表示等待结束，调用方仍需重新检查取消与进程状态。
     pub fn wait(&self, timeout: Duration) -> Result<(), String> {
         let state = self
             .state

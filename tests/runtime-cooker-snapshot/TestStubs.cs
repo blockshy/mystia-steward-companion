@@ -54,6 +54,7 @@ namespace MystiaStewardCompanion.Save
         RuntimeCookingContentMutation LastMutation,
         bool MutationCompleted);
 
+    /// <summary>通过委托注入所有权读取结果，区分明确的操作归属与无法确认的状态。</summary>
     internal static class RuntimeCookingGenerationTracker
     {
         public static Func<object, (bool Success, RuntimeCookingOwnershipSnapshot Snapshot, string Diagnostic)> OwnershipReader { get; set; }
@@ -71,6 +72,10 @@ namespace MystiaStewardCompanion.Save
         }
     }
 
+    /// <summary>
+    /// 将厨具反射边界替换为可控委托，供快照测试注入缺失、锁定和读取失败。
+    /// 这些委托不访问 IL2CPP；返回状态验证的是上层投影规则，而非游戏字段读取能力。
+    /// </summary>
     internal static class RuntimeCookerReflection
     {
         public static Func<object?> ManagerReader { get; set; } = () => new object();

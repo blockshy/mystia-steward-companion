@@ -2,6 +2,10 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 在主线程将普客订单捕获记录和可视订单投影为托管快照。
+/// 生命周期捕获决定完整性及自动化身份，可视来源仅补充展示，不能据此证明全部活动订单已被读取。
+/// </summary>
 public sealed class RuntimeNormalOrderSnapshotService
 {
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
@@ -33,6 +37,10 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     public IReadOnlyDictionary<string, double> PerformanceMs => _performanceMs;
 
+    /// <summary>
+    /// 开始一次独立采集并清空帧内缓存；各来源失败单独记录，保留其他来源可用的展示数据。
+    /// 返回值中的 OrdersReadComplete 与单项 CanAutomate 分别表达集合完整性和订单执行前提。
+    /// </summary>
     public NormalBusinessContext Load()
     {
         _performanceMs.Clear();
@@ -89,6 +97,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             errors.Add($"HUD: {ex.Message}");
         }
 
+        // Hook 就绪后优先保留捕获记录；未匹配的可视项仍显示，但不会获得捕获路径的控制器权限。
         if (runtimeCaptureReady)
         {
             source.Add("normalOrderMode=authoritativeCapture");
@@ -107,6 +116,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         return BuildContext(visibleOrders, source, errors);
     }
 
+    /// <summary>按生命周期分组并稳定展示；来源数量或展示去重结果不参与提升完整性标志。</summary>
     private NormalBusinessContext BuildContext(IEnumerable<NormalBusinessOrder> orders, List<string> source, List<string> errors)
     {
         var deduplicated = Measure("deduplicate", () => ApplyFirstSeenOrder(orders)
@@ -139,6 +149,10 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
     }
 
+    /// <summary>
+    /// 为当前可见分组维护首次观察时间，而非游戏内创建时间；离开当前结果的键立即淘汰。
+    /// 锁只保护托管排序表，不允许在后台线程读取游戏对象。
+    /// </summary>
     private static IReadOnlyList<NormalBusinessOrder> ApplyFirstSeenOrder(IEnumerable<NormalBusinessOrder> orders)
     {
         var grouped = orders
@@ -174,6 +188,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
     }
 
+    // 原生地址可能复用，分组键必须包含活动生命周期；无身份回退键仅用于展示去重。
     private static string BuildOrderKey(NormalBusinessOrder order)
     {
         var rawKey = !string.IsNullOrWhiteSpace(order.OrderKey)
@@ -184,6 +199,10 @@ public sealed class RuntimeNormalOrderSnapshotService
             : $"{rawKey}|unbound";
     }
 
+    /// <summary>
+    /// 合并同一分组的展示字段和已读状态；正生命周期序号不唯一时撤销自动化资格。
+    /// 金额等展示字段取首个已知值，耐心值则要求唯一，避免冲突触发执行策略。
+    /// </summary>
     private static NormalBusinessOrder MergeOrderGroup(IEnumerable<NormalBusinessOrder> group)
     {
         var orders = group.ToList();
@@ -270,6 +289,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             && !string.Equals(text, "NormalGuest", StringComparison.OrdinalIgnoreCase);
     }
 
+    // 已有 TraceId 保持稳定；仅在缺失时使用带首次观察信息的托管投影生成关联标识。
     private static NormalBusinessOrder CopyWithFirstSeen(NormalBusinessOrder order, DateTime firstSeenAtUtc)
     {
         var traceOrder = new NormalBusinessOrder
@@ -352,6 +372,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             : reason;
     }
 
+    /// <summary>读取控制器暴露的可视订单及元素；兼容性枚举结果不用于证明活动集合完整。</summary>
     private IEnumerable<NormalBusinessOrder> ReadOrderControllerOrders()
     {
         var orderControllerType = RuntimeReflectionUtility.FindType(OrderControllerTypeName);
@@ -399,6 +420,10 @@ public sealed class RuntimeNormalOrderSnapshotService
         return _readCache.ReadVisibleNormal(pointer, source, () => ReadNormalOrder(order, null, source));
     }
 
+    /// <summary>
+    /// 读取保留时限内的捕获项，并要求解析后的活动生命周期仍与捕获序号一致。
+    /// 任一项解析失败会降级整批完整性，但其他成功项仍可作为展示数据返回。
+    /// </summary>
     private IEnumerable<NormalBusinessOrder> ReadRuntimeCapturedOrders()
     {
         // 完整枚举成功后此位才可提交；Load 捕获异常时会再次清除。
@@ -423,6 +448,10 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
     }
 
+    /// <summary>
+    /// 先确认普通订单形状并尝试解析活动生命周期；捕获来源必须匹配预期序号，可视来源缺少序号时仅保留展示。
+    /// 控制器存在本身不足以允许自动化，还须通过特殊营业分类及活动生命周期检查。
+    /// </summary>
     private NormalBusinessOrder? ReadNormalOrder(
         object? order,
         object? controller,
@@ -514,6 +543,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         };
     }
 
+    // 不采用托管哈希伪装成原生键；地址不可读时保留空键，交由上层按未绑定项处理。
     private static string BuildRuntimeOrderKey(object order)
     {
         return RuntimeReflectionUtility.TryReadNativeObjectPointer(order, out var pointer)
@@ -521,6 +551,10 @@ public sealed class RuntimeNormalOrderSnapshotService
             : "";
     }
 
+    /// <summary>
+    /// 用营业代次、订单指针和控制器指针获取活动序号，并复核查询期间营业代次未变化。
+    /// 不创建新生命周期，也不凭指针非零认定订单仍然有效。
+    /// </summary>
     private static bool TryReadActiveOrderLifecycle(
         object? order,
         object? controller,
@@ -612,7 +646,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         }
         catch
         {
-            // Ignore conversion failures.
+            // 文本转换失败仅表示名称未知，不中断整张订单的其他字段采集。
         }
 
         return null;
@@ -641,6 +675,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         return null;
     }
 
+    // 与宽松布尔读取不同，所有候选均不可读时保留 null，避免把未知付款状态显示为明确否定。
     private static bool? ReadNullableBoolMember(string name, params object?[] instances)
     {
         foreach (var instance in instances)
@@ -684,6 +719,7 @@ public sealed class RuntimeNormalOrderSnapshotService
         return null;
     }
 
+    // 拒绝默认类型名式文本，避免将包装器名称误当作顾客或商品的本地化名称。
     private static string? NormalizeText(object? value)
     {
         if (value == null) return null;

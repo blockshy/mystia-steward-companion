@@ -39,6 +39,7 @@ await auditExclusiveLock();
 
 console.log('Build artifact storage audit passed.');
 
+// 在合成仓库中执行正式清理入口，同时放置受保护文件，检查删除边界而非只检查输出文本。
 async function auditReportDryRunCleanAndProtection() {
   await withFixture(async (fixtureRoot) => {
     const managedPaths = [
@@ -234,6 +235,7 @@ async function auditPolicyValidation() {
   });
 }
 
+// 链接目标位于独立临时根；拒绝操作后仍回读目标内容，证明清理没有沿链接越界。
 async function auditSymlinkRefusal() {
   await withFixture(async (fixtureRoot) => {
     const outsideRoot = await mkdtemp(path.join(os.tmpdir(), 'mystia-build-artifacts-outside-'));
@@ -274,6 +276,8 @@ async function auditExclusiveLock() {
   });
 }
 
+// 每组场景使用带固定标记的独占临时根，CLI 的显式 --root 始终指向该根。
+// 夹具内出现的签名文件名均为合成保护项，不读取开发者的实际签名材料。
 async function withFixture(run) {
   const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), 'mystia-build-artifacts-fixture-'));
   try {

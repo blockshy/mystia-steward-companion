@@ -17,6 +17,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 首次读取也必须具备完整观察边界；被其他前缀跳过的原方法只解除短屏障，不推进拓扑修订。
 static void VerifyHookReadinessAndInitialSnapshot()
 {
     var tracker = new YuumaCookerTopologyTracker();
@@ -65,6 +66,7 @@ static void VerifyHookReadinessAndInitialSnapshot()
         "A skipped original incorrectly advanced the topology revision.");
 }
 
+// 嵌套回调期间禁止取得快照。永久锁锅应写入快照身份，不能让短期变更屏障永久占用。
 static void VerifyNestedMutationUsesOnlyShortBarrier()
 {
     var tracker = new YuumaCookerTopologyTracker();
@@ -231,6 +233,7 @@ static IReadOnlyList<YuumaCookerTopologyControllerIdentity> BuildControllers()
     };
 }
 
+// 源码形状检查补充纯状态机测试，但不能证明目标游戏版本的 Hook 已实际挂接。
 static void VerifyProductionObserverContract()
 {
     var root = FindRepositoryRoot();

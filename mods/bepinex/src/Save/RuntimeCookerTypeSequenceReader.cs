@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>有界读取厨具能力枚举，区分空桌标记与有效能力；任一读取或释放失败都丢弃部分结果。</summary>
 internal static class RuntimeCookerTypeSequenceReader
 {
     private const int MaxCookerTypeCount = 32;
@@ -26,6 +27,7 @@ internal static class RuntimeCookerTypeSequenceReader
         var completed = false;
         var failure = "";
 
+        // 多观察一次 MoveNext 才能区分“恰好达到上限后结束”和“仍有未读取元素”。
         for (var index = 0; index <= MaxCookerTypeCount; index++)
         {
             object? moved;
@@ -139,6 +141,7 @@ internal static class RuntimeCookerTypeSequenceReader
         return true;
     }
 
+    /// <summary>将类型集合与空桌、阶段及成品事实交叉检查，拒绝空桌携带料理或非空桌没有能力的矛盾状态。</summary>
     public static bool TryValidateControllerState(
         bool isEmptyDesk,
         bool observedEmpty,

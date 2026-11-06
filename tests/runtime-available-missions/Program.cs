@@ -270,6 +270,7 @@ static void TestNativeStartMissionGates()
     AssertEqual(1, finishedLoop.Missions.Count, "A finished loop mission was incorrectly excluded.");
 }
 
+// 同一任务可由多个兼容来源触发；展示元数据冲突时必须拒绝，而非任取首项隐藏歧义。
 static void TestDuplicateMissionRules()
 {
     var compatible = ProjectWithHistory(
@@ -337,6 +338,8 @@ static void TestDuplicateMissionRules()
         "Conflicting duplicate metadata did not fail closed.");
 }
 
+// 显式驱动调度器初始化、演出前后提交和代次更换；未知启动结果使来源失效，不能泄漏候选任务。
+// 这里测试托管状态转换，不调用游戏的任务启动方法。
 static void TestSourceLifecycleState()
 {
     var state = new RuntimeAvailableMissionSourceState();

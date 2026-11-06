@@ -13,6 +13,10 @@ namespace MystiaStewardCompanion.Business.Domain.SpecialBusiness;
 public static partial class NormalTargetSelector
 {
     private static readonly string[] AllPlaces = { "妖怪兽道", "人间之里", "博丽神社", "红魔馆", "迷途竹林", "魔法森林", "妖怪之山", "旧地狱", "地灵殿", "命莲寺", "神灵庙", "太阳花田", "辉针城", "月之都", "魔界" };
+    /// <summary>
+    /// 根据已识别的特殊经营种类路由普客目标选择；类型未知或未适配时返回带说明的空目标。
+    /// 可选缓存由调用方限定生命周期，必须与输入签名规则配套使用，不能跨会话复用旧目标。
+    /// </summary>
     public static JsonObject Select(JsonObject args, OrderCandidateCache? cache = null)
     {
         cache ??= new OrderCandidateCache(); var special = args["specialBusiness"]; var s = Obj(special);
@@ -37,6 +41,7 @@ public static partial class NormalTargetSelector
     private static string First(IEnumerable<string> tags) => tags.FirstOrDefault(x => x.Trim().Length > 0) ?? "";
     private static string FoodLabel(JsonObject o, string prefix = "#") => SpecialBusinessRules.TextOr(Str(o["foodName"]), prefix + Key(Num(o["foodId"])));
     private static string BeverageLabel(JsonObject o, string prefix = "#") => SpecialBusinessRules.TextOr(Str(o["beverageName"]), prefix + Key(Num(o["beverageId"])));
+    /// <summary>将普客或合成偏好适配为统一候选搜索需求；需求类型不改变原订单在运行时的身份。</summary>
     public static JsonObject Demand(JsonObject customer, string food = "", string beverage = "", JsonNode? target = null)
     { var result = Object(("type", "rare-tag-order"), ("customer", customer), ("requiredFoodTag", food), ("requiredBeverageTag", beverage)); if (target != null) result["specialFoodTarget"] = Clone(target); return result; }
     public static JsonObject Customer(double id, string name, IEnumerable<string> food, IEnumerable<string> negative, IEnumerable<string> beverage, bool allPlaces = true) => Object(
@@ -54,6 +59,10 @@ public static partial class NormalTargetSelector
             SpecialBusinessRules.NormalizeTags(Strings(o["foodPreferenceTags"]).Concat(Strings(normal?["positiveTags"])).Concat(Strings(rare?["positiveTags"])).Concat(Strings(fallback))),
             Strings(rare?["negativeTags"]), SpecialBusinessRules.NormalizeTags(Strings(o["beveragePreferenceTags"]).Concat(Strings(normal?["beverageTags"])).Concat(Strings(rare?["beverageTags"]))));
     }
+    /// <summary>
+    /// 各取排序后的有限候选进行组合比较，控制特殊经营计算量；结果不是无限候选空间的全局最优证明。
+    /// 同分保留首次遍历到的组合，调用方负责过滤硬性失败并复核特殊评价资格。
+    /// </summary>
     private static (JsonObject Food, JsonObject Beverage)? BestPair(IEnumerable<JsonObject> foods, IEnumerable<JsonObject> beverages, Func<JsonObject, double> foodScore, Func<JsonObject, double> beverageScore, Func<JsonObject, JsonObject, double> pairScore)
     {
         var fs = foods.OrderByDescending(foodScore).Take(48).ToArray(); var bs = beverages.OrderByDescending(beverageScore).Take(32).ToArray();
@@ -61,6 +70,7 @@ public static partial class NormalTargetSelector
         foreach (var f in fs) foreach (var b in bs) { var next = pairScore(f, b); if (best == null || next > score) { best = (f, b); score = next; } }
         return best;
     }
+    /// <summary>同时保存原订单匹配编号和实际执行编号，使替代方案不能脱离触发它的原始订单。</summary>
     private static JsonObject Target(JsonObject order, JsonObject food, JsonObject beverage, string reason, JsonObject? options = null)
     {
         options ??= new JsonObject(); var result = SpecialBusinessRules.EmptyWirePolicy(); var recipe = Obj(food["recipe"]); var drink = Obj(beverage["beverage"]);

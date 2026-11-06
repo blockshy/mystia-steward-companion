@@ -66,7 +66,7 @@ static void VerifyMissingIdentityFailsClosed()
 
 static void VerifyConcurrentYuyukoRetakeOrdersRemainIsolated()
 {
-    // Runtime identities observed for R-0082 and R-0083 in one Yuyuko retake phase-three session.
+    // 夹具保留幽幽子重考第三阶段中两笔订单的不同桌位和原始身份；相同酒水标签不能合并订单。
     var r0082 = new RareOrderIdentity(1, 40, 14, 2);
     var r0083 = new RareOrderIdentity(0, 23, 4, 2);
 
@@ -110,6 +110,7 @@ static void VerifyCapturedControllerOwnershipDoesNotDependOnManagerScan()
         "A captured controller-owned order must remain executable when the manager scan is empty.");
 }
 
+// 已满足订单仍可供完成或评价查询，但不得重新用于送达；同一身份的准入取决于调用用途。
 static void VerifyFulfilledCapturedOrderDependsOnLookupPurpose()
 {
     var accepted = RareOrderIdentityMatcher.IsExecutableCapturedOrder(
@@ -132,6 +133,7 @@ static void VerifyFulfilledCapturedOrderDependsOnLookupPurpose()
     AssertTrue(accepted, $"A fulfilled captured order was rejected for completion/evaluation. Reason: {reason}");
 }
 
+// 追踪标识存在时必须同时匹配；仅在双方都无追踪标识时才允许完整原始身份作为回退依据。
 static void VerifyCookingTargetIdentity()
 {
     var identity = new RareOrderIdentity(2, 123, 17, -1);

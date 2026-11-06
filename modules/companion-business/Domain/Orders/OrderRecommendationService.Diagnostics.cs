@@ -28,6 +28,10 @@ public static partial class OrderRecommendationService
             $"ingredients:{string.Join(",", Strings(diagnostic["missingIngredientNames"]))}", $"requiredCookers:{string.Join(",", Strings(diagnostic["requiredCookerNames"]))}", $"placedCookers:{string.Join(",", placed)}", $"usableCookers:{string.Join(",", usable)}", $"runtimeUnavailableCookers:{string.Join(",", unavailable)}", $"budget:{(remaining == null ? "" : Key(remaining.Value))}", $"minimum:{(minimum == null ? "" : Key(minimum.Value))}");
         return diagnostic;
     }
+    /// <summary>
+    /// 按候选生成的依赖顺序选择首要阻塞原因；前置阶段为空时，不将后续阶段的空结果误报为独立故障。
+    /// 返回值仅解释当前计算结果，不能作为恢复自动化或确认游戏副作用的凭据。
+    /// </summary>
     private static JsonObject BlockedReason(JsonObject demand, JsonObject context, JsonObject counts, JsonObject rule, string[] ingredients, string[] cookers, string[] placed, string[] usable, string[] unavailable, double? remaining, double? minimum)
     {
         var recipes = Obj(counts["foodRecipeEligibility"]); var foods = Obj(counts["foodCandidates"]); var beverages = Obj(counts["beverageCandidates"]); var plans = Obj(counts["plans"]); var tag = Str(demand["requiredFoodTag"]); var reason = SpecialBusinessRules.TextOr(Str(rule["reason"]), "当前经营规则");

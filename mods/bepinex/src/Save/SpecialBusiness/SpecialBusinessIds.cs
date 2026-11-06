@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>与运行时挑战枚举名称对应的标识；判定使用区分大小写的精确比较，不使用界面翻译文本。</summary>
 internal static class SpecialBusinessChallengeTypes
 {
     public const string NotChallenge = "NotChallenge";
@@ -26,6 +27,7 @@ internal static class SpecialBusinessChallengeTypes
     }
 }
 
+/// <summary>跨采集、推荐和执行阶段传递的订单角色；未核验角色独立编码，不能与可执行角色互换。</summary>
 internal static class SpecialBusinessOrderRoles
 {
     public const string ContextUnavailable = "special-business-context-unavailable";
@@ -53,6 +55,7 @@ internal readonly record struct MizuchiChallengeContract(
     bool IsBaseChallenge,
     int? ExpectedControlType);
 
+/// <summary>瑞灵挑战的材料及控制类型契约；剧情允许动态控制类型，各试炼限定其对应的固定控制类型。</summary>
 internal static class MizuchiConstants
 {
     public const int PuyoyoFruitIngredientId = 5002;

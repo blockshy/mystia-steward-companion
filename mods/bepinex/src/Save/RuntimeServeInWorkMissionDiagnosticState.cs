@@ -82,7 +82,8 @@ internal sealed record RuntimeServeInWorkMissionDiagnosticSnapshot(
 }
 
 /// <summary>
-/// Pure managed observation state for calls the game naturally makes to its ServeInWork helper.
+/// 保存游戏自然调用 ServeInWork 帮助方法时的纯托管观测状态；将原生经营送餐判定与任务定义
+/// 交叉核验后形成任务信号，并按任务及经营双代次隔离旧结果。
 /// </summary>
 internal sealed class RuntimeServeInWorkMissionDiagnosticState
 {
@@ -100,6 +101,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         RuntimeServeInWorkMissionDiagnosticSnapshot.Detached;
     private long _eventSequence;
 
+    /// <summary>在锁内复制当前信号与有限诊断事件；信号按规范角色 ID 排序，避免暴露内部可变集合。</summary>
     public RuntimeServeInWorkMissionDiagnosticSnapshot Snapshot()
     {
         lock (_syncRoot)
@@ -114,6 +116,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>更新观测入口状态；Hook 不完整时立即撤销已有信号，但保留诊断事件与累计计数。</summary>
     public void SetHookStatus(
         string hookStatus,
         bool attached,
@@ -153,6 +156,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>只接受不倒退的任务代次；新代次清空信号，相同代次重复通知保持现有信号。</summary>
     public bool ResetForMissionGeneration(
         long missionGeneration,
         DateTime changedAtUtc)
@@ -209,6 +213,8 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>推进经营代次或阶段并撤销旧信号；同代次不得从关闭、销毁等较后阶段退回先前阶段。</summary>
+    /// <remarks>新经营代次可重新进入活跃阶段；阶段通知不会自行产生送餐任务信号。</remarks>
     public bool ApplyBusinessBoundary(
         long businessGeneration,
         string phase,
@@ -282,6 +288,8 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>原生 true 仍须角色身份和目标料理定义一致才形成信号；false、未知定义或冲突会撤回该客人的旧信号。</summary>
+    /// <returns>是否接纳并处理该次观测；有效的原生 false 也返回 true，不等同于产生了正向信号。</returns>
     public bool ObserveResult(
         long expectedMissionGeneration,
         long expectedBusinessGeneration,
@@ -413,6 +421,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
                 return false;
             }
 
+            // 每个规范角色只保存最近一次已核验的正向目标；任务与经营代次一并进入信号，供消费者复核。
             var signal = new RuntimeServeInWorkMissionSignal(
                 rawGuestId,
                 canonicalGuestId.GetValueOrDefault(),
@@ -440,6 +449,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>接纳当前活跃经营中的原生异常观测，撤销相关角色信号并单独计数，不把异常当作 false 结果。</summary>
     public bool ObserveNativeException(
         long expectedMissionGeneration,
         long expectedBusinessGeneration,
@@ -493,6 +503,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>仅在任务代次匹配时按角色身份撤销信号；返回值表示是否实际删除，迟到请求只记录拒绝诊断。</summary>
     public bool ClearForMissionIdentity(
         long expectedMissionGeneration,
         int rawGuestId,
@@ -537,6 +548,8 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>用当前活跃任务的角色与料理键集合裁剪已有信号，保留仍有任务支持的项。</summary>
+    /// <remarks>此操作只撤销已失去依据的信号，不因定义存在就补造未经原生判定的正向信号。</remarks>
     public bool ReconcileForMissionLifecycle(
         long expectedMissionGeneration,
         IReadOnlyCollection<RuntimeServeInWorkMissionSignalKey> activeSignals,
@@ -607,6 +620,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>在当前任务代次整体不可用时撤销全部信号；旧代次清理请求不能删除新代次数据。</summary>
     public bool ClearForMissionLifecycle(
         long expectedMissionGeneration,
         DateTime changedAtUtc)
@@ -654,6 +668,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    /// <summary>分别检查双代次匹配与活跃观测前提，将迟到回调和当前非活跃回调记入不同拒绝计数。</summary>
     private bool CanObserveLocked(
         long expectedMissionGeneration,
         long expectedBusinessGeneration,
@@ -782,6 +797,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         });
     }
 
+    /// <summary>同时清理规范身份及同原始角色 ID 的旧信号，覆盖映射缺失或映射变更后的撤销路径。</summary>
     private bool ClearSignalLocked(int rawGuestId, int? canonicalGuestId)
     {
         var removed = false;
@@ -802,6 +818,8 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         return removed;
     }
 
+    /// <summary>按代次、阶段、身份及判定内容去重保留最近的有限事件；时间戳不参与去重。</summary>
+    /// <remarks>事件淘汰时同步移除其去重签名，因此相同内容以后可以再次记录；事件数不等于原生调用次数。</remarks>
     private void RecordEventLocked(
         string code,
         int rawGuestId,
@@ -852,6 +870,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         }
     }
 
+    // 摘要不持有信号或事件副本；统一在 Snapshot 的锁内组装，防止摘要与集合来自不同读取时点。
     private void Publish(RuntimeServeInWorkMissionDiagnosticSnapshot snapshot)
     {
         _snapshot = snapshot with

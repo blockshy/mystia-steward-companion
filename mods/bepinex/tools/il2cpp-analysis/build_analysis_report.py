@@ -136,6 +136,8 @@ def command_output(command: list[str]) -> str:
     ).stdout.strip()
 
 
+# 优先采用工具实际报告；缺少报告时仅按输出布局推断并显式标记来源。
+# 目录和 IL 文件存在只能支持布局统计，不能替代原反编译进程的执行日志。
 def load_or_infer_decompilation_report(
     report_path: Path,
     assembly_directory: Path,

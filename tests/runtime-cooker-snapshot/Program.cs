@@ -91,6 +91,7 @@ static void VerifyBeverageUnlockSourceProjection()
     AssertEqual(0, empty.UnlockedBeverageIds.Count, "真正空图鉴保持空。");
 }
 
+// 单个控制器读取失败使完整厨具集合不再可信；不能发布部分成功结果作为完整可用容量。
 static void VerifyControllerFailureFailsClosed()
 {
     var locked = new object();
@@ -339,6 +340,7 @@ static void VerifyAllExactEmptyControllers()
     AssertEqual(0, state.PlacedCookerTypeIds.Count, "An exact empty desk created physical cooker types.");
 }
 
+// 先建立空桌事实再注入失败，检查旧空桌不会在新一轮读取失败后继续参与容量判断。
 static void VerifyLaterFailureClearsExactEmptyFacts()
 {
     var empty = new object();

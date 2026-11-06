@@ -98,6 +98,7 @@ class HistoryMigration {
       final sorted = values.cast<int>().toSet().toList()..sort();
       return sorted.join(',');
     }
+    // 按旧数据格式的范围验证，而非套用当前 UI 允许范围；迁移只接受当时可合法保存的值。
     final number = double.tryParse(value);
     final (minimum, maximum, integral) = switch (key) {
       'font-scale-percent' => (90.0, 130.0, true),

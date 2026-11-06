@@ -565,8 +565,8 @@ static void VerifyTwoActivationCommitAndEpochTransfer()
     Equal(1, runtime.AddRangeCalls, "extras were not added with exactly one AddRange");
     Sequence(new[] { 1, 2 }, runtime.Panel.Selected.Ids, "selected ingredients do not match base+extras");
 
-    // MatchingSelected has consumed importedRecipe by this point on the real runtime,
-    // while selectedIngredients still carries the committed base+extras transaction.
+    // 此处模拟 MatchingSelected 已消费 importedRecipe 的时刻；selectedIngredients
+    // 仍保留已提交的基础材料与加料，因此不能只凭 importedRecipe 是否存在判断事务归属。
     runtime.Panel.HasImported = true;
     runtime.Panel.Imported = null;
     runtime.ThrowPanelCookingState = true;
@@ -1312,7 +1312,7 @@ static void VerifyNativeRecipeSwitchReceipts()
         var destinationButton = new FakeButton(destination == "ordinary" ? 0x6d1 : 0x6d2);
         if (destination == "base") Bind(runtime, destinationRecipe, destinationButton);
 
-        // A focus-only selection installs the native callback but cannot retire the mutation.
+        // 仅移动焦点的选择会安装回调，但尚未提交新配方，不能结束旧材料变更事务。
         object focus = destinationRecipe;
         True(RuntimeTargetRecipeVariantService.PrepareRecipeSelectionForTests(
             runtime.Panel, ref focus, destinationButton, out var focusState),
@@ -1321,7 +1321,7 @@ static void VerifyNativeRecipeSwitchReceipts()
         Equal("Applied", ReadProperty(ReadCurrentTransaction(runtime.Panel), "State")!.ToString()!,
             $"{destination} focus-only selection retired the source transaction");
 
-        // behavior=2 first activation selects only; no receipt means the old transaction remains.
+        // behavior=2 的首次激活仅进行选择；缺少提交回执时仍需保留旧事务。
         True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(destinationButton, out var selectOnly),
             $"{destination} select-only activation was blocked");
         RuntimeTargetRecipeVariantService.CompleteSubmitForTests(selectOnly);
@@ -1331,7 +1331,7 @@ static void VerifyNativeRecipeSwitchReceipts()
             $"{destination} unconsumed activation performed a native refund");
         var inventoryReadsBeforeSwitch = runtime.InventoryReadCalls;
 
-        // The next activation consumes the installed callback and yields the exact native receipt.
+        // 下一次激活消费已安装的回调，并产生与本次选择精确对应的提交回执。
         True(RuntimeTargetRecipeVariantService.BeginSubmitForTests(destinationButton, out var switched),
             $"{destination} committed switch was blocked");
         runtime.NativeSwitchTo(destinationRecipe);
@@ -2904,6 +2904,7 @@ static void VerifyOutputClosureEntryExceptionCleanup()
     }
 }
 
+// 跨经营清理使已变更但尚未终结的事务转入禁止重放状态；未变更与已终结事务不降级为不确定状态。
 static void VerifyBusinessBoundaryTransactions()
 {
     foreach (var phase in new[] { "applied", "output-ready", "output-submitting" })
@@ -3294,7 +3295,7 @@ static void VerifyPostNativeOutputCallbackOwnership()
     Equal(cleanCalls, alreadyClean.Runtime.CleanCalls,
         "mismatched output prefix entered native callback cleanup");
 
-    // Simulate OnOutputSelected's invalid branch: the game has already cleaned the slot.
+    // 模拟 OnOutputSelected 的无效分支：游戏已经清空该回调槽，清理不能误删之后的新注册。
     candidate.HasSubmitCallback = false;
     candidate.SubmitClosure = null;
     True(RuntimeTargetRecipeVariantService.CompleteOutputSelectionForTests(
@@ -3340,6 +3341,7 @@ static void VerifyPostNativeOutputCallbackOwnership()
         "native output exception did not fail the mutated transaction closed");
 }
 
+// 运行时回调可能重入或等待其他线程；测试要求服务锁不跨越这些外部调用。
 static void VerifyRuntimeCallsStayOutsideServiceLock()
 {
     var (runtime, _, _, _, recipeSubmit) = AppliedTransaction(0x1b1, 150, 150);

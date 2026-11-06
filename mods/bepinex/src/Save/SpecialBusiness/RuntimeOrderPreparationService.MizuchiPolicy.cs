@@ -4,6 +4,7 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>在执行检查点核对计划角色、实时分类和加料契约，并保留本次接受/拒绝的诊断证据。</summary>
     private static bool TryValidateMizuchiRolePair(
         OrderPreparationRequest request,
         SpecialBusinessOrderClassification classification,
@@ -52,6 +53,7 @@ internal static partial class RuntimeOrderPreparationService
         return accepted;
     }
 
+    /// <summary>先确认原订单绑定未变，再重新分类附身角色，避免烹饪过程中附身转移后继续沿用旧计划。</summary>
     private static bool TryValidateMizuchiRuntimeOrder(
         CookingCollectionTarget target,
         RuntimeOrderMatch runtimeOrder,
@@ -161,6 +163,7 @@ internal static partial class RuntimeOrderPreparationService
         return TryValidateMizuchiRuntimeOrder(target, runtimeOrder, checkpoint, out diagnostic);
     }
 
+    /// <summary>核验实际成品的完整加料集合和附身目标材料，不能只依赖请求曾声明正确材料。</summary>
     private static bool TryValidateMizuchiFoodModifier(
         CookingCollectionTarget target,
         object food,

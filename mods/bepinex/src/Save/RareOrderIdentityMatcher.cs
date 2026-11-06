@@ -6,8 +6,10 @@ internal readonly record struct RareOrderIdentity(
     int? FoodTagId,
     int? BeverageTagId);
 
+/// <summary>使用桌号、运行时客人及双标签完整匹配稀客订单；缺失字段不是可放宽的通配条件。</summary>
 internal static class RareOrderIdentityMatcher
 {
+    /// <summary>除料理和订单字段外，还要求追踪标识的有无及值一致，避免将有身份目标降级成无身份匹配。</summary>
     public static bool IsSameCookingTarget(
         string? leftTraceId,
         int leftFoodId,
@@ -90,6 +92,7 @@ internal static class RareOrderIdentityMatcher
         return true;
     }
 
+    /// <summary>核对捕获对象、控制器归属及完成状态；允许已完成订单的分支仍不得绕过对象所有权检查。</summary>
     public static bool IsExecutableCapturedOrder(
         bool hasOrderObject,
         bool hasControllerObject,

@@ -25,7 +25,7 @@ AssertPatch(typeof(OrderingElement), "Out", parameterCount: 0, hasPrefix: true, 
 AssertPatch(typeof(OrderingElement), "DestroySelf", parameterCount: 0, hasPrefix: true, hasPostfix: false);
 Assert(Harmony.Patches.All(patch => patch.Target.Name != "OnDestroy"), "The shared empty OnDestroy native stub must never be hooked.");
 
-// Trace ids are exact opaque identities: no trimming, Unicode digits, case folding, or aliases.
+// 追踪标识是精确的不透明身份：禁止裁剪空白、接受其他数字字符、折叠大小写或使用别名。
 AssertTrace("R-0", expected: true);
 AssertTrace("R-0000000000000000", expected: true);
 foreach (var invalid in new[]
@@ -43,8 +43,8 @@ Assert(RuntimeOrderTraceIdService.TryNormalizeTargetTraceId(
         out _)
        && disabledTrace == "", "A disabled target must erase its trace without parsing it.");
 
-// IL2CPP can erase concrete managed wrapper types in GetComponents<Component>() even though
-// typed GetComponent probes still resolve the same native RectTransform/CanvasRenderer/Image.
+// 夹具模拟通用组件枚举只返回基类包装的情况；精确类型查询仍应解析到相同原生组件身份。
+// 不能因托管包装类型不同就忽略 RectTransform、CanvasRenderer 或 Image 的指针一致性。
 var wrapperLeaf = new GameObject { name = "Il2CppBaseWrapperLeaf" };
 var wrapperCanvasRenderer = new CanvasRenderer();
 var wrapperImage = new Image { sprite = new Sprite() };
@@ -190,7 +190,7 @@ foreach (var content in new[]
 }
 AssertColor(firstOverlayImage.color, rareContentColor, "复用边框仍须立即应用新目标颜色。");
 
-// A duplicate HUD card for the same native order must be rejected rather than picking either card.
+// 同一原生订单对应多个 HUD 卡片时身份存在歧义，不能任取其中一个建立高亮。
 var duplicateElement = CreateElement(controller, orderA, deskCode: 0);
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
@@ -206,7 +206,7 @@ TeardownElement(duplicateElement, "Out");
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == 2, "Removing the duplicate card must let the unchanged exact target recover.");
 
-// Cloning is only safe for a leaf image outside a parent-controlled layout hierarchy.
+// 仅允许克隆不受父级布局控制的叶子图像，避免引入新节点后改变原有布局。
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var templateChild = new GameObject { name = "UnsafeTemplateChild" };
@@ -294,7 +294,7 @@ RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeManagedLayout + 1, "A normal parent with a leaf border must remain supported.");
 Assert(RuntimeOrderHighlightService.Status.Contains("active", StringComparison.Ordinal), "The normal leaf visual must stay active after both safety-gate probes.");
 
-// A typed Image lookup may return a derived native UI class; exact class identity must reject it.
+// 按 Image 查询仍可能返回原生派生类；精确类型约束必须拒绝未经验证的派生组件。
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var derivedImageOrder = new GuestsManager.OrderBase(deskCode: 3);
@@ -330,7 +330,7 @@ RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
     CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 
-// Cross-generation and main-thread gates must stop before touching Unity visuals.
+// 经营代次和主线程门禁必须先于 Unity 显示对象访问，拒绝路径不得创建高亮节点。
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
     3,
     CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
@@ -348,7 +348,7 @@ RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true
 RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == instantiatedBeforeWrongThread + 1, "The same valid target must recover on the Unity thread.");
 
-// Invalid protocol input must clear the current visual and must not be silently normalized.
+// 非法追踪标识首先在值对象构造时被拒绝；随后显式发布空目标，验证旧显示能正常撤回。
 var destroyedBeforeInvalidTrace = GameObject.Destroyed.Count;
 var invalidTraceRejected = false;
 try
@@ -370,7 +370,7 @@ RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
     CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 
-// Registration reads the exact get-only OrderBase.DeskCode, including non-zero desks.
+// 注册读取精确的只读 OrderBase.DeskCode；使用非零桌号防止默认值掩盖读取缺陷。
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(2));
 RuntimeOrderHighlightService.Tick();
 var nonZeroDeskOrder = new GuestsManager.OrderBase(deskCode: 2);
@@ -423,7 +423,7 @@ RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(
     CreateRareTarget(traceA, captureA.OrderLifecycleSequence, 0, $"hud:{traceA}:0")));
 RuntimeOrderHighlightService.Tick();
 
-// Reusing a pooled card for B must retire A and bind by B's native pointer, even on the same desk.
+// 对象池将同一卡片复用于订单 B 时，必须撤回 A 并绑定 B 的原生身份，同桌也不能复用旧绑定。
 var orderB = new GuestsManager.OrderBase();
 var captureB = AddCapture(
     orderB,
@@ -444,7 +444,7 @@ RuntimeOrderHighlightService.Tick();
 Assert(RuntimeOrderHighlightService.Status.Contains($"order:0x{orderB.Pointer:x}", StringComparison.Ordinal), "A pooled card must bind to B's exact native order pointer.");
 Assert(!RuntimeOrderHighlightService.Status.Contains($"order:0x{orderA.Pointer:x}", StringComparison.Ordinal), "A pooled card must not retain A's identity.");
 
-// Both explicit teardown boundaries retire the visual and allow a later Initialize to recover.
+// 两个明确的拆除边界均应撤回显示；后续初始化仍可建立新的有效绑定。
 var overlayBeforeOut = FindLatestOverlay();
 TeardownElement(elementA, "Out");
 Assert(overlayBeforeOut.m_CachedPtr == IntPtr.Zero, "Out must destroy the private overlay before the native card exits.");
@@ -456,7 +456,7 @@ Assert(overlayBeforeDestroySelf.m_CachedPtr == IntPtr.Zero, "DestroySelf must de
 CreateElement(controller, orderB, deskCode: 0, pooledElement: elementA);
 RuntimeOrderHighlightService.Tick();
 
-// An unexpected stale wrapper is detected by the health check without an unsafe OnDestroy hook.
+// 周期健康检查识别意外失效的包装对象，不依赖额外销毁回调推断其存活。
 var overlayBeforeUnexpectedDestroy = FindLatestOverlay();
 elementA.InvalidateNativePointer();
 Time.realtimeSinceStartup = 1f;
@@ -482,7 +482,7 @@ Assert(GameObject.Destroyed.Count == destroyedBeforeAbandon, "Destroyed-scene ab
 Assert(overlayBeforeAbandon.m_CachedPtr != IntPtr.Zero, "Abandon must only drop managed ownership and leave native destruction to Unity.");
 UnityEngine.Object.Destroy(overlayBeforeAbandon);
 
-// Rare and normal targets own independent HUD overlays and consume their real capture stores.
+// 普客与稀客目标各自拥有 HUD 高亮，并分别读取正式采集存储，避免类别间串用身份。
 RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 100, unityThreadId);
 RuntimeOrderHighlightService.Resume("dual target HUD coverage");
 SpecialOrderRuntimeCapture.Captures.Clear();
@@ -557,7 +557,7 @@ Assert(dualNormalOverlay.m_CachedPtr != IntPtr.Zero
        && ReferenceEquals(FindLiveOverlayFor(dualNormalElement), dualNormalOverlay),
     "Removing one target slot must preserve the other slot's exact HUD overlay identity.");
 
-// If both typed targets resolve to one native order, neither target may win by iteration order.
+// 两类目标同时解析到同一原生订单时必须拒绝歧义，不能由遍历先后决定显示归属。
 RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(100));
 RuntimeOrderHighlightService.Tick();
 SpecialOrderRuntimeCapture.Captures.Clear();

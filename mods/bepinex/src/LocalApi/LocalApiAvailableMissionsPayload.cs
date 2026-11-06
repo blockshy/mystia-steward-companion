@@ -51,6 +51,8 @@ internal sealed class LocalApiAvailableMissionsContentDto
     public string Error { get; init; } = "";
 }
 
+/// <summary>校验并稳定排序可触发任务快照，再计算内容摘要；摘要命中时只返回未变化标记。</summary>
+/// <remarks>运行时不可用与就绪但无候选有不同状态，不能仅凭 Missions 为空判断业务事实。</remarks>
 internal static class LocalApiAvailableMissionsPayload
 {
     public static string BuildJson(

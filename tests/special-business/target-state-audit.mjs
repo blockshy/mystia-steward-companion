@@ -37,6 +37,7 @@ const models = fs.readFileSync(
   'utf8',
 );
 
+// 针对当前源码的字符串与括号结构提取方法；该审计不执行目标回调，也不是完整 C# 解析器。
 function methodBody(source, methodName) {
   const signature = new RegExp(`(?:private|public|internal) static [^\\n=;{}]*\\b${methodName}\\(`);
   const match = signature.exec(source);
@@ -74,6 +75,7 @@ function methodBody(source, methodName) {
   assert.fail(`Unterminated method body: ${methodName}`);
 }
 
+// 集中列出需撤回的目标字段，防止场景或挑战切换时遗漏旧目标的局部状态。
 const resetBody = methodBody(service, 'ResetTargetStateLocked');
 for (const assignment of [
   '_targetRawChallengeType = "";',

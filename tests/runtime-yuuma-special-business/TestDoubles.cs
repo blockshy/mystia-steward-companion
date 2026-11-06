@@ -5,6 +5,10 @@ namespace MystiaStewardCompanion.Save
         object? TryCast(string targetTypeName);
     }
 
+    /// <summary>
+    /// 记录请求转换的完整类型名并转交夹具，检测分类器是否走精确的普客或稀客类型路径。
+    /// 不执行 IL2CPP 转换；转换成功与否完全由测试对象给定。
+    /// </summary>
     internal static class RuntimeReflectionUtility
     {
         private static readonly List<string> CastTargets = new();
@@ -181,6 +185,7 @@ internal sealed class MissingOrderingGuestController
 {
 }
 
+/// <summary>拥有相同字段但类型身份不同的负例，防止仅凭名称或 Id 接受非目标客人。</summary>
 internal sealed class AliasGuest
 {
     public AliasGuest(int id, string name)

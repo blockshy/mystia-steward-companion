@@ -320,7 +320,8 @@ data class WindowPreferences (
 }
 
 /**
- * 原生输入快照。按键为 XInput 标准位掩码，轴值已经归一化至 [-1, 1]。
+ * 原生输入快照。方向及常用按钮采用 XInput 位掩码，摇杆轴范围为 [-1, 1]，
+ * 扳机范围为 [0, 1]；Android 适配层还使用扩展位保存数字扳机的短按。
  *
  * Generated class from Pigeon that represents data sent in messages.
  */
@@ -444,7 +445,10 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
 interface PlatformHostApi {
   fun initialize(): PlatformLaunch
   fun applyWindowPreferences(preferences: WindowPreferences)
-  /** 返回是否实际完成。焦点切换被系统拒绝时为 false，不伪造成功。 */
+  /**
+   * 返回原生端是否接受或处理请求；焦点切换可能异步完成，true 不代表目标已成为前台。
+   * 不支持的动作或明确拒绝返回 false；调用者不能据此推导游戏操作权限。
+   */
   fun performWindowAction(action: WindowAction): Boolean
   /** 仅打开本项目 GitHub 发布页。原生端再次校验 URL，不能启动任意协议或文件。 */
   fun openExternalUrl(url: String): Boolean

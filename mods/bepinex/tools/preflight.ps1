@@ -19,6 +19,8 @@ $EffectiveReferenceDir = if ([string]::IsNullOrWhiteSpace($ReferenceDir)) {
 } else {
     $ReferenceDir
 }
+# 预检只确认锁定 SDK 与引用字节可用，不编译、不加载游戏程序集，也不执行恢复或安装。
+# 累积检查结果后统一失败，便于一次定位环境缺项。
 $Failed = $false
 
 Write-Host "Checking .NET SDK"

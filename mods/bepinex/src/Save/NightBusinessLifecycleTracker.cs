@@ -20,7 +20,7 @@ internal sealed record NightBusinessLifecycleSnapshot(
 }
 
 /// <summary>
-/// Pure managed state machine for one night-business runtime generation.
+/// 夜间经营的纯托管生命周期状态机；开启新经营时推进代次，同代次的关闭和销毁只推进版本。
 /// </summary>
 internal sealed class NightBusinessLifecycleTracker
 {

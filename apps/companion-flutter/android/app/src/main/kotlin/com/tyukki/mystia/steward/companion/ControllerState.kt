@@ -49,6 +49,7 @@ internal class ControllerState {
     }
     /** 焦点/生命周期边界撤销旧 held，恢复后必须以真实新事件重新选择设备。 */
     fun reset() { devices.clear(); owner = null; ownerChanged = true }
+    /** 消费本轮短按锁存值；切换归属先返回一次断开，持续按住与轴值保留到真实释放。 */
     fun poll(focused: Boolean): Snapshot {
         if (!focused) { reset(); return Snapshot(false) }
         if (ownerChanged) { ownerChanged = false; return Snapshot(false) }

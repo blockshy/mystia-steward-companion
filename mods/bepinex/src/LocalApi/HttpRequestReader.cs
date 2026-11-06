@@ -2,6 +2,8 @@ using System.Text;
 
 namespace MystiaStewardCompanion.LocalApi;
 
+/// <summary>按有界头部和 Content-Length 读取单个 HTTP 请求，不支持分块传输或请求流水线。</summary>
+/// <remarks>本层负责字节边界和编码；路由、鉴权及 JSON 结构验证由上层完成。</remarks>
 internal static class HttpRequestReader
 {
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
@@ -12,6 +14,7 @@ internal static class HttpRequestReader
         if (maxHeaderBytes <= 0) throw new ArgumentOutOfRangeException(nameof(maxHeaderBytes));
         if (maxBodyBytes < 0) throw new ArgumentOutOfRangeException(nameof(maxBodyBytes));
 
+        // 为超量检测预留一个字节；长度计算溢出应直接失败，不能分配绕过上限的小缓冲区。
         var capacity = checked(maxHeaderBytes + maxBodyBytes + 1);
         var buffer = new byte[capacity];
         var total = 0;
@@ -55,6 +58,7 @@ internal static class HttpRequestReader
             total += count;
         }
 
+        // 已读到正文后的额外字节时拒绝请求，避免将同一连接中的尾随内容误认为当前正文。
         if (total > requestLength)
         {
             throw new HttpRequestReadException(400, "Bad Request", "unexpected bytes after request body");
@@ -66,6 +70,7 @@ internal static class HttpRequestReader
         return new HttpRequestData(header, body);
     }
 
+    /// <summary>要求非空且为合法 UTF-8 的正文；方法名中的 JSON 不表示已经解析或验证 JSON 语法。</summary>
     public static string ReadRequiredJsonBody(HttpRequestData request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -84,6 +89,7 @@ internal static class HttpRequestReader
         }
     }
 
+    // 缺少长度视为无正文；重复长度或传输编码一律拒绝，避免不同解析层解释出不同正文边界。
     private static int ReadContentLength(string header)
     {
         string? contentLengthValue = null;

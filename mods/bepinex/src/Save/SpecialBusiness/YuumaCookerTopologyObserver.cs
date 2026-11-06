@@ -4,6 +4,8 @@ using HarmonyLib;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>关联血池地狱的厨具锁定/可用性 Hook 与实时拓扑采样，为后续副作用提供可复核租约。</summary>
+/// <remarks>采样及附加 Hook 需由主线程驱动；持有托管锁不允许跨线程读取 Unity/IL2CPP 对象。</remarks>
 internal static class YuumaCookerTopologyObserver
 {
     private const string EventManagerTypeName = "NightScene.EventUtility.EventManager";
@@ -54,6 +56,7 @@ internal static class YuumaCookerTopologyObserver
         }
     }
 
+    /// <summary>采样前后检查经营代次与变更修订，只有期间没有拓扑变更且内容合法时才签发租约。</summary>
     public static bool TryAcquireFreshLease(
         out YuumaCookerTopologyLease lease,
         out string diagnostic)
@@ -107,6 +110,7 @@ internal static class YuumaCookerTopologyObserver
         return true;
     }
 
+    /// <summary>重新读取当前厨具及锁定位置，不能仅凭先前租约的修订号代替实际内容复核。</summary>
     public static bool TryValidateFreshLease(
         YuumaCookerTopologyLease lease,
         out string diagnostic)

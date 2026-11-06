@@ -281,6 +281,7 @@ function Assert-MystiaProjectVersion {
     }
 }
 
+# 验证当前检出提交与显式目标完全一致；此检查不替代工作区干净检查或远端标签身份回读。
 function Assert-MystiaTargetCommit {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,

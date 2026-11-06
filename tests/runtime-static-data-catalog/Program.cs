@@ -17,6 +17,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 映射表中的内容与菜谱直接依赖分开记录；重复依赖应去重且来源顺序应确定。
 static void AssertMappedRecipeDependencyClosure()
 {
     var closure = RuntimeRecipeDependencyProjection.Build(
@@ -59,6 +60,7 @@ static void AssertMappedRecipeDependencyClosure()
         "A mapping-root food was mislabeled as a recipe-only dependency.");
 }
 
+// 在构建后破坏原始数组，以检测结果是否意外保留调用方可变集合的别名。
 static void AssertInputsAreFrozenAndUnrelatedContentIsExcluded()
 {
     var mappedIngredients = new[] { 1 };
@@ -109,6 +111,7 @@ static void AssertInvalidIdentityFailsClosed()
         "An empty mapped recipe catalog was accepted.");
 }
 
+// 上限同时约束最终目录和输入引用总量，防止大量重复引用绕过去重后的数量限制。
 static void AssertBoundsFailClosed()
 {
     AssertThrowsContains(

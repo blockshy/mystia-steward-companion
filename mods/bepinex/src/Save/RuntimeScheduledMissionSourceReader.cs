@@ -5,6 +5,8 @@ using UnityEngine;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>在任务所属主线程读取当前日与永久调度桶，关联事件资格、任务定义及原生启动过渡。</summary>
+/// <remarks>反射形状可缓存；任务、羁绊及完成记录必须在每次采集时读取，结果仅含托管诊断值。</remarks>
 internal static class RuntimeScheduledMissionSourceReader
 {
     private const string RunTimeSchedulerTypeName = "GameData.RunTime.Common.RunTimeScheduler";
@@ -59,6 +61,7 @@ internal static class RuntimeScheduledMissionSourceReader
 
     public static RuntimeScheduledEventDiagnosticLimits Limits => HardLimits;
 
+    /// <summary>解析并缓存精确反射元数据；失败不保存半成品形状，后续调用仍可重新尝试解析。</summary>
     public static bool TryResolve(out string failure)
     {
         lock (ShapeRoot)
@@ -84,6 +87,8 @@ internal static class RuntimeScheduledMissionSourceReader
         }
     }
 
+    /// <summary>在任务所有者线程重新读取当前调度来源；集合读取异常向调用方传播，条目级无效证据保留在结果中。</summary>
+    /// <remarks>需要先成功解析反射形状。结果描述本次读取，不缓存原生节点，也不执行事件或任务启动。</remarks>
     public static RuntimeScheduledMissionSourceReadResult ReadFresh(
         RuntimeMissionDiagnosticSnapshot missionSnapshot,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot)
@@ -100,6 +105,7 @@ internal static class RuntimeScheduledMissionSourceReader
         return Read(shape, missionSnapshot, mappedGuestSnapshot);
     }
 
+    /// <summary>补入已从调度桶移除但仍等待演出后启动的来源，避免原生调用链中间阶段使候选任务短暂丢失。</summary>
     public static RuntimeScheduledMissionSourceReadResult ReadAvailableFresh(
         RuntimeMissionDiagnosticSnapshot missionSnapshot,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
@@ -137,6 +143,8 @@ internal static class RuntimeScheduledMissionSourceReader
             scheduled);
     }
 
+    /// <summary>读取当前日期与永久桶，并结合任务报告、完成历史和事件定义形成完整性诊断。</summary>
+    /// <remarks>读取末尾复核桶总数、历史列表与日期；这些前后比对不是原生调度器的原子快照锁。</remarks>
     private static RuntimeScheduledMissionSourceReadResult Read(
         RuntimeShape shape,
         RuntimeMissionDiagnosticSnapshot missionSnapshot,
@@ -147,6 +155,7 @@ internal static class RuntimeScheduledMissionSourceReader
         {
             throw new InvalidOperationException("scheduled-event-owner-thread-mismatch");
         }
+        // 任务数量和身份必须来自同一已就绪版本；先检查，再读取调度来源，拒绝拼接不同采集代次。
         var missionReport = RuntimeMissionDiagnosticCapture.Report();
         if (missionReport.Summary.Generation != missionSnapshot.Generation
             || missionReport.Summary.ChangeVersion != missionSnapshot.ChangeVersion
@@ -195,6 +204,7 @@ internal static class RuntimeScheduledMissionSourceReader
         var correctedDay = ReadCorrectedDay(shape);
         var seeds = new List<ScheduledEventSeed>();
         var readBucketCount = 0;
+        // 这里只读取当前日期桶和永久桶，不把未来日期的排程列为当前可触发任务。
         ReadScheduledBucket(
             scheduledEvents,
             correctedDay,
@@ -213,6 +223,7 @@ internal static class RuntimeScheduledMissionSourceReader
                 $"scheduled-event-total-overflow:{seeds.Count}");
         }
 
+        // 跨桶同名也属于身份歧义；保留各来源并标记无效，不能用去重掩盖原始排程的冲突。
         var duplicateLabels = seeds
             .GroupBy(seed => seed.Label, StringComparer.Ordinal)
             .Where(group => group.Count() > 1)
@@ -283,6 +294,7 @@ internal static class RuntimeScheduledMissionSourceReader
                 StringComparison.Ordinal));
         var invalidMissionCount = missionReferences.Count(entry =>
             string.Equals(entry.Disposition, "invalid", StringComparison.Ordinal));
+        // 不满足触发条件与证据无效是不同状态；仅后者破坏采集完整性，不能当成普通不可触发项忽略。
         var complete = invalidEventCount == 0
             && invalidEligibilityCount == 0
             && invalidMissionCount == 0;
@@ -305,6 +317,8 @@ internal static class RuntimeScheduledMissionSourceReader
             Error: error);
     }
 
+    /// <summary>将已验证的演出后等待记录补入调度结果，并重新读取定义以检查来源形状是否仍一致。</summary>
+    /// <remarks>只补演出后引用；合成桶编号用于区分诊断来源，不表示原生调度字典存在对应桶。</remarks>
     private static RuntimeScheduledMissionSourceReadResult MergeObservedTransitions(
         RuntimeShape shape,
         RuntimeMissionDiagnosticSnapshot missionSnapshot,
@@ -348,6 +362,7 @@ internal static class RuntimeScheduledMissionSourceReader
             mappedGuestSnapshot);
         var transitionEvents = new List<RuntimeScheduledEventDiagnosticEntry>(
             sourceSnapshot.Transitions.Count);
+        // 同任务可在多个事件或多个位置被引用；引用身份包含事件、来源数组、原始序号和任务标签。
         var expectedReferences = new HashSet<
             (string EventLabel, string Source, int SourceOrdinal, string MissionLabel)>();
 
@@ -499,6 +514,7 @@ internal static class RuntimeScheduledMissionSourceReader
         return correctedDay;
     }
 
+    /// <summary>按精确桶键读取全部事件并保留原序号；键不存在视为该桶为空，读取失败或超限则拒绝。</summary>
     private static void ReadScheduledBucket(
         object scheduledEvents,
         int bucket,
@@ -543,6 +559,7 @@ internal static class RuntimeScheduledMissionSourceReader
         }
     }
 
+    /// <summary>交叉核对节点存在性、运行时类型及精确标签；定义或资格读取失败以无效条目保留原因。</summary>
     private static RuntimeScheduledEventDiagnosticEntry ReadEventDefinition(
         RuntimeShape shape,
         ScheduledEventSeed seed,
@@ -704,6 +721,7 @@ internal static class RuntimeScheduledMissionSourceReader
             range.y);
     }
 
+    /// <summary>读取完整后续任务数组并保留不透明标签和原序号，不规范化、不删除重复引用。</summary>
     private static IReadOnlyList<string> ReadPostMissionArray(
         object? rawArray,
         ScheduledEventSeed seed,
@@ -737,6 +755,7 @@ internal static class RuntimeScheduledMissionSourceReader
         return result;
     }
 
+    /// <summary>在本次采集中按任务标签复用定义读取，同时分别保留每个事件、阶段和位置的引用记录。</summary>
     private static IReadOnlyList<RuntimeScheduledEventMissionReferenceDiagnostic>
         ReadMissionReferences(
             RuntimeShape shape,
@@ -838,6 +857,7 @@ internal static class RuntimeScheduledMissionSourceReader
                             : startMetadataRead.Failure
                     : definitionRead.Failure;
             }
+            // 非循环任务同时活跃且已完成属于冲突；循环任务的历史完成记录不能阻止其再次进入活跃状态。
             else if (active
                 && finished
                 && !startMetadataRead.LoopedMission)
@@ -892,6 +912,7 @@ internal static class RuntimeScheduledMissionSourceReader
         }
     }
 
+    /// <summary>读取启动所需的前置节点与循环标志；前置节点重复或字段类型不符时不假定默认启动条件。</summary>
     private static MissionStartMetadataReadResult ReadMissionStartMetadata(
         RuntimeShape shape,
         string label)
@@ -1068,6 +1089,7 @@ internal static class RuntimeScheduledMissionSourceReader
         }
     }
 
+    /// <summary>在单次来源读取内复用羁绊资格证据；持有的原生字典包装器不得跨采集调用保存。</summary>
     private sealed class EligibilityReader
     {
         private readonly RuntimeShape _shape;
@@ -1116,6 +1138,7 @@ internal static class RuntimeScheduledMissionSourceReader
             return result;
         }
 
+        /// <summary>沿触发字符串键核对 NPC 身份，再以规范角色 ID 读取羁绊；缺记录与读取失败分别处理。</summary>
         private RuntimeScheduledEventKizunaEvidence ReadKizunaEvidence(
             string triggerId)
         {
@@ -1163,6 +1186,7 @@ internal static class RuntimeScheduledMissionSourceReader
                     Level5Gate: null);
             }
 
+            // 运行时字符串键必须只映射到一个目录项；不能因列表首项恰好可用而接受重复映射。
             var matchingIdentities = _mappedGuestSnapshot.Entries
                 .Where(entry => string.Equals(
                     entry.RuntimeStringId,

@@ -287,6 +287,8 @@ function Assert-MystiaStagedMetadata {
     }
 }
 
+# 元数据按清单、目录及校验和的固定集合提交；备份与新文件分开记账，失败按逆序回滚。
+# 这是带恢复逻辑的多文件更新，不是对并发读取者一次可见的原子目录切换。
 function Commit-MystiaPreparedMetadata {
     param(
         [Parameter(Mandatory = $true)][string]$DistRoot,

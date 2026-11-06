@@ -4,6 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+// 只读取发布入口及其契约测试，不执行构建、发布或远端修改。
+// 正则断言保护当前脚本结构，实际事务行为由 PowerShell 隔离运行测试补充。
 const sources = Object.fromEntries(await Promise.all([
   ['build', 'mods/bepinex/tools/build-release.ps1'],
   ['packagePowerShell', 'mods/bepinex/tools/package-release.ps1'],
@@ -17,6 +19,7 @@ const sources = Object.fromEntries(await Promise.all([
 ].map(async ([name, relativePath]) => [name, await readFile(path.join(repoRoot, relativePath), 'utf8')])));
 
 const packageScripts = JSON.parse(sources.packageJson).scripts;
+// 依赖仓库当前顶层函数排版截取范围，不是通用 PowerShell 语法解析器。
 const extractPowerShellFunction = (source, name) => {
   const startMarker = `function ${name} {`;
   const start = source.indexOf(startMarker);

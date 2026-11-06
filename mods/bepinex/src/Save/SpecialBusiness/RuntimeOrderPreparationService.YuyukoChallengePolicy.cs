@@ -75,6 +75,7 @@ internal static partial class RuntimeOrderPreparationService
             });
     }
 
+    /// <summary>决定是否记录幽幽子诊断，允许角色编号或显示名辅助识别；此结果不授予原生评价许可。</summary>
     private static bool IsYuyukoRequestContext(OrderPreparationRequest request)
     {
         if (IsYuyukoBossRequest(request)) return true;
@@ -123,6 +124,7 @@ internal static partial class RuntimeOrderPreparationService
             || string.Equals(challengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal);
     }
 
+    /// <summary>只有明确 Boss 角色且当前处于第三阶段时才启用专用契约，剧情与复战使用不同评价路线。</summary>
     private static YuyukoPhase3EvaluationContract ResolveYuyukoPhase3EvaluationContract(OrderPreparationRequest request)
     {
         if (!RequiresLiveYuyukoPhase3BossController(request)) return YuyukoPhase3EvaluationContract.None;
@@ -133,6 +135,7 @@ internal static partial class RuntimeOrderPreparationService
         return YuyukoPhase3EvaluationContract.None;
     }
 
+    /// <summary>将评价结果转为请求步骤，失败时按返回代码记录安全屏障；只有 Completed 才标记订单完成。</summary>
     private static bool TryEvaluateYuyukoChallengeOrderIfReady(
         OrderPreparationResult result,
         OrderPreparationRequest request,
@@ -172,6 +175,10 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>在同一经营代次内重取评价对象，校验任务绑定和原订单目标，再分派到剧情、复战或刷新流程。</summary>
+    /// <param name="reacquireLiveOrder">专用契约下为 true 时使用稀客查找，为 false 时使用普通订单查找；并非关闭重新匹配。</param>
+    /// <param name="allowControllerMissing">仅在支持等待的下层路线中允许控制器暂缺返回跳过，不允许在无控制器时执行评价。</param>
+    /// <remarks>尚未送齐可返回成功且跳过；调用方不能把 Ok 单独解释为已经消耗订单或推进挑战。</remarks>
     private static RuntimeOrderEvaluationResult TryEvaluateYuyukoChallengeRuntimeOrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
@@ -242,6 +249,7 @@ internal static partial class RuntimeOrderPreparationService
             return BuildEndedNightBusinessEvaluation(orderLabel, commitMayHaveStarted: false);
         }
 
+        // cooking job 的生命周期绑定比菜品、桌号更强；重新匹配成功仍须证明没有换成同内容的新订单。
         if (expectedOrderBinding.HasValue
             && !TryMatchRuntimeOrderBinding(
                 expectedOrderBinding,
@@ -347,6 +355,8 @@ internal static partial class RuntimeOrderPreparationService
         return evaluation;
     }
 
+    /// <summary>完成需要清理的第三阶段订单，仍校验实际成品与唯一评价路线，但不要求满足剧情推进的等级和阈值。</summary>
+    /// <remarks>刷新是原生订单评价，不是直接删除订单；成功也不承诺挑战进度增加。</remarks>
     private static RuntimeOrderEvaluationResult TryEvaluateYuyukoPhase3RefreshOrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
@@ -514,6 +524,8 @@ internal static partial class RuntimeOrderPreparationService
             sessionGeneration);
     }
 
+    /// <summary>剧情推进要求已满足且未评价的订单、可识别的手动与计分回调，以及达到等级和阈值的实际成品。</summary>
+    /// <remarks>调用统一的一次性评价入口处理提交边界；回调验证失败不会尝试标准评价兜底。</remarks>
     private static RuntimeOrderEvaluationResult TryEvaluateStoryYuyukoPhase3OrderIfReady(
         RuntimeOrderMatch runtimeOrder,
         string orderLabel,
@@ -602,6 +614,7 @@ internal static partial class RuntimeOrderPreparationService
             : evaluation;
     }
 
+    /// <summary>复战订单先校验实际送达内容，再按捕获的手动绑定与控制器回调选择一个原生入口，避免双重评价。</summary>
     private static RuntimeOrderEvaluationResult TryEvaluateRetakeYuyukoPhase3OrderIfReady(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
@@ -727,6 +740,7 @@ internal static partial class RuntimeOrderPreparationService
             : evaluation;
     }
 
+    /// <summary>交叉检查剧情手动推进回调、实际成品等级和计分回调；验证期间不调用这些评价委托。</summary>
     private static bool TryValidateYuyukoStoryPhase3ProgressEvaluation(RuntimeOrderMatch runtimeOrder, out string diagnostic)
     {
         var manualEvaluationCallback = runtimeOrder.ManualEvaluationCallback;
@@ -766,6 +780,8 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>要求当前控制器仍持有同一订单，且 Boss 与客群进度回调恰好命中一种，再与手动绑定证据交叉选择路线。</summary>
+    /// <remarks>绑定未读取、相互冲突或描述无法识别均返回 false；route 的默认枚举值不是可用路线。</remarks>
     private static bool TryResolveYuyukoRetakePhase3EvaluationRoute(
         RuntimeOrderMatch runtimeOrder,
         out YuyukoRetakePhase3EvaluationRoute route,
@@ -828,6 +844,7 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
+        // 手动绑定只能配合 Boss 路线；没有绑定时只能采用客群路线，不能凭回调存在随意选择其一。
         if (runtimeOrder.YuyukoManualBindingCaptured)
         {
             manualEvaluationCallback = runtimeOrder.ManualEvaluationCallback;
@@ -873,6 +890,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>刷新只要求剧情手动与计分回调链可识别，不复用推进模式对已上成品等级和的额外要求。</summary>
     private static bool TryValidateYuyukoStoryPhase3RefreshEvaluation(RuntimeOrderMatch runtimeOrder, out string diagnostic)
     {
         var manualEvaluationCallback = runtimeOrder.ManualEvaluationCallback;
@@ -916,6 +934,8 @@ internal static partial class RuntimeOrderPreparationService
         return !invariant.Applies || (invariant.FoodMatched && invariant.BeverageMatched);
     }
 
+    /// <summary>核对请求选择的普通订单目标编号没有偏离原始匹配编号；实际已上物品在这里只用于诊断。</summary>
+    /// <remarks>实际成品一致性由独立校验处理；稀客按 Tag 评价，不适用此编号不变量。</remarks>
     private static (bool Applies, bool FoodMatched, bool BeverageMatched, string Diagnostic) BuildYuyukoPhase3NormalOrderTargetInvariant(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder)
@@ -958,6 +978,7 @@ internal static partial class RuntimeOrderPreparationService
         return (true, foodMatched, beverageMatched, diagnostic);
     }
 
+    /// <summary>要求最终料理与酒水都存在且编号等于请求目标；复战还须满足对应订单类型的加料与标签契约。</summary>
     private static bool TryValidateYuyukoPhase3ServedExactTarget(
         OrderPreparationRequest request,
         RuntimeOrderMatch runtimeOrder,
@@ -1019,6 +1040,7 @@ internal static partial class RuntimeOrderPreparationService
         return foodMatched && beverageMatched && retakeContractMatched;
     }
 
+    /// <summary>稀客复战核对实际加料及双方原始需求 Tag；预测标签或仅有相同物品编号不足以通过。</summary>
     private static bool TryValidateYuyukoRetakeSpecialOrderServedContract(
         OrderPreparationRequest request,
         object servedFood,
@@ -1083,6 +1105,7 @@ internal static partial class RuntimeOrderPreparationService
         return foodTagMatched && beverageTagMatched;
     }
 
+    /// <summary>普通复战要求实际加料一致，且规范化后的修饰标签集合与非空预期集合完全相等。</summary>
     private static bool TryValidateYuyukoRetakeNormalOrderServedContract(
         OrderPreparationRequest request,
         object servedFood,
@@ -1163,6 +1186,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>按复战契约从最终与原始标签计算修饰集合，再解析、规范化并排序；任一标签不可读则整次失败。</summary>
     private static bool TryReadYuyukoNormalOrderFoodModifierTags(
         object servedFood,
         out IReadOnlyList<string> modifierTags,
@@ -1239,6 +1263,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>从已上物品读取等级，要求两侧均可读且等级和达到剧情推进阈值；不使用请求中的预测等级代替。</summary>
     private static bool TryValidateYuyukoStoryPhase3ServedProgressTarget(RuntimeOrderMatch runtimeOrder, out string diagnostic)
     {
         var servedFood = runtimeOrder.Order == null ? null : ReadOrderServedFood(runtimeOrder.Order);
@@ -1283,7 +1308,7 @@ internal static partial class RuntimeOrderPreparationService
         }
         catch
         {
-            // Diagnostics must never interrupt native order evaluation.
+            // 诊断读取或输出失败在本边界终止，不能中断原有订单评价流程。
         }
     }
 
@@ -1502,6 +1527,7 @@ internal static partial class RuntimeOrderPreparationService
             });
     }
 
+    /// <summary>按经营代次与本次评价证据压缩重复日志；原生尝试使用较长节流窗口，但不限制真实评价调用。</summary>
     private static bool ShouldThrottleYuyukoRuntimeDiagnostic(
         string eventName,
         OrderPreparationRequest request,

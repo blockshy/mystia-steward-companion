@@ -111,6 +111,7 @@ internal static partial class RuntimeOrderPreparationService
         return WackyCookingCompetitionRuntimePolicy.IsKoishiBossRole(target.SpecialBusinessRole);
     }
 
+    /// <summary>第三阶段本体投食要求当前控制器及评价回调；生成订单回调仅作诊断，不作为此检查的必需条件。</summary>
     private static bool IsExecutableWackyKoishiBossRuntimeOrder(object? controller, object? order, out string diagnostic)
     {
         if (controller == null)
@@ -280,6 +281,7 @@ internal static partial class RuntimeOrderPreparationService
             StringComparison.Ordinal);
     }
 
+    /// <summary>预测标签不满足目标或同一目标下的配方已被拒绝时延后开锅，避免持续消耗材料重试已知失败组合。</summary>
     private static bool TryGetSpecialTargetCookingDeferral(CookingCollectionTarget target, out string message)
     {
         message = "";
@@ -307,6 +309,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>按标签/配方/加料组合去重保存最近拒绝记录，超出上限时移除最早记录。</summary>
     private static void RememberRecentWackyRejectedRecipe(CookingCollectionTarget target, IReadOnlyList<string> targetTags)
     {
         if (!IsWackyTargetContext(target)) return;

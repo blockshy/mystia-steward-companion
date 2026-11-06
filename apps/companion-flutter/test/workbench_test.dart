@@ -13,6 +13,8 @@ import 'package:mystia_steward_companion/features/settings.dart';
 
 import 'support/fixture_model.dart';
 
+/// 以纯内存模型挂载正式工作台，验证响应式导航、滚动/输入保留及确认前后的写入边界。
+/// 命令断言针对模型收到的请求，组件截图不证明原生窗口或真实游戏执行效果。
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUpAll(() async {

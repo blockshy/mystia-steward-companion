@@ -4,6 +4,8 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>将运行时基础稀客与映射稀客目录关联到本地推荐目录，沿显式来源编号解析规范身份。</summary>
+/// <remarks>首次读取及重试会访问游戏静态数据，须由主线程调用；锁只保护托管缓存的发布。</remarks>
 internal sealed class RuntimeMappedGuestCatalog
 {
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
@@ -48,6 +50,7 @@ internal sealed class RuntimeMappedGuestCatalog
         }
     }
 
+    /// <summary>优先按运行时编号查找，未命中再使用 StringId；只有已映射到本地目录的客人才返回推荐身份。</summary>
     public RareCustomerIdentity? Resolve(int? runtimeId, string? runtimeStringId)
     {
         var entry = FindEntry(Snapshot(), runtimeId, runtimeStringId);
@@ -258,6 +261,7 @@ internal sealed class RuntimeMappedGuestCatalog
         }
     }
 
+    // 映射可以多级转发，但必须最终落到基础稀客；环和缺失来源都会使整份目录不可用。
     private int ResolveCanonicalSourceId(
         RuntimeMappedGuestMetadata start,
         IReadOnlyDictionary<int, RuntimeMappedGuestMetadata> mappingsById,

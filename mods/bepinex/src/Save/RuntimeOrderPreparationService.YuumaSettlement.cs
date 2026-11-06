@@ -26,6 +26,7 @@ internal static partial class RuntimeOrderPreparationService
         ManualControlled,
     }
 
+    // 同一次主线程结算中的身份基准；手动回调是借用包装器，不可跨帧保存或作为重放凭据。
     private sealed record YuumaSettlementContext(
         long BusinessGeneration,
         nint OrderPointer,
@@ -55,7 +56,8 @@ internal static partial class RuntimeOrderPreparationService
         MethodInfo BeverageOutRangeMethod);
 
     /// <summary>
-    /// Completes one Blood Pond Hell cooking job through the exact non-throw native delivery route.
+    /// 将料理作为血池地狱订单的最终送达项，依次执行送达、同锅复位、出锅回调、评价及经营记账。
+    /// 首次提交前可返回等待；事务开始后的任何未确认结果均进入不确定终态，禁止重放已发生的副作用。
     /// </summary>
     private static (bool Remove, string Message, string Code) TryFinalizeYuumaCookingJob(
         AutomationCookingJob job,
@@ -138,6 +140,7 @@ internal static partial class RuntimeOrderPreparationService
                 $"料理最终提交前厨具身份无法严格确认：{preCommitCookerDiagnostic}");
         }
 
+        // 在进入最终字段 setter 前先占用提交阶段；即使调用抛出，也不能证明原生状态完全未变。
         if (!job.YuumaSettlementTracker.TryBeginFoodCommit())
         {
             job.YuumaSettlementTracker.MarkUncertain();
@@ -163,6 +166,7 @@ internal static partial class RuntimeOrderPreparationService
                     $"料理提交后特殊目标已失效：{committedTargetDiagnostic}");
             }
 
+            // setter 可能同步触发其他逻辑，后续操作必须重新取得同一订单和目标版本。
             var committedOrder = FindYuumaRuntimeOrder(job.Target, request);
             if (!TryValidateReacquiredYuumaSettlementOrder(
                     job,
@@ -291,6 +295,8 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>仅在料理尚未送达且不在途时先送酒水；已存在的合格酒水直接返回，不把酒水作为最终评价项。</summary>
+    /// <remarks>基础扣库后任一阶段失败均返回提交不确定；不得因 Ok=false 自动补偿库存或重新送达。</remarks>
     private static (bool Ok, string Message, string Code) TryDeliverYuumaOrderBeverage(
         CookingCollectionTarget target,
         int beverageId,
@@ -385,6 +391,7 @@ internal static partial class RuntimeOrderPreparationService
                 OrderPreparationStepCodes.CookingPending);
         }
 
+        // -1 是无限库存哨兵，0 表示无库存；免费送达仍先占用一份，完成后按原生规则返还。
         var currentQuantity = GetBeverageQuantity(beverageId);
         if (currentQuantity < -1)
         {
@@ -638,6 +645,7 @@ internal static partial class RuntimeOrderPreparationService
             : FindRuntimeOrder(request, RuntimeOrderLookupPurpose.YuumaSettlement);
     }
 
+    /// <summary>要求目标版本有效、料理符合原订单、酒水已落到最终字段且双方均无在途冲突，才建立结算身份基准。</summary>
     private static bool TryValidateYuumaSettlementOrder(
         AutomationCookingJob job,
         RuntimeOrderMatch runtimeOrder,
@@ -718,6 +726,7 @@ internal static partial class RuntimeOrderPreparationService
             out diagnostic);
     }
 
+    /// <summary>锁定当前经营代次、订单与控制器地址及原生评价路线；手动路线必须携带本订单采集到的回调。</summary>
     private static bool TryCreateYuumaSettlementContext(
         RuntimeOrderMatch runtimeOrder,
         long businessGeneration,
@@ -773,6 +782,8 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>副作用边界后重新比较订单、控制器、路线和手动回调，并要求最终料理正是本锅成品、酒水仍满足原订单。</summary>
+    /// <remarks>手动回调要求同一托管引用；任一证据未知均失败，不能仅凭客人或菜品编号继续结算。</remarks>
     private static bool TryValidateReacquiredYuumaSettlementOrder(
         AutomationCookingJob job,
         RuntimeOrderMatch runtimeOrder,
@@ -869,6 +880,7 @@ internal static partial class RuntimeOrderPreparationService
         return IsNightBusinessGenerationActive(context.BusinessGeneration);
     }
 
+    /// <summary>区分目标已经变化与暂时无法比较；两者都会阻断继续提交，不把不可读状态视作目标未变。</summary>
     private static bool TryValidateCurrentYuumaFoodTarget(
         AutomationCookingJob job,
         out string diagnostic)
@@ -897,6 +909,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>同时比较经营代次、规范化双 Tag 策略身份和正数修订号，防止相同标签在新一轮被当作旧目标。</summary>
     private static bool TryValidateCurrentYuumaTarget(
         CookingCollectionTarget target,
         out string diagnostic)
@@ -931,6 +944,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>重读同一酒水订单；提交前要求最终酒水为空，提交后要求正是本次对象，且全过程料理保持未送达。</summary>
     private static bool TryValidateReacquiredYuumaBeverageOrder(
         RuntimeOrderMatch runtimeOrder,
         YuumaSettlementContext context,
@@ -1017,6 +1031,7 @@ internal static partial class RuntimeOrderPreparationService
         return IsNightBusinessGenerationActive(context.BusinessGeneration);
     }
 
+    /// <summary>只解析接受当前 Sellable 的唯一最终字段 setter，不执行提交；无匹配或多匹配均拒绝。</summary>
     private static bool TryResolveYuumaFinalSetter(
         object order,
         object deliveredItem,
@@ -1061,6 +1076,8 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>最终满足标记为真后，仅调用预先选定的手动或标准评价入口；手动证据缺失不降级到标准评价。</summary>
+    /// <remarks>返回 true 表示该调用正常返回；事务阶段推进及后续记账仍由外层负责。</remarks>
     private static bool TryInvokeYuumaEvaluation(
         RuntimeOrderMatch runtimeOrder,
         YuumaSettlementContext context,
@@ -1190,6 +1207,8 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>按已准备的上下文顺序执行消耗统计、订单状态和玩家占桌通知，不在中途切换对象或重选路线。</summary>
+    /// <remarks>多个调用不是原子操作；后续调用失败时，前面的统计或通知可能已经生效。</remarks>
     private static bool TryApplyYuumaDeliveryBookkeeping(
         YuumaDeliveryBookkeepingContext context,
         out string diagnostic)
@@ -1218,6 +1237,8 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>提交前解析全部最终字段、评价、记账和出锅入口，避免到达不可逆阶段后才发现成员形状不兼容。</summary>
+    /// <remarks>预检不会执行这些提交入口，但返回的上下文不免除各副作用边界后的身份重读。</remarks>
     private static bool TryPreflightYuumaSettlement(
         AutomationCookingJob job,
         RuntimeOrderMatch runtimeOrder,
@@ -1339,6 +1360,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>在可用性通知前后分别重取同一物理厨具，再调用出锅回调；任一失败都不能恢复为未执行状态。</summary>
     private static bool TryCompleteYuumaCookerExtraction(
         AutomationCookingJob job,
         YuumaCookerExtractionContext context,
@@ -1398,6 +1420,7 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>要求当前厨具仍处于成品阶段 3，成品与选中配方分别匹配本任务保存的精确身份。</summary>
     private static bool TryValidateYuumaCookerBeforeFoodCommit(
         AutomationCookingJob job,
         object cookedFood,
@@ -1442,6 +1465,8 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>在评价可能推进订单前准备物品编号、桌位、实例及通知方法，且核对送达枚举数值对应的名称。</summary>
+    /// <remarks>创建上下文只准备参数；真正统计和通知在外层确认评价返回后执行，酒水部分送达则另行调用。</remarks>
     private static bool TryCreateYuumaBookkeepingContext(
         RuntimeOrderMatch runtimeOrder,
         object deliveredItem,
@@ -1568,6 +1593,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>普通订单要求原始物品编号一致，稀客订单要求实际物品含原始需求 Tag；不等同于满足特殊经营的双 Tag 目标。</summary>
     private static bool TryValidateYuumaDeliveredItemAgainstOriginalOrder(
         CookingCollectionTarget target,
         object item,
@@ -1695,6 +1721,7 @@ internal static partial class RuntimeOrderPreparationService
         }
     }
 
+    /// <summary>基础一份已经扣除后，免费规则返还一份，否则补扣总消耗数减一；本方法不是通用失败回滚。</summary>
     private static void ApplyYuumaBeverageCostPolicy(
         YuumaBeverageStorageContext storageContext,
         int beverageId,
@@ -1834,6 +1861,7 @@ internal static partial class RuntimeOrderPreparationService
                 StringComparison.Ordinal);
     }
 
+    /// <summary>记录不可确认的终态并要求移除当前自动任务；保留可能已发生的副作用事实，交由人工确认流程处理。</summary>
     private static (bool Remove, string Message, string Code) BlockUncertainYuumaSettlement(
         AutomationCookingJob job,
         string detail,

@@ -544,6 +544,7 @@ static void VerifyOptionalBindingEnrichmentAndAuthorization()
         "A projection without a binding erased exact native identity.");
 }
 
+// 同一修订上的并发批量写入只能有一个成功；冲突请求不得部分改变名单或订单队列。
 static void VerifyGenerationRevisionAndBatchMutationAreAtomic()
 {
     var revision = Begin(71, 7);
@@ -623,6 +624,7 @@ static void VerifyGenerationRevisionAndBatchMutationAreAtomic()
         RuntimeRareGuestParticipationState.ManuallyEnabledReason);
 }
 
+// 已准入的副作用持有参与状态许可，暂停操作须待其释放后提交，避免执行中途改变授权事实。
 static void VerifyPermitSerializesParticipationMutation()
 {
     var revision = Begin(76, 7);
@@ -694,6 +696,7 @@ static void VerifyPermitSerializesParticipationMutation()
         "Released permit did not allow exactly one pause revision.");
 }
 
+// 拒绝许可没有需要保护的执行区间；其对象尚未释放时也不能阻塞后续合法状态更改。
 static void VerifyDeniedPermitsDoNotRetainMonitor()
 {
     var revision = Begin(77, 7);

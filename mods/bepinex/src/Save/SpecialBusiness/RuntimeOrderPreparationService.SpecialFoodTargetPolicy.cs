@@ -5,6 +5,7 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>验证请求中的挑战目标与当前运行时策略一致；血池地狱另外要求正修订号及受控推进条件。</summary>
     private static bool TryValidateRequestedSpecialFoodTargetPolicy(
         OrderPreparationRequest request,
         CookingCollectionTargetKind requestKind,
@@ -144,6 +145,7 @@ internal static partial class RuntimeOrderPreparationService
         return false;
     }
 
+    /// <summary>以开锅目标保存的身份重新核对当前策略，防止轮换标签或经营代次变化后继续执行旧料理。</summary>
     private static bool TryValidateCurrentSpecialFoodTargetPolicy(
         CookingCollectionTarget target,
         out SpecialFoodTargetPolicy? currentPolicy,
@@ -261,6 +263,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    // 任一字段出现就按“携带策略”处理并严格解析，不能将不完整策略降级为没有特殊目标。
     private static bool HasRequestedSpecialFoodTargetPolicy(OrderPreparationRequest request)
     {
         return request.SpecialTargetChallenge.Length > 0
@@ -339,6 +342,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>受控推进必须保留原订单项目，并显式提供尚未命中双标签的预测结果，防止误标正常目标方案。</summary>
     private static bool TryValidateYuumaControlledProgressionRequest(
         OrderPreparationRequest request,
         CookingCollectionTargetKind requestKind,

@@ -2,6 +2,7 @@ using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>仅将已核验编号的血池地狱 BOSS 归入挑战执行链，身份读取失败时阻止接管。</summary>
 internal sealed class YuumaChallengeOrderModule : ISpecialBusinessOrderModule
 {
     public bool MatchesChallenge(string challengeType)
@@ -52,6 +53,7 @@ internal sealed class YuumaChallengeOrderModule : ISpecialBusinessOrderModule
     }
 }
 
+/// <summary>保存订单与控制器的编号核验结果；BOSS 必须有可读取且一致的控制器身份。</summary>
 internal sealed record YuumaChallengeOrderIdentity(
     bool Verified,
     string OrderKind,
@@ -74,6 +76,7 @@ internal sealed record YuumaChallengeOrderIdentity(
             return new YuumaChallengeOrderIdentity(false, orderKind, null, null, orderError);
         }
 
+        // 非 BOSS 可保留标准分类；BOSS 缺少控制器则不能建立后续挑战结算所需的身份链。
         if (controller == null)
         {
             return orderGuestId == SpecialBusinessGuestIds.YuumaBoss

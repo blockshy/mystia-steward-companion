@@ -45,12 +45,11 @@ internal enum AutomationCookingControllerLeaseReleaseReason
 }
 
 /// <summary>
-/// Tracks the Mod's logical reservation of one exact cook controller.
+/// 跟踪 Mod 对一个精确厨具控制器的逻辑预约。
 /// </summary>
 /// <remarks>
-/// This lease is independent from the game's LockedCookers state. Once released it cannot be
-/// reacquired by the same job; an evaluation receipt may outlive the lease without blocking a
-/// physically idle cooker.
+/// 预约独立于游戏的 LockedCookers 状态，同一任务释放后不能重新获取。
+/// 待评价回执可以比预约存活更久，因此无需继续占用已经物理空闲的厨具。
 /// </remarks>
 internal sealed class AutomationCookingControllerLease
 {
@@ -80,7 +79,7 @@ internal sealed class AutomationCookingControllerLease
 }
 
 /// <summary>
-/// Bounds fresh-order evaluation closeout after cooker ownership has already ended.
+/// 厨具所有权结束后，对实时订单评价收尾施加尝试次数和有效时长上限。
 /// </summary>
 internal sealed class AutomationOrderEvaluationCloseoutTracker
 {
@@ -132,7 +131,7 @@ internal sealed class AutomationOrderEvaluationCloseoutTracker
 }
 
 /// <summary>
-/// Accumulates only time intervals whose endpoints are both eligible for runtime progress.
+/// 只累计前后两个采样端点均允许运行时推进的正时间间隔，暂停跨越的间隔不计入超时。
 /// </summary>
 internal sealed class AutomationEffectiveTimeoutClock
 {
@@ -168,7 +167,7 @@ internal sealed class AutomationEffectiveTimeoutClock
 }
 
 /// <summary>
-/// Bounds retries for a non-idempotent operation's idempotent cleanup stage.
+/// 区分不可重复的业务提交与可重试的清理阶段；仅明确已提交后才允许有界清理重试。
 /// </summary>
 internal sealed class AutomationBoundedCleanupTracker
 {
@@ -196,6 +195,7 @@ internal sealed class AutomationBoundedCleanupTracker
         return true;
     }
 
+    /// <summary>解析已开始的提交；只有明确未提交才回到可重试状态，不确定结果保持阻止重提。</summary>
     public void ResolveCommit(AutomationCommitResolution resolution)
     {
         if (_commitState != AutomationCommitState.Attempting)
@@ -241,7 +241,7 @@ internal enum AutomationCommitState
 }
 
 /// <summary>
-/// Tracks one exact cooker result without touching Unity or IL2CPP objects.
+/// 依据托管观测跟踪一个精确厨具成品的阶段与停滞，不直接访问 Unity 或 IL2CPP 对象。
 /// </summary>
 internal sealed class AutomationCookingJobTracker
 {
@@ -329,6 +329,7 @@ internal sealed class AutomationCookingJobTracker
         _stallClock.Observe(observation.ObservedAtUtc, observation.TimeoutEligible);
         LastObservedAtUtc = observation.ObservedAtUtc;
 
+        // 身份代次变更或观察到他人成品立即终止；短暂缺失与读取失败才适用各自的有界等待。
         if (observation.Generation != ExpectedGeneration
             || observation.Kind == AutomationCookingObservationKind.Foreign)
         {
@@ -461,6 +462,7 @@ internal sealed class AutomationCookingJobTracker
                 progressed: false);
         }
 
+        // 进度接近完成仍可能处于原生收尾；只有阶段 3 才发出可送达指令。
         if (observation.Phase == 2 && observation.Progress >= 0.999f)
         {
             return Transition(

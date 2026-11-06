@@ -7,6 +7,7 @@ namespace MystiaStewardCompanion.Business.Domain.SpecialBusiness;
 /// <summary>古明地恋破防期的有限预算与剩余提交次数规划；不改变原订单匹配条件。</summary>
 public static class KoishiEvaluation
 {
+    /// <summary>将已知数值截断为非负整数；缺失或非有限值保留为未知，不解释成预算或次数为零。</summary>
     public static double? NonNegativeInt(JsonNode? value) => NullableNumber(value) is double n ? Math.Max(0, Math.Truncate(n)) : null;
     public static double? RemainingScore(JsonNode? special)
     {
@@ -27,6 +28,10 @@ public static class KoishiEvaluation
     public static double PlanScore(JsonObject plan, JsonObject context) => plan["food"] == null || plan["beverage"] == null || Str(plan["bucket"]) == "blocked" ? double.NegativeInfinity : ScoreCore(Obj(plan["food"]), Obj(plan["beverage"]), Math.Max(0, Num(plan["estimatedPrice"])), context);
     public static int ComparePlans(JsonObject a, JsonObject b, JsonObject context)
     { var difference = PlanScore(b, context).CompareTo(PlanScore(a, context)); return difference != 0 ? difference : Num(a["estimatedPrice"]).CompareTo(Num(b["estimatedPrice"])); }
+    /// <summary>
+    /// 以预测投食分为基础，叠加预算可承受性、剩余提交次数和可持续性权重。
+    /// 分数仅用于候选间排序，不是实际伤害或必然通关的证明；未知规划字段不获得相应奖励。
+    /// </summary>
     private static double ScoreCore(JsonObject food, JsonObject beverage, double price, JsonObject context)
     {
         var facts = PairFacts(food, beverage, price); var feed = RecommendationEngine.EstimateKoishiBrokenShieldFeedScore(facts);

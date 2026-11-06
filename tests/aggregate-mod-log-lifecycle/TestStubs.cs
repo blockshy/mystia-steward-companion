@@ -59,6 +59,10 @@ namespace BepInEx.Logging
         public string SourceName { get; }
     }
 
+    /// <summary>
+    /// 在当前线程同步分发合成日志，验证监听器注册、解绑和文件生命周期。
+    /// 对监听器集合取副本只为允许回调期间变更注册，不代表真实 BepInEx 的线程调度。
+    /// </summary>
     internal static class Logger
     {
         public static ICollection<ILogListener> Listeners { get; } = new List<ILogListener>();
@@ -76,6 +80,7 @@ namespace BepInEx.Logging
 
 namespace MystiaStewardCompanion.Save
 {
+    /// <summary>只记录诊断缓存重置次数，避免日志生命周期测试依赖实际游戏目录。</summary>
     internal static class RuntimeStaticDataDiagnosticFormatter
     {
         public static int ResetCount { get; private set; }

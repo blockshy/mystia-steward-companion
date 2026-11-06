@@ -3,6 +3,7 @@ using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>单次主线程读取中的厨具对象与内容状态；含原生包装器，不得作为跨帧或后台快照保存。</summary>
 internal sealed class RuntimeCookerControllerState
 {
     public object Cooker { get; init; } = null!;
@@ -41,6 +42,7 @@ internal sealed class RuntimeCookerContentState
     public bool IsExactReset => Phase == 0 && Result == null && ChosenRecipe == null;
 }
 
+/// <summary>按精确运行时形状读取厨具能力、格位、成品及锁定集合，失败时返回明确诊断而非猜测空闲状态。</summary>
 internal static class RuntimeCookerReflection
 {
     public const string CookSystemManagerTypeName = "NightScene.CookingUtility.CookSystemManager";
@@ -72,6 +74,7 @@ internal static class RuntimeCookerReflection
         [5] = "料理台",
     };
 
+    /// <summary>只经匹配具体类型的单例基类读取现有管理器；类型、继承形状或实例不可用时返回 null。</summary>
     public static object? GetCookSystemManager()
     {
         var type = RuntimeReflectionUtility.FindType(CookSystemManagerTypeName);
@@ -81,6 +84,8 @@ internal static class RuntimeCookerReflection
             : null;
     }
 
+    /// <summary>读取厨具声明的完整类型序列；observedEmpty 区分成功观察到空集合与读取失败。</summary>
+    /// <remarks>调用方必须先检查返回值，失败时默认的空输出不代表没有厨具能力。</remarks>
     public static bool TryReadCookerTypeIds(
         object? cooker,
         out IReadOnlyList<int> typeIds,
@@ -108,6 +113,8 @@ internal static class RuntimeCookerReflection
         return true;
     }
 
+    /// <summary>逐层验证泛型枚举接口及元素枚举类型，再交由有界读取器取值并释放枚举器。</summary>
+    /// <remarks>拒绝仅凭同名成员读取任意对象；接口转换失败与序列为空分别报告。</remarks>
     private static bool TryReadExactCookerTypeSequence(
         object cooker,
         out List<int> typeIds,
@@ -245,10 +252,12 @@ internal static class RuntimeCookerReflection
         }
         catch
         {
-            // The caller reports the earlier interface conversion failure.
+            // 此处仅补偿先前转换失败后的资源释放，保留调用方更早记录的失败原因。
         }
     }
 
+    /// <summary>按声明的 getter 类型读取一个控制器的完整状态，并交叉校验空桌、类型序列与烹饪内容。</summary>
+    /// <remarks>阶段必须处于 0..3；返回 true 只证明本次状态可解释，是否可开工仍由上层策略决定。</remarks>
     public static bool TryReadCookerControllerState(
         object controller,
         out RuntimeCookerControllerState state,
@@ -368,6 +377,8 @@ internal static class RuntimeCookerReflection
         return CookerTypeNames.TryGetValue(typeId, out var name) ? name : $"#{typeId}";
     }
 
+    /// <summary>验证控制器与格位唯一性、锁定格位归属及未锁厨具的位置一致性，再按格位稳定排序。</summary>
+    /// <remarks>输出仍包含原生控制器，仅供当前主线程作用域使用；对外发布前须投影为托管值。</remarks>
     public static bool TryReadCookerControllerEntriesFromCookSystem(
         object? cookSystem,
         IReadOnlySet<RuntimeCookerGridPosition> lockedPositions,
@@ -465,6 +476,7 @@ internal static class RuntimeCookerReflection
             });
         }
 
+        // 锁定清单属于同一厨具拓扑；存在不属于当前字典的格位时，不能发布裁剪后的部分结果。
         var missingLockedPosition = lockedPositions
             .Where(position => !seenPositions.Contains(position))
             .OrderBy(position => position.X)
@@ -481,6 +493,7 @@ internal static class RuntimeCookerReflection
         {
             if (lockedPositions.Contains(entry.GridPosition))
             {
+                // 锁定项保留字典格位与身份，不进一步读取其控制器格位；解锁项才要求双向位置一致。
                 continue;
             }
 
@@ -519,6 +532,7 @@ internal static class RuntimeCookerReflection
         return true;
     }
 
+    /// <summary>将事件管理器的精确格位数组完整复制为去重集合；管理器缺失或数组异常不等同于没有锁定厨具。</summary>
     public static bool TryReadLockedCookerPositions(
         out IReadOnlySet<RuntimeCookerGridPosition> positions,
         out string status)
@@ -659,6 +673,7 @@ internal static class RuntimeCookerReflection
         }
     }
 
+    /// <summary>在容量上限内逐项读取三个整数坐标；任一项失败即丢弃整次输出，不发布部分锁定清单。</summary>
     private static bool TryReadExactVector3IntArray(
         object array,
         Type vectorType,
@@ -766,6 +781,7 @@ internal static class RuntimeCookerReflection
         return true;
     }
 
+    /// <summary>要求直接基类为以当前具体类型闭合的单例泛型，并唯一匹配无参静态实例 getter。</summary>
     private static bool TryGetExactMonoSingletonInstance(
         Type concreteType,
         out object instance)
@@ -909,6 +925,7 @@ internal static class RuntimeCookerReflection
             && method.ReturnType.FullName == returnTypeName;
     }
 
+    /// <summary>只接受当前类型直接声明且参数类型序列完全匹配的唯一方法；继承来的同名成员不能替代。</summary>
     private static bool TryGetSingleDeclaredMethod(
         Type type,
         string name,

@@ -800,6 +800,8 @@ class _CollapsibleSectionState extends State<CollapsibleSection> {
   );
 }
 
+/// 以固定标签列和弹性值列展示只读事实，使用共同首行基线对齐多行值。
+/// 缺失值沿用 label 的占位语义，不为未知字段推导业务默认值。
 class Fact extends StatelessWidget {
   const Fact(this.name, this.value, {super.key});
   final String name;
@@ -824,6 +826,7 @@ class Fact extends StatelessWidget {
   );
 }
 
+/// 结果区的空态说明；高度不足时允许滚动读取，外层筛选和导航仍由页面保留。
 class EmptyState extends StatelessWidget {
   const EmptyState(this.title, this.detail, {super.key});
   final String title;

@@ -1,9 +1,11 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>集中维护挑战的展示说明与目标材料提示；这些说明不替代订单分类和执行侧的实时安全校验。</summary>
 internal static class SpecialBusinessContextRuleRegistry
 {
     private static readonly IReadOnlyDictionary<string, SpecialBusinessContextRule> Rules = BuildRules();
 
+    /// <summary>已知类型按注册规则展示；未知且活动的挑战保留未知说明，非活动上下文回到标准经营说明。</summary>
     public static SpecialBusinessContextRule GetRule(string challengeType, bool active)
     {
         if (Rules.TryGetValue(challengeType, out var rule)) return rule;

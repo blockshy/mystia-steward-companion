@@ -32,6 +32,8 @@ public static partial class NormalTargetSelector
         double BeverageScore(JsonObject b) => (story ? Number(b, "beverage", "level") * 1000 : 0) + Number(b, "beverage", "price") + Stock(b, 20);
         bool Qualified(JsonObject f, JsonObject b, bool progress)
         { var e = YuyukoEvaluation.NormalPair(challenge, f, b, preferences); return Str(e["mode"]) != "unsupported" && (progress ? Num(e["evaluationScore"]) >= 3 : Num(e["evaluationScore"]) >= 2 && Num(e["evaluationScore"]) < 3); }
+        // 先搜索能够推进挑战的组合，再考虑仅清理订单的普通评价组合；两种模式必须显式区分。
+        // BestPair 即使所有分数均为负无穷也可能返回首项，因此取回后再次验证资格。
         foreach (var progress in new[] { true, false })
         {
             var best = BestPair(foods, beverages, FoodScore, BeverageScore, (f, b) => Qualified(f, b, progress) ? PairScore(f, b) : double.NegativeInfinity);

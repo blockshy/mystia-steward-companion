@@ -55,6 +55,8 @@ internal sealed record RuntimeMissionLoadSelection(
     IReadOnlyList<RuntimeMissionLoadSelectedTask> Tasks,
     IReadOnlyList<string> FinishedMissionLabels);
 
+/// <summary>严格解析任务加载回调提供的 JSON 种子，仅提取分区、任务身份和条件数量等托管诊断值。</summary>
+/// <remarks>不自行打开存档文件；数量、文本和嵌套深度均有上限，非法结构不返回部分成功结果。</remarks>
 internal static class RuntimeMissionLoadSeedParser
 {
     internal const int MaxJsonBytes = 32 * 1024 * 1024;
@@ -180,6 +182,7 @@ internal static class RuntimeMissionLoadSeedParser
         }
     }
 
+    /// <summary>保留核心分区，并按当前选中的 DLC 合并任务桶；DLC 桶依据各分区保存日期平移。</summary>
     public static RuntimeMissionLoadSelection SelectAndMerge(
         RuntimeMissionLoadSeed seed,
         int currentDate,
@@ -225,6 +228,7 @@ internal static class RuntimeMissionLoadSeedParser
             var savedDate = partition.DlcSaveDate
                 ?? throw new InvalidOperationException(
                     $"DLC partition '{partition.Label}' has no saved date.");
+            // DLC 的 -1 日期哨兵按零基准参与平移；checked 防止异常日期溢出后落入错误任务桶。
             var normalizedSavedDate = savedDate == -1 ? 0 : savedDate;
             var dateShift = checked(currentDate - normalizedSavedDate);
             MergePartition(

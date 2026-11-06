@@ -19,6 +19,8 @@ internal sealed record YuumaCookerTopologyLease(
     int ControllerCount,
     int LockedControllerCount);
 
+/// <summary>跟踪厨具拓扑变更作用域与已验证快照，使用经营代次、重置纪元及修订号使旧租约失效。</summary>
+/// <remarks>本类没有内部锁；观察器应在同一同步边界内调用。租约是校验凭据，不会锁住游戏厨具。</remarks>
 internal sealed class YuumaCookerTopologyTracker
 {
     private readonly HashSet<long> _activeMutationSequences = new();
@@ -55,6 +57,7 @@ internal sealed class YuumaCookerTopologyTracker
             source);
     }
 
+    /// <summary>仅消费当前纪元中尚未完成的变更帧；原方法实际运行才递增修订并撤销快照验证。</summary>
     public bool CompleteMutation(
         YuumaCookerTopologyMutationFrame? frame,
         bool originalRan)
@@ -75,6 +78,7 @@ internal sealed class YuumaCookerTopologyTracker
         return true;
     }
 
+    /// <summary>仅在 Hook 完整且没有活跃拓扑变更时允许采样；采样结束仍须重新验证此探针。</summary>
     public bool TryBeginSnapshot(
         long businessGeneration,
         bool hooksReady,
@@ -147,6 +151,7 @@ internal sealed class YuumaCookerTopologyTracker
         return true;
     }
 
+    /// <summary>将新鲜采样与租约及当前验证记录一起比较，发现内容差异后立即撤销此前验证记录。</summary>
     public bool TryValidateSnapshot(
         YuumaCookerTopologySnapshotProbe probe,
         bool hooksReady,

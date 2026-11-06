@@ -23,6 +23,7 @@ catch (Exception ex)
     return 1;
 }
 
+// DLC 分区按精确名称选择，不按稀疏集合的索引或连续编号推断；同时保留来源分区和原始序号。
 static void AssertCoreAndSparseDlcSelection()
 {
     var json = SaveJson(
@@ -106,6 +107,7 @@ static void AssertCoreAndSparseDlcSelection()
         "DLC date shift is incorrect.");
 }
 
+// 日期平移可能把不同来源落入同一桶；合并必须保留来源顺序，永久桶则不参与日期偏移。
 static void AssertDateShiftAndBucketCollision()
 {
     var seed = RuntimeMissionLoadSeedParser.Parse(SaveJson(
@@ -210,6 +212,7 @@ static void AssertInvalidShapesFailClosed()
         "A DLC save date below -1 was accepted.");
 }
 
+// 追踪中任务必须具有全局唯一标签，而已完成记录允许重复；两类集合不能共享去重策略。
 static void AssertTrackingUniquenessAndFinishedMultiplicity()
 {
     AssertFormatException(
@@ -351,6 +354,7 @@ static void AssertBounds()
         "Too many DLC partitions were accepted.");
 }
 
+// 极端日期必须显式溢出失败，不能环绕成另一合法日期并污染任务归属。
 static void AssertCheckedDateArithmetic()
 {
     var seed = RuntimeMissionLoadSeedParser.Parse(SaveJson(

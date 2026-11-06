@@ -40,6 +40,8 @@ static void VerifyUnsupportedPlatformFailsClosed()
     AssertEqual(0, runtime.ShowCalls, "Unsupported runtime attempted to show a console.");
 }
 
+// 新建窗口必须先移除危险关闭入口并确保日志监听，再显示窗口并提交偏好。
+// FakeConsoleRuntime 仅记录调用顺序，不创建真实 Win32 控制台。
 static void VerifyCreateShowAndListenerSequence()
 {
     var runtime = new FakeConsoleRuntime();
@@ -194,6 +196,7 @@ static void VerifyCloseProtectionFailureBlocksShowUntilRetry()
     AssertEqual(2, runtime.DisableCloseCalls, "Pending close protection was not retried before show.");
 }
 
+// 分别从隐藏和显示状态注入持久化失败，要求窗口状态与启动偏好共同回到原值。
 static void VerifyPreferenceFailureRestoresBothDirections()
 {
     var showRuntime = new FakeConsoleRuntime();
@@ -225,6 +228,7 @@ static void VerifyPreferenceFailureRestoresBothDirections()
     AssertEqual(true, hideResult.ConfiguredVisible, "Hide rollback returned a stale configured state.");
 }
 
+// 事件将显示操作暂停在运行时边界，使相反请求确实重叠；每个回执只能包含自身提交的状态。
 static void VerifyConcurrentOppositeRequestsStayConsistent()
 {
     var runtime = new FakeConsoleRuntime

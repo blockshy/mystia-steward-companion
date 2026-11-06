@@ -586,8 +586,8 @@ namespace UnityEngine
             Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<Vector2> rectVertices,
             Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStructArray<ushort> triangles)
         {
-            // Unity 2021.3 rejects OverrideGeometry for a Sprite created as FullRect.
-            // It reports an engine error and retains the generated rectangle instead of throwing.
+            // 再现 FullRect 几何覆盖被拒绝但未抛异常的边界：保留原矩形并记录拒绝次数。
+            // 这是显式模拟的引擎行为，替身本身不能证明真实 Unity 版本采用相同行为。
             if (_meshType == SpriteMeshType.FullRect)
             {
                 RejectedFullRectOverrideCount++;

@@ -23,6 +23,7 @@ try
 
     AssertEqual<Type?>(null, RuntimeReflectionUtility.FindType(typeName), "Unknown type unexpectedly resolved.");
 
+    // 先制造查找失败再加载同名类型，检测负缓存是否永久阻断延迟加载的游戏程序集。
     var assembly = AssemblyBuilder.DefineDynamicAssembly(
         new AssemblyName($"runtime-reflection-smoke-{Guid.NewGuid():N}"),
         AssemblyBuilderAccess.Run);
@@ -41,6 +42,8 @@ catch (Exception ex)
     return 1;
 }
 
+// 非零指针是此读取边界的必要条件；CLR 对象的散列值不能替代原生身份。
+// 合成指针不指向真实游戏内存，因此本断言不证明对象存活。
 static void AssertNativePointerIdentity()
 {
     var valid = new NativePointerProbe(new IntPtr(0x1234));
@@ -214,6 +217,7 @@ static CookerTypeReadResult ReadCookerTypesWithProbe(CookerTypeSequenceProbe pro
         probe.DisposeCalls);
 }
 
+// 反射检查锁定依赖的真实集合签名，不实例化原生集合或执行游戏代码。
 static void AssertBepInEx783CollectionMetadata()
 {
     var enumerableType = typeof(Il2CppSystem.Collections.Generic.IEnumerable<int>);

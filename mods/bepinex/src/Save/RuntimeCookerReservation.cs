@@ -7,6 +7,8 @@ internal enum RuntimeCookerChallengeGateState
     Inconsistent,
 }
 
+/// <summary>保存预约时的列表索引、原生对象身份和格位，执行前据此拒绝厨具替换或位置漂移。</summary>
+/// <remarks>应通过 TryCreate 构造有效预约；该值本身不持有 Unity 对象或提供独占锁。</remarks>
 internal readonly record struct RuntimeCookerReservation(
     int ControllerIndex,
     string ControllerIdentity,
@@ -81,6 +83,7 @@ internal readonly record struct RuntimeCookerReservation(
         return true;
     }
 
+    /// <summary>要求挑战锁定集合与厨具开放标志互为反值；证据冲突时返回不一致，而不是任选一个来源。</summary>
     public RuntimeCookerChallengeGateState EvaluateChallengeGate(
         IReadOnlySet<RuntimeCookerGridPosition> lockedPositions,
         bool couldOpen)

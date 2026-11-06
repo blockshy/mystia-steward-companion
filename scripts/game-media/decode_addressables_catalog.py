@@ -22,6 +22,7 @@ def i32(data: bytes, offset: int) -> int:
     return struct.unpack_from("<i", data, offset)[0]
 
 
+# 仅解码已核验类型码；类型文本作为普通数据返回，不触发程序集或资源提供器加载。
 def key_value(data: bytes, offset: int):
     if not 0 <= offset < len(data):
         raise ValueError("目录 key 越界")
@@ -112,6 +113,7 @@ def main():
     records, key_count = decode(path)
     pattern = re.compile(args.match)
     selected = [record for record in records if pattern.search(record["internalId"]) or pattern.search(record["type"])]
+    # 依赖可能共享或形成环，按 location 索引去重遍历闭包；不能仅导出正则直接命中的 bundle。
     visited = set()
     pending = [record["index"] for record in selected]
     while pending:

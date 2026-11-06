@@ -1,5 +1,7 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>定义瑞灵剧情和试炼的加料约束：附身订单必须包含目标材料，普通订单禁止该材料。</summary>
+/// <remarks>只验证角色与请求值；实时附身身份及成品 Modifier 还需在执行边界重新核对。</remarks>
 internal static class MizuchiAutomationPolicy
 {
     public static bool IsExecutionRole(string? role)
@@ -62,6 +64,7 @@ internal static class MizuchiAutomationPolicy
         return true;
     }
 
+    /// <summary>任一侧属于瑞灵订单时要求双方均为可执行角色且完全一致，未确认角色不能降级为普通订单。</summary>
     public static bool TryValidateRolePair(
         string? requestRole,
         string? candidateRole,

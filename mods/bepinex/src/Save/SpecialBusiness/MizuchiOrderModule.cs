@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>将已核验的瑞灵稀客身份映射为剧情/试炼及附身/普通角色；身份不完整时返回禁止接管的分类。</summary>
 internal sealed class MizuchiOrderModule : ISpecialBusinessOrderModule
 {
     public bool MatchesChallenge(string challengeType)

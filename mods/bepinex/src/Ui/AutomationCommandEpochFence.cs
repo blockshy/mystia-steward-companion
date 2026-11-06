@@ -1,7 +1,7 @@
 namespace MystiaStewardCompanion.Ui;
 
 /// <summary>
-/// Serializes automation command execution with ownership epoch changes.
+/// 将自动化命令执行与所有权纪元变更串行化，确保执行检查和旧排队命令撤销不会交错。
 /// </summary>
 internal sealed class AutomationCommandEpochFence
 {
@@ -21,6 +21,7 @@ internal sealed class AutomationCommandEpochFence
         }
     }
 
+    /// <summary>只接受更大的纪元，并在同一锁内撤销旧排队命令；撤销委托不得等待依赖该锁的其他线程。</summary>
     public int Advance(long nextEpoch, Func<long, int> cancelQueuedCommands)
     {
         lock (_syncRoot)

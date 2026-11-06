@@ -32,12 +32,11 @@ internal readonly record struct RuntimeRareGuestAutoResumeSettings(
     long AuthorityRevision, bool Enabled, int ThresholdPercent, bool ToFront);
 
 /// <summary>
-/// Holds the control-state lock across one native side-effect boundary.
+/// 在单个原生副作用边界内持有控制状态锁，避免许可检查后权威配置立即变化。
 /// </summary>
 /// <remarks>
-/// Authority/profile changes wait for an already admitted boundary to finish. A boundary that has
-/// not started observes the new state and remains suspended instead. The permit must be disposed on
-/// the thread that acquired it.
+/// 权威或配置变更等待已经准入的边界结束；尚未开始的边界读取新状态，并在失去许可时保持暂停。
+/// 许可必须由取得它的同一线程释放，以正确退出 Monitor 临界区。
 /// </remarks>
 internal sealed class RuntimeAutomationControlPermit : IDisposable
 {
@@ -61,13 +60,12 @@ internal sealed class RuntimeAutomationControlPermit : IDisposable
 }
 
 /// <summary>
-/// Process-local authority for future automation side effects of already-started cooking jobs.
+/// 管理进程内已开工料理任务后续副作用的执行权威。
 /// </summary>
 /// <remarks>
-/// The profile comes only from the currently authoritative companion-device record. A valid lease
-/// for that exact authority revision is additionally required. No Unity or IL2CPP object is stored
-/// here; cooking-job identity remains owned by <c>RuntimeOrderPreparationService</c> and is retired at
-/// the night-business boundary.
+/// 配置仅来自当前主设备记录，执行还需同一权威修订对应的有效租约。
+/// 此处不保存 Unity 或 IL2CPP 对象；料理任务身份仍由 <c>RuntimeOrderPreparationService</c>
+/// 持有，并在夜间经营生命周期结束时退役。
 /// </remarks>
 internal static class RuntimeAutomationControlState
 {

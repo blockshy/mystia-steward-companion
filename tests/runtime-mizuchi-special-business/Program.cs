@@ -242,6 +242,7 @@ static void VerifyExactOrderBaseConversion()
         "both NormalOrder and SpecialOrder conversions succeeded");
 }
 
+// 基类包装与稀客包装可以是不同 CLR 对象，但转换前后的原生指针必须一致。
 static void VerifyBaseControllerWrapperConversion()
 {
     var challenge = SpecialBusinessChallengeTypes.MizuchiTrial1;
@@ -286,6 +287,7 @@ static void VerifyBaseControllerWrapperConversion()
         "controller cast native pointer mismatch");
 }
 
+// 逐一破坏委托数量、方法、闭包所属客组及父闭包，防止局部字段吻合被误当作完整身份。
 static void VerifyClosureIdentityFailures()
 {
     var challenge = SpecialBusinessChallengeTypes.MizuchiTrial1;
@@ -319,6 +321,7 @@ static void VerifyClosureIdentityFailures()
     AssertBlocked(Classify(challenge, parentMissing.Order, parentMissing.Controller), "parent Mizuchi closure");
 }
 
+// 挑战类别、控制状态、指定材料和捕获进度共同构成有效快照；单项异常均须拒绝自动化。
 static void VerifyTrialInvariantFailures()
 {
     var challenge = SpecialBusinessChallengeTypes.MizuchiTrial2;
@@ -484,6 +487,7 @@ static void VerifyAutomationPolicyContracts()
         "Non-Mizuchi order was changed by the Mizuchi policy.");
 }
 
+// 静态约束补充托管替身测试；实际闭包布局、原生调用和 Hook 注入仍需独立验证。
 static void VerifySourceContracts()
 {
     var root = FindRepositoryRoot();

@@ -136,6 +136,8 @@ bool ValidCommand(const std::string& text) {
   catch (const std::exception&) { return false; }
 }
 
+// 监听线程只验证、排队并通知 UI 线程；ACK 确认接管请求，不表示窗口动作已经完成。
+// 队列有界，线程不直接操作 Flutter、窗口焦点或持久化配置。
 void ServeControl() {
   while (!stopping) {
     fd_set read_set; FD_ZERO(&read_set); FD_SET(listener, &read_set);
@@ -147,7 +149,7 @@ void ServeControl() {
     setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&limit), sizeof(limit));
     setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&limit), sizeof(limit));
     std::string request; char buffer[512];
-    // 调用方在写完请求后 shutdown(SD_SEND)；也支持无参数单行命令立即提交。
+    // 调用方写完后以 shutdown(SD_SEND) 结束请求；无参数 exit 单行可提前结束读取。
     while (request.size() <= 4096) {
       int size = recv(client, buffer, sizeof(buffer), 0);
       if (size <= 0) break;
@@ -212,6 +214,8 @@ std::optional<std::string> ReadFile(const std::filesystem::path& path) {
   Require(file.good() || file.eof(), "persisted file incomplete");
   return value;
 }
+// 新文件独占创建、刷盘后原子替换，再完整回读；遗留 pending 文件保留并拒绝覆盖，
+// 防止把前一次失败或并发写入误当成可安全重用的暂存文件。
 void AtomicWrite(const std::filesystem::path& path, const std::string& value) {
   Require(value.size() <= kMaximumFileBytes, "persisted value limit exceeded");
   // 先读取旧文件检查链接与大小；损坏密文的解密由上层完成，失败时不覆盖。
@@ -226,6 +230,8 @@ void AtomicWrite(const std::filesystem::path& path, const std::string& value) {
   Require(MoveFileExW(pending.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE, "atomic file publish failed; pending file preserved");
   Require(ReadFile(path) == std::optional<std::string>(value), "durable readback differs");
 }
+// 使用当前用户 DPAPI，并把存储键作为附加熵绑定密文用途；禁止弹出系统交互窗口。
+// 返回副本前清零并释放系统分配的缓冲区，调用者仍负责限制返回明文的存活与传播。
 std::string Crypt(const std::string& value, const std::string& key, bool protect) {
   // 预留 DPAPI 包装开销，不能接受写入后超出解密读取上限的明文。
   Require(!value.empty() && value.size() <= (protect ? 60000u : 65536u), "credential size invalid");
@@ -405,7 +411,7 @@ struct CompanionPlatformBridge::Impl {
     // Flutter Windows EGL配置保留8位alpha，但延伸窗框本身不会启用DWM逐像素合成。
     // 不覆盖客户区的屏外blur区域只启用窗口alpha；Win8及之后没有旧式玻璃模糊，不能宣传为Acrylic。
     // 官方契约：https://learn.microsoft.com/windows/win32/api/dwmapi/nf-dwmapi-dwmenableblurbehindwindow
-    // 已通过真实Flutter红色色块alpha=0/64/128/255叠加黑/白/绿背景板验证。
+    // 合成效果需用不同 alpha 的色块与对比背景验证；API 成功不等同于视觉效果正确。
     // 保留系统标题栏的不透明绘制；负边距会把玻璃效果扩展到caption，造成标题难辨。
     // 客户区透明由下面的DWM alpha合成负责，不依赖整窗玻璃扩展。
     MARGINS margins{0, 0, 0, 0};
@@ -561,7 +567,8 @@ std::optional<LRESULT> CompanionPlatformBridge::HandleMessage(UINT message, WPAR
       return 0;
     }
   } catch (const std::exception&) {
-    // 系统回调不能跨 ABI 抛异常。恢复交互并让下一次显式 API 调用返回错误。
+    // 系统回调不能跨 ABI 抛异常；这里只尽力重新显示窗口，不把它视为动作成功。
+    // 合成错误由对应分支单独保留供轮询报告，其他异常不会在此自动重放原动作。
     ShowWindow(p.top, SW_SHOW);
   }
   return std::nullopt;

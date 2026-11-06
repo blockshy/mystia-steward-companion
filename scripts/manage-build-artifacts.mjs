@@ -187,6 +187,10 @@ function usage(message) {
   ].join('\n');
 }
 
+/**
+ * 默认只管理脚本所属仓库；显式根目录必须具有测试夹具哨兵，且不能通过链接解析到另一目录。
+ * 哨兵是误操作防护，不是对任意外部目录的授权；文件系统根始终拒绝。
+ */
 async function resolveManagedRoot(rootOption) {
   const requestedRoot = path.resolve(rootOption || repositoryRoot);
   const rootStats = await lstat(requestedRoot).catch((error) => {
@@ -225,6 +229,7 @@ async function resolveManagedRoot(rootOption) {
   return resolvedRoot;
 }
 
+/** 只从受管构建目录生成候选，并排除发布包、引用和私有配置等保护路径；未知目录不纳入清理。 */
 async function collectCandidates(root) {
   const candidateDefinitions = [
     ...await discoverCargoBuckets(root),
@@ -296,6 +301,7 @@ async function discoverCargoBuckets(root) {
   return definitions;
 }
 
+/** 以实际项目文件定位 bin/obj，跳过引用、缓存与归档入口，避免把同名普通目录当作构建输出。 */
 async function discoverDotnetOutputs(root) {
   const projectDirectories = new Set();
   for (const relativeSearchRoot of ['mods', 'modules', 'tests']) {
@@ -356,6 +362,7 @@ async function assertSafePath(root, candidatePath) {
   }
 }
 
+/** 以整桶最近修改时间衡量活跃程度；遍历拒绝链接和特殊节点，统计不追随外部目标。 */
 async function measureDirectory(rootDirectory) {
   let bytes = 0;
   let modifiedAtMs = (await lstat(rootDirectory)).mtimeMs;
@@ -384,6 +391,10 @@ async function measureDirectory(rootDirectory) {
   return { bytes, modifiedAtMs };
 }
 
+/**
+ * 先淘汰过期桶，再满足分类配额，最后仅在超过总上限时降至目标容量。
+ * 各轮共享已选集合，防止同一桶重复扣减；此函数只计算选择，不修改文件系统。
+ */
 function selectPruneCandidates(candidates, options) {
   const now = Date.now();
   const limitBytes = options.limitGiB * GIB;
@@ -436,6 +447,7 @@ function selectPruneCandidates(candidates, options) {
   return selections;
 }
 
+/** 删除前再次验证目标类型与路径归属，缩小扫描后目录被替换的风险；dry-run 只报告，不执行删除。 */
 async function removeCandidates(root, selections, dryRun) {
   for (const { candidate, reason } of selections) {
     const action = dryRun ? 'Would remove' : 'Removing';
@@ -478,6 +490,10 @@ function printResult(candidates, selections, options) {
   console.log(`Artifact ${options.command} ${verb} ${selections.length} bucket(s), ${formatBytes(removedBytes)}; remaining ${formatBytes(remainingBytes)}.`);
 }
 
+/**
+ * 按规范根路径互斥本工具的清理进程；锁不能阻止 Cargo、Gradle 或 dotnet 构建写入。
+ * 活跃持有者或新鲜损坏锁均拒绝抢占；释放时核对随机标记，避免删除后来进程取得的锁。
+ */
 async function acquireExclusiveLock(root) {
   const lockPath = lockPathForRoot(root);
   const token = randomUUID();

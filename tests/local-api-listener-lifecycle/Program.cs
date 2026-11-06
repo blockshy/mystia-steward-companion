@@ -33,6 +33,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 接收回调主动失败后，监听线程必须退出且仅报告一次故障；重复停止仍应保持幂等。
 static void RunUnexpectedFailureCycle(int port)
 {
     using var failureReported = new ManualResetEventSlim();
@@ -132,6 +133,7 @@ static void RunCycle(string name, int port, ConcurrentQueue<Exception> unexpecte
     ProbePortReleased(port, name);
 }
 
+// 重新绑定同一回环端口，直接验证停止后已释放监听资源，而非只检查内存中的存活标志。
 static void ProbePortReleased(int port, string name)
 {
     var portProbe = new TcpListener(IPAddress.Loopback, port);
@@ -149,6 +151,7 @@ static void ProbePortReleased(int port, string name)
     }
 }
 
+// 让操作系统选择可用端口。探测监听器随后关闭，因此这里只获取候选端口，并不保留占用。
 static int ReserveLoopbackPort()
 {
     var listener = new TcpListener(IPAddress.Loopback, 0);

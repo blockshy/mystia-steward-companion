@@ -28,6 +28,8 @@ catch (Exception ex)
     return 1;
 }
 
+// 按提交、清理、评价和记账顺序推进一次性状态；进入原生调用后的未知结果必须隔离，禁止重放。
+// 本组仅推进事务追踪器，不执行游戏扣料、结算或奖励发放。
 static void VerifyYuumaSettlementTransactionTracker()
 {
     var completed = new YuumaSettlementTransactionTracker();
@@ -290,6 +292,7 @@ static void VerifyUnknownIdentityFailsClosed()
         "A lookalike Id property outside GuestBase did not fail closed.");
 }
 
+// 展示名称和近似类型不能替代精确客人身份，避免把同名或形状相似的对象纳入特殊挑战。
 static void VerifyNameAliasesAreIneffective()
 {
     var aliasNames = new[]
@@ -351,6 +354,7 @@ static SpecialBusinessOrderClassification Classify(object? order, object? contro
         "smoke");
 }
 
+// 后续结构检查读取正式适配层源码；它们补充分类器测试，但不构成原生控制流执行证据。
 static void VerifySourceContracts()
 {
     var root = FindRepositoryRoot();

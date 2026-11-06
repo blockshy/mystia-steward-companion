@@ -48,7 +48,7 @@ Assert(closePatch.Prefix?.priority == Priority.First && closePatch.Postfix == nu
 Assert(Harmony.Patches.All(patch => patch.Target.Name is "OnPanelOpen" or "OnPanelClose"),
     "No selection, delivery, coroutine, or generated method may be patched.");
 
-// Hooks installed during an already-active business cover only the next generation.
+// 经营开始后才安装的观察边界无法补齐既有历史，因此只对下一经营代次宣告就绪。
 var uncoveredOrder = new GuestsManager.NormalOrder(3);
 var uncoveredController = new GuestGroupController(3);
 ClearRuntimeCaptures();
@@ -65,7 +65,7 @@ Assert(LiveOwnedFills().Length == 0,
 
 BeginBusiness(2);
 
-// NormalOrder: select by keyed identity even when the pool and native siblings are shuffled.
+// 打乱对象池和原生同级节点顺序，验证普客选择仍依赖键身份而非排列位置。
 var normalOrder = new GuestsManager.NormalOrder(3);
 var normalController = new GuestGroupController(3);
 var otherOrder = new GuestsManager.SpecialOrder(0);
@@ -135,7 +135,7 @@ Assert(AllLogMessages().Any(message =>
         message.Contains("target fill bound", StringComparison.Ordinal)),
     "Successful publication must emit a bounded target-fill bound log.");
 
-// Pulse updates only the owned clone. Native focus-outline transitions remain game-owned.
+// 脉动只更新私有克隆；原生焦点轮廓的显隐继续由游戏控制。
 var normalFillPointer = normalFill.Pointer;
 var firstPulse = GetImage(normalFill).color;
 normalVisuals.SelectionOutline!.enabled = true;
@@ -154,7 +154,7 @@ Assert(!normalVisuals.SelectionOutline.enabled,
     "The Mod must preserve the game's unfocused selection-outline state.");
 AssertNativeVisualsUnchanged(normalNative!, allowBackgroundEnabledChange: false);
 
-// Native valid/invalid state switches rebuild from the newly effective background.
+// 原生有效与无效背景切换后，必须以新生效背景重新建立私有显示。
 var firstOwnedImage = GetImage(normalFill);
 normalVisuals.ValidBackground!.enabled = false;
 normalVisuals.InvalidBackground!.enabled = true;
@@ -172,7 +172,7 @@ Assert(log.Information.Any(message =>
         && message.Contains("reason=background-switched", StringComparison.Ordinal)),
     "A background-state rebuild must be visible through the bounded bound log.");
 
-// Exact target changes retire the old clone and can bind a SpecialOrder on another keyed button.
+// 精确目标改变后撤回旧克隆，并允许在另一键对应按钮上绑定稀客订单。
 ClearRuntimeCaptures();
 RuntimeThrowDeliverOrderHighlightService.UpdateTargets(CreateTargetSet(
     2,
@@ -191,7 +191,7 @@ AssertOwnedFill(
     specialVisuals.ValidBackground!,
     specialNative!);
 
-// Invalid/disabled targets fail closed and explicitly retire ownership.
+// 目标无效或被禁用时立即撤回显示所有权，不保留上一目标的高亮。
 var retiredBeforeInvalidTarget = CountRetiredLogs();
 var invalidTargetRejected = false;
 try
@@ -246,7 +246,7 @@ Assert(restoredFill.m_CachedPtr == IntPtr.Zero && LiveOwnedFills().Length == 0,
 AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "target disabled",
     "Disabled target status must not retain an active binding.");
 
-// A removed pool membership invalidates the entire current identity.
+// 按钮不再属于当前原生对象池时，整项显示身份随之失效。
 ClearRuntimeCaptures();
 RuntimeThrowDeliverOrderHighlightService.UpdateTargets(CreateTargetSet(
     2,
@@ -262,7 +262,7 @@ Assert(poolFill.m_CachedPtr == IntPtr.Zero && LiveOwnedFills().Length == 0,
 AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "membership in m_BtnInstances",
     "Pool-membership drift must be reported as a binding failure.");
 
-// New panel open retires before native hierarchy replacement; normal close retires in prefix.
+// 面板重新打开时先撤回旧节点再替换原生层级；正常关闭则在前缀阶段撤回。
 BeginBusiness(3);
 var panelReplacementOrder = new GuestsManager.NormalOrder(2);
 var panelReplacementController = new GuestGroupController(2);
@@ -297,7 +297,7 @@ Assert(replacementPanel.OriginalCloseCalls == 1,
 Assert(CountRetiredLogs() == retiredBeforeClose + 1,
     "Normal panel close must emit one bounded target-fill retired log.");
 
-// Closing and Dispose destroy owned visuals; Destroyed abandonment only drops wrappers.
+// 关闭和释放阶段销毁私有显示；场景已销毁后的放弃路径只丢弃包装引用，不再访问失效对象。
 var closingPanel = CreatePanel(Card(2, panelReplacementOrder, panelReplacementController));
 InvokeOpen(closingPanel);
 var closingFill = SingleLiveOwnedFill(GetVisuals(closingPanel, 2).Button);
@@ -342,7 +342,7 @@ RuntimeThrowDeliverOrderHighlightService.Dispose("smoke dispose");
 Assert(disposeFill.m_CachedPtr == IntPtr.Zero && LiveOwnedFills().Length == 0,
     "Dispose on the Unity thread must destroy the owned fill.");
 
-// A panel first opened while the target is disabled must bind on the first later enable.
+// 面板打开时目标被禁用，也应在后续首次启用时正常绑定，无须重新打开面板。
 var lateEnableGeneration = NextGeneration();
 BeginBusiness(lateEnableGeneration);
 ClearRuntimeCaptures();
@@ -365,7 +365,7 @@ Assert(SingleLiveOwnedFill(GetVisuals(lateEnablePanel, 6).Button).m_CachedPtr
        != IntPtr.Zero,
     "The first enable after panel open must bind without reopening the panel.");
 
-// A new exact trace at the same desk retires and republishes against the same native button.
+// 同桌产生新追踪标识时仍须撤回旧绑定，并按新身份重新绑定同一原生按钮。
 var sameDeskGeneration = NextGeneration();
 BeginBusiness(sameDeskGeneration);
 var sameDeskOrder = new GuestsManager.SpecialOrder(2);
@@ -389,7 +389,7 @@ Assert(firstSameDeskFill.m_CachedPtr == IntPtr.Zero
        && secondSameDeskFill.Pointer != firstSameDeskFill.Pointer,
     "A new lifecycle/trace at the same desk must replace, not reuse, the prior fill.");
 
-// Reopening the same panel creates a genuinely fresh native pool and recovers automatically.
+// 同一面板重新打开后使用新对象池，验证显示能随新池身份恢复。
 var poolRebindGeneration = NextGeneration();
 BeginBusiness(poolRebindGeneration);
 var poolRebindOrder = new GuestsManager.NormalOrder(7);
@@ -413,9 +413,8 @@ AssertContains(RuntimeThrowDeliverOrderHighlightService.Status,
     $"button:0x{freshPoolButton.Pointer:x}",
     "Recovered status must publish only the fresh pool button identity.");
 
-// A full-stretch child may have a different local Rect origin from a non-centred parent.
-// Anchors/offsets define exact coverage; comparing parent and child Rect values would
-// incorrectly reject this normal Unity RectTransform shape.
+// 全拉伸子节点与非居中父节点的局部 Rect 原点可以不同；覆盖关系应由锚点和偏移确定。
+// 直接要求父子 Rect 数值相等，会误拒绝这类合法布局。
 var nonCentredParentGeneration = NextGeneration();
 BeginBusiness(nonCentredParentGeneration);
 var nonCentredParentOrder = new GuestsManager.NormalOrder(1);
@@ -450,8 +449,7 @@ AssertContains(RuntimeThrowDeliverOrderHighlightService.Status,
     "active:1/1",
     "Exact same-geometry children must bind when a non-centred parent has a different local Rect origin.");
 
-// The serialized selection listener and exact sibling geometry identify the visual region.
-// The prefab is not required to use one hard-coded anchor/pivot/offset convention.
+// 通过序列化选择监听器和同级节点几何确认显示区域，不要求预制体统一采用固定锚点、轴心或偏移。
 var nonCanonicalGeometryGeneration = NextGeneration();
 BeginBusiness(nonCanonicalGeometryGeneration);
 var nonCanonicalGeometryOrder = new GuestsManager.NormalOrder(2);
@@ -483,9 +481,8 @@ Assert(log.Information.Any(message =>
             StringComparison.Ordinal)),
     "Successful binding must log the exact bounded non-canonical geometry fingerprint.");
 
-// A diagnostic must never re-read an IL2CPP wrapper after the owned visual is published.
-// The geometry fingerprint is captured while source evidence is still inside its guarded
-// read transaction, so a later getter failure cannot retire an otherwise valid fill.
+// 几何指纹在受保护的源读取事务内捕获；显示发布后的诊断不能重新读取 IL2CPP 包装对象。
+// 后续 getter 失败不应仅因记录日志而撤回原本有效的填充。
 var diagnosticIsolationGeneration = NextGeneration();
 BeginBusiness(diagnosticIsolationGeneration);
 var diagnosticIsolationOrder = new GuestsManager.NormalOrder(4);
@@ -522,7 +519,7 @@ AssertOwnedFill(
     diagnosticIsolationVisuals.ValidBackground!,
     diagnosticIsolationNative!);
 
-// Strict source-shape rejection matrix. Every case uses a fresh business identity.
+// 每个源形状负例使用新的经营身份，避免前一用例的失败缓存影响当前拒绝路径。
 RunMalformedCase("zero selection listener", panel =>
 {
     GetSelectionEvent(panel, 1).SetPersistentCalls();
@@ -666,13 +663,13 @@ RunMalformedCase("background Image render types disagree", panel =>
     GetVisuals(panel, 1).InvalidBackground!.type = UnityEngine.UI.Image.Type.Tiled;
 }, expectedFailure: "same exact Image render type");
 
-// Partial clone construction is transactional and never publishes a fallback visual.
+// 克隆部分创建失败时撤销整个构建，不发布缺少证据的替代显示。
 RunCloneFaultCase(CloneFaultMode.RemoveImage, "exact leaf");
 RunCloneFaultCase(CloneFaultMode.AddUnknownComponent, "exact leaf");
 RunCloneFaultCase(CloneFaultMode.InvalidateImage, "exact leaf");
 RunCloneFaultCase(CloneFaultMode.None, "Injected SetSiblingIndex", injectSiblingFailure: true);
 
-// Health-check shape and identity drift also fail closed after successful publication.
+// 成功发布后仍核验形状和身份；健康检查发现漂移时必须撤回显示。
 RunBoundDriftCase("selection listener missing", (panel, _, _) =>
 {
     GetSelectionEvent(panel, 1).SetPersistentCalls();
@@ -739,7 +736,7 @@ RunBoundDriftCase("owned Image render type drift", (_, _, fill) =>
     GetImage(fill).type = UnityEngine.UI.Image.Type.Tiled;
 });
 
-// Managed wrappers rebound to a different native object are unsafe: no pulse and no Destroy.
+// 托管包装若已指向另一原生对象，不能继续写色，也不能通过该包装销毁新对象。
 foreach (var triggerRetirement in new[] { false, true })
 {
     RunUnsafeOwnedIdentityCase(
@@ -760,7 +757,7 @@ foreach (var triggerRetirement in new[] { false, true })
         triggerRetirement);
 }
 
-// Repeated identical failures are deduplicated, and distinct failures remain business-bounded.
+// 相同失败去重，不同失败也受单次经营预算限制，防止异常帧持续扩张日志。
 var budgetGeneration = NextGeneration();
 BeginBusiness(budgetGeneration);
 var budgetOrder = new GuestsManager.NormalOrder(1);
@@ -804,7 +801,7 @@ for (var index = 0; index < 12; index++)
 Assert(CountFailureLogs() - failureLogsBefore == 8,
     "Distinct target-fill failures must stop exactly at the per-business warning budget.");
 
-// Rare and normal targets bind independently from their real capture stores and colors.
+// 普客与稀客分别使用各自正式采集存储和配色建立绑定，不能混用类别身份。
 var dualGeneration = NextGeneration();
 BeginBusiness(dualGeneration);
 ClearRuntimeCaptures();
@@ -889,7 +886,7 @@ Assert(dualNormalFill.m_CachedPtr != IntPtr.Zero
        && SingleLiveOwnedFill(dualNormalVisuals.Button).Pointer == retainedNormalFillPointer,
     "A failure in one delivery binding must not clear the other target kind.");
 
-// Two typed targets at one desk never stack: the panel's exact current order selects one kind.
+// 同桌两类目标不能叠加显示；由面板精确的当前订单决定显示类别。
 var sharedDeskGeneration = NextGeneration();
 BeginBusiness(sharedDeskGeneration);
 ClearRuntimeCaptures();
@@ -1159,7 +1156,7 @@ void RunUnsafeOwnedIdentityCase(
         $"Unsafe identity '{scenario}' must clear publication after "
         + (triggerRetirement ? "explicit retirement" : "pulse validation"));
 
-    // The simulated scene now owns the abandoned wrapper; explicit fixture cleanup follows assertions.
+    // 模拟场景接管已放弃的包装对象；先完成断言，再由夹具显式清理。
     UnityEngine.Object.Destroy(fill);
 }
 

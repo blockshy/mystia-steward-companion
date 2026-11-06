@@ -62,6 +62,9 @@ class CompanionState {
 /// 失败抛异常；会话不会发送 ACK、切主或自动获得执行许可。
 typedef PersistProfile = Future<void> Function(DeviceAuthorityState state);
 
+/// 单个连接身份的会话协调器，负责握手、轮询、配置持久化确认和自动化租约。
+/// 会话代次隔离重连及暂停前的请求；页面查询和资源初始化另有独立代次，
+/// 避免附属读取的迟到响应恢复已撤销的展示或执行状态。
 class CompanionSession {
   CompanionSession({
     required this.api,
@@ -369,6 +372,8 @@ class CompanionSession {
     return next;
   }
 
+  /// 同一注册表内拒绝较旧的状态修订；配置先耐久保存，再确认同步，最后发布给页面。
+  /// 持久化去重键包含待同步 ID，因此同内容的新同步事务仍需经过确认边界。
   Future<void> _commitAuthority(DeviceAuthorityState value, int epoch) async {
     if (!_active(epoch)) return;
     if (_authority?.registryId == value.registryId &&
@@ -492,6 +497,9 @@ class CompanionSession {
       epoch,
     );
   });
+
+  /// 设备写入串行执行并绑定入队时的会话；出队后先撤销租约，成功后才触发完整重读。
+  /// 队列尾部恢复只为容纳下一次明确操作，不会自动重放本次失败或未知结果。
   Future<void> _deviceMutation(Future<void> Function(int epoch) operation) {
     final requestedEpoch = _epoch;
     final next = _deviceWrites.then((_) async {
@@ -523,6 +531,8 @@ class CompanionSession {
     return _authority!;
   }
 
+  /// 更新页面意图并等待当前查询代次的结果；切换条件立即清空旧结果，null 表示撤销。
+  /// 同条件调用可共享在途刷新，但返回时仍检查代次，防止 A→B→A 的旧 A 响应混入。
   Future<PageResult?> query(PageQuery? intent) async {
     if (_query?.key != intent?.key) {
       unawaited(_withdrawPageQuery());

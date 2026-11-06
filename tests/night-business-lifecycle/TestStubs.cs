@@ -23,6 +23,7 @@ namespace HarmonyLib
         public int priority { get; set; }
     }
 
+    /// <summary>仅满足生命周期服务的补丁接口依赖；Patch 不执行注入，测试需直接驱动回调。</summary>
     public sealed class Harmony
     {
         public Harmony(string id) { }
@@ -45,6 +46,10 @@ namespace MystiaStewardCompanion.Save
         Special,
     }
 
+    /// <summary>
+    /// 收集各子服务收到的生命周期通知、代次和相对顺序。
+    /// 计数只证明通知契约；高亮恢复、订单清理等子服务的实际实现由各自测试验证。
+    /// </summary>
     internal static class RuntimeBoundaryProbe
     {
         public static int CookerResumeCount { get; set; }
@@ -132,6 +137,7 @@ namespace MystiaStewardCompanion.Save
         public static void Abandon(string reason) => RuntimeBoundaryProbe.SeatAbandonCount++;
     }
 
+    /// <summary>可注入恢复失败，以验证单个显示服务异常不会中断其他边界通知。</summary>
     internal static class RuntimeOrderHighlightService
     {
         public static bool ThrowOnResume { get; set; }

@@ -19,6 +19,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 第一项处理器由事件保持运行，确保并发上限和停止接收断言发生在槽位确实被占用时。
 static void VerifyConcurrencyLimitAndStop(BoundedHandlerPool<TestResource> pool)
 {
     using var started = new ManualResetEventSlim();
@@ -53,6 +54,7 @@ static void VerifyHandlerFailureReleasesSlot(BoundedHandlerPool<TestResource> po
     pool.StopAccepting();
 }
 
+// 清理资源自身也可能抛出异常；槽位释放与错误报告必须同时发生，避免连接容量永久减少。
 static void VerifyDisposeFailureReleasesSlot()
 {
     var failures = new ConcurrentQueue<Exception>();
@@ -65,6 +67,8 @@ static void VerifyDisposeFailureReleasesSlot()
     pool.StopAccepting();
 }
 
+// 内存流隔离请求解析：头部和正文既要完整，也要各自满足字节数上限。
+// 这些断言不经过套接字，因此不能替代监听器生命周期或实际网络传输测试。
 static void VerifyRequestsMustBeCompleteAndBounded()
 {
     using var complete = new MemoryStream(System.Text.Encoding.ASCII.GetBytes("POST /devices/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2\r\n\r\n{}"));

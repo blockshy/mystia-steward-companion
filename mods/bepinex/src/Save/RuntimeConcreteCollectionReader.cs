@@ -3,6 +3,7 @@ using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>区分对象缺失、包装形状不受支持和读取不一致；失败不等同于业务集合为空。</summary>
 internal enum RuntimeCollectionReadFailure
 {
     None,
@@ -15,8 +16,14 @@ internal enum RuntimeCollectionReadFailure
 
 internal readonly record struct RuntimeDictionaryEntry(object? Key, object? Value);
 
+/// <summary>
+/// 按已知具体集合及其成员签名读取数据，拒绝通过宽松 IEnumerable 或名称猜测宣称完整。
+/// 结果容器属于托管侧，但其中的游戏对象仍是活动包装器；调用方必须在有效线程和生命周期内投影数据。
+/// 数量前后相等只能排除可观察到的数量变化，不能保证并发修改下的原子快照。
+/// </summary>
 internal static class RuntimeConcreteCollectionReader
 {
+    // 为异常包装数据设置分配和遍历上限；超限属于读取失败，不能截断后报告成功。
     private const int MaxCollectionCount = 100_000;
     private const BindingFlags InstanceFlags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
     private const string ManagedDictionaryTypeName = "System.Collections.Generic.Dictionary`2";
@@ -30,6 +37,7 @@ internal static class RuntimeConcreteCollectionReader
     private const string Il2CppStringArrayTypeName =
         "Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppStringArray";
 
+    // 仅缓存已验证的反射形状，不缓存集合实例、元素或业务内容。
     private static readonly ConcurrentDictionary<Type, DictionaryShape> DictionaryShapes = new();
     private static readonly ConcurrentDictionary<Type, DictionaryContainsShape> DictionaryContainsShapes = new();
     private static readonly ConcurrentDictionary<Type, DictionaryLookupShape> DictionaryLookupShapes = new();
@@ -38,6 +46,7 @@ internal static class RuntimeConcreteCollectionReader
     private static readonly ConcurrentDictionary<Type, ArrayShape> ArrayShapes = new();
     private static readonly ConcurrentDictionary<Type, StringArrayShape> StringArrayShapes = new();
 
+    /// <summary>读取受支持字典的当前数量；成功仅证明数量字段可读，不证明所有键值可枚举。</summary>
     public static bool TryReadDictionaryCount(
         object? dictionary,
         out int count,
@@ -74,6 +83,7 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>检查具体 HashSet 定义及数量范围；用于预检，不能替代完整元素读取。</summary>
     public static bool TryReadHashSetCount(
         object? set,
         out int count,
@@ -114,6 +124,10 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>
+    /// 以精确键类型执行存在性检查和索引读取，并复核数量未变。
+    /// 返回 true 且 found 为 false 才表示已确认不存在；返回 false 表示读取未知，value 不得用于业务判断。
+    /// </summary>
     public static bool TryGetDictionaryValue(
         object? dictionary,
         object? key,
@@ -188,6 +202,7 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>在读取数量稳定且键类型精确匹配时报告存在性；调用失败与键不存在分开表达。</summary>
     public static bool TryContainsDictionaryKey(
         object? dictionary,
         object? key,
@@ -250,6 +265,10 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>
+    /// 完整读取具体字典：枚举项数、结束状态和末次 Count 均须一致。
+    /// 任一读取或释放失败均丢弃部分结果；空字典仅需两次零数量验证，无须解析枚举器形状。
+    /// </summary>
     public static bool TryReadDictionary(
         object? dictionary,
         out IReadOnlyList<RuntimeDictionaryEntry> entries,
@@ -313,6 +332,7 @@ internal static class RuntimeConcreteCollectionReader
             return false;
         }
 
+        // 先在局部容器完成全部校验，再一次性交付；异常路径不会暴露已经读到的前缀。
         var result = new List<RuntimeDictionaryEntry>(initialCount);
         var readFailure = RuntimeCollectionReadFailure.None;
         try
@@ -371,6 +391,7 @@ internal static class RuntimeConcreteCollectionReader
         }
         finally
         {
+            // 失败也释放枚举器；已有更具体读取错误时保留其原因，否则将释放失败报告为调用失败。
             if (!TryInvoke(shape.Dispose, enumerator, Array.Empty<object?>(), out _)
                 && readFailure == RuntimeCollectionReadFailure.None)
             {
@@ -481,6 +502,7 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>仅接受已知具体 List 及精确索引器签名，按索引复制并复核数量。</summary>
     public static bool TryReadList(
         object? list,
         out IReadOnlyList<object?> values,
@@ -502,6 +524,7 @@ internal static class RuntimeConcreteCollectionReader
         return TryReadIndexedCollection(list, shape.Count, shape.Indexer, out values, out failure);
     }
 
+    /// <summary>读取受支持的引用类数组形状；输出元素仍需由调用方验证具体类型和对象身份。</summary>
     public static bool TryReadReferenceArray(
         object? array,
         out IReadOnlyList<object?> values,
@@ -510,6 +533,7 @@ internal static class RuntimeConcreteCollectionReader
         return TryReadArrayCore(array, RuntimeArrayKind.Reference, out values, out failure);
     }
 
+    /// <summary>要求数组声明元素类型和每个装箱元素均为 int，不接受隐式数值转换。</summary>
     public static bool TryReadIntArray(
         object? array,
         out IReadOnlyList<int> values,
@@ -543,6 +567,7 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    /// <summary>读取精确 IL2CPP 字符串数组包装；保留合法 null 项，拒绝非字符串元素。</summary>
     public static bool TryReadStringArray(
         object? array,
         out IReadOnlyList<string?> values,
@@ -643,6 +668,7 @@ internal static class RuntimeConcreteCollectionReader
         return TryReadIndexedCollection(array, shape.Length, shape.Indexer, out values, out failure);
     }
 
+    // 索引访问失败不跳过元素；前后数量复核通过后才发布完整的索引序列。
     private static bool TryReadIndexedCollection(
         object collection,
         PropertyInfo countProperty,
@@ -784,6 +810,7 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    // 枚举器及 KeyValuePair 的闭合泛型参数必须与字典一致，避免同名成员掩盖包装形状差异。
     private static bool TryBuildDictionaryShape(Type type, out DictionaryShape shape)
     {
         shape = null!;
@@ -979,6 +1006,7 @@ internal static class RuntimeConcreteCollectionReader
         return true;
     }
 
+    // 托管测试替身也遵守一维、零下界及元素形状限制，不借由 Array 放宽运行时契约。
     private static bool IsSupportedManagedArray(Array array, RuntimeArrayKind expectedKind)
     {
         if (array.Rank != 1 || array.GetLowerBound(0) != 0) return false;
@@ -995,6 +1023,7 @@ internal static class RuntimeConcreteCollectionReader
         };
     }
 
+    // 这里用于区分受支持的元素形状，并非通用互操作布局证明；递归字段环被保守拒绝。
     private static bool IsBlittableValueType(Type type, HashSet<Type> visiting)
     {
         if (type.IsEnum) return IsBlittableValueType(Enum.GetUnderlyingType(type), visiting);

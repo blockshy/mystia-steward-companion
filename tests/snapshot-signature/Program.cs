@@ -8,6 +8,7 @@ try
     var second = LocalApiSnapshotSignature.Compute(canonicalContent);
     var changed = LocalApiSnapshotSignature.Compute(canonicalContent + "1|");
     var empty = LocalApiSnapshotSignature.Compute("");
+    // 大型中文载荷用于防止回归为把完整快照放入查询参数；签名长度必须与载荷大小无关。
     var largeCanonicalContent = string.Concat(Enumerable.Repeat("订单:料理/酒水|", 8_192));
     var largeSignature = LocalApiSnapshotSignature.Compute(largeCanonicalContent);
 
@@ -23,6 +24,7 @@ try
         empty,
         "The signature helper does not match the SHA-256 reference vector.");
 
+    // 目录条目数量保持不变，只修改内容，避免仅以集合大小代替内容签名的实现误通过。
     var firstCatalog = BuildRuntimeDataCatalog("绿茶");
     var equivalentCatalog = BuildRuntimeDataCatalog("绿茶");
     var changedCatalog = BuildRuntimeDataCatalog("高级绿茶");

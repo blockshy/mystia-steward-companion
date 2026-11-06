@@ -6,6 +6,7 @@ internal enum RuntimeCoreMappingIdDomain
     Signed,
 }
 
+/// <summary>严格校验核心映射的键值形状和唯一性，再按调用方声明的编号域输出排序后的编号。</summary>
 internal static class RuntimeCoreMappingProjection
 {
     private const int MaxMappingItems = 4096;
@@ -60,6 +61,7 @@ internal static class RuntimeCoreMappingProjection
                 throw new InvalidOperationException($"{mappingName} contains duplicate ID {id}.");
             }
 
+            // 即使负编号将被过滤，也先检查原始映射的重复键与空值，避免掩盖来源损坏。
             if (idDomain == RuntimeCoreMappingIdDomain.NonNegativeContent && id < 0) continue;
             ids.Add(id);
         }

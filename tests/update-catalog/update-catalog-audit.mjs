@@ -6,6 +6,7 @@ import {
   parseUpdateVersion,
 } from '../../scripts/generate-update-catalog.mjs';
 
+// 固定预览数字排序和整数边界，防止按字符串比较或使用不精确数值生成错误更新顺序。
 const stable = parseUpdateVersion('v1.3.0');
 const preview2 = parseUpdateVersion('1.4.0-preview.2');
 const preview10 = parseUpdateVersion('v1.4.0-preview.10');
@@ -19,6 +20,7 @@ assert.equal(parseUpdateVersion('2147483648.0.0'), null);
 assert.equal(parseUpdateVersion('9007199254740992.0.0'), null);
 assert.equal(parseUpdateVersion('1.4.0-preview.9007199254740992'), null);
 
+// 人工分页结果同时包含合法历史、草稿和非法标签；目录构建不需要访问 GitHub。
 const historicalReleases = [[
   release('v1.2.0', false, '2026-07-12T12:51:25Z', 'v1.2.0', '## 修复\n\n- 历史修复'),
   release('v1.3.0-preview.1', true, '2026-08-10T00:00:00Z', '预览版 1', '预览说明'),
@@ -50,6 +52,7 @@ const ownerRelease = built.catalog.releases.find((entry) => entry.tag === 'v1.3.
 assert.equal(ownerRelease?.title, 'v1.3.0 新标题');
 assert.equal(ownerRelease?.notesMarkdown, '## 新增功能\n\n- 当前说明\n');
 assert.ok(built.serialized.endsWith('\n'));
+// 相同语义输入必须得到相同序列化结果，确保后续清单摘要不受标题尾部空白影响。
 assert.equal(
   built.serialized,
   buildUpdateCatalog({

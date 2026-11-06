@@ -10,6 +10,7 @@
 /// 在 Flutter 引擎启动前争用唯一控制端口。次实例只转发激活，不创建第二窗口。
 /// 返回 0 表示主实例，1 表示次实例已通知，其他值表示明确启动失败。
 int StartCompanionControl(const std::vector<std::string>& arguments);
+/// 停止接收控制请求并等待监听线程结束；应在释放进程级运行库之前调用。
 void StopCompanionControl();
 
 /// 所有 HWND 和原生输入资源归属 UI 线程；TCP 线程仅排队不可变命令。
@@ -17,13 +18,17 @@ class CompanionPlatformBridge final : public mystia_platform::PlatformHostApi {
  public:
   CompanionPlatformBridge(HWND window, flutter::FlutterViewController* controller);
   ~CompanionPlatformBridge() override;
+  /// 有返回值表示消息已消费；nullopt 要求宿主继续交给 Flutter 和默认窗口过程。
   std::optional<LRESULT> HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
   mystia_platform::ErrorOr<mystia_platform::PlatformLaunch> Initialize() override;
   std::optional<mystia_platform::FlutterError> ApplyWindowPreferences(const mystia_platform::WindowPreferences&) override;
   mystia_platform::ErrorOr<bool> PerformWindowAction(const mystia_platform::WindowAction&) override;
   mystia_platform::ErrorOr<bool> OpenExternalUrl(const std::string&) override;
+  /// 返回当前输入及启动信息；控制器归属变化插入断开帧，避免继承旧设备的按住状态。
   mystia_platform::ErrorOr<mystia_platform::PlatformInput> PollInput() override;
+  /// 密钥名受限，密文绑定当前用户 DPAPI；不存在与读取/解密失败分别返回空值和错误。
   mystia_platform::ErrorOr<std::optional<std::string>> ReadSecret(const std::string&) override;
+  /// 写入和删除前均验证既有密文可解密，不用覆盖或删除来掩盖损坏数据。
   std::optional<mystia_platform::FlutterError> WriteSecret(const std::string&, const std::string&) override;
   std::optional<mystia_platform::FlutterError> DeleteSecret(const std::string&) override;
   mystia_platform::ErrorOr<std::optional<std::string>> ReadPreferences() override;

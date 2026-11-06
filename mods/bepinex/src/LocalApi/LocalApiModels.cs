@@ -3,6 +3,8 @@ using MystiaStewardCompanion.Save;
 
 namespace MystiaStewardCompanion.LocalApi;
 
+/// <summary>主线程发布给本地 API 的运行时投影；时间、签名和各领域就绪标志分别表达采集时刻、内容及完整性。</summary>
+/// <remarks>内部集合为可变托管容器，构造完成并发布后应只读使用，不得保存 Unity 对象。</remarks>
 internal sealed class LocalApiSnapshot
 {
     public string PluginVersion { get; init; } = "";
@@ -75,6 +77,7 @@ internal sealed class AutomationRuntimeEvent
     public string Message { get; init; } = "";
 }
 
+/// <summary>自动料理任务的观测值，分别保留控制暂停、厨具预约、送达提交和结果不确定事实，供上层决定后续步骤。</summary>
 internal sealed class AutomationCookingJobSnapshot
 {
     public string JobId { get; init; } = "";

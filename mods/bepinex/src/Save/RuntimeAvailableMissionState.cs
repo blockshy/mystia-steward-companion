@@ -1,5 +1,7 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>发布可触发任务的托管快照；读写均在锁内复制任务数组和场景数组，隔离调用方的集合修改。</summary>
+/// <remarks>投影在锁外执行；本类不比较代次的新旧，采集方负责串行发布当前结果。</remarks>
 internal sealed class RuntimeAvailableMissionState
 {
     private readonly object _gate = new();

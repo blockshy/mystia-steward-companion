@@ -2,6 +2,7 @@ using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>将任务接收角色投影为名称和可能出现场景；展示元数据不可用时不替代或改写任务完成事实。</summary>
 internal static class RuntimeMissionPresentationReader
 {
     private const string DataBaseDayTypeName =
@@ -34,7 +35,8 @@ internal static class RuntimeMissionPresentationReader
     private static RuntimeMissionPresentationShape? _shape;
     private static ManagedMapCatalogCache? _mapCatalogCache;
 
-    // Callers must invoke this reader on the Unity main thread. Only managed values escape.
+    /// <summary>按精确角色标签去重读取展示数据，逐角色返回成功或不可用状态；公共反射形状缺失时整批降级。</summary>
+    /// <remarks>调用方必须位于 Unity 主线程，本方法不切换线程；返回及长期缓存只包含托管值。</remarks>
     public static IReadOnlyDictionary<string, RuntimeMissionPresentation> ReadMany(
         IReadOnlyList<string> receiverLabels,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
@@ -86,7 +88,7 @@ internal static class RuntimeMissionPresentationReader
         }
         catch
         {
-            // Per-entry projection keeps independently readable character names.
+            // NPC 目录缺失不直接终止整批，后续仍可保留能够独立从映射目录读取的角色名称。
         }
         try
         {
@@ -94,7 +96,7 @@ internal static class RuntimeMissionPresentationReader
         }
         catch
         {
-            // Special guest names remain independently readable from the mapped catalog.
+            // 普通角色语言表不可用不影响从已映射目录读取稀客名称。
         }
         try
         {
@@ -102,7 +104,7 @@ internal static class RuntimeMissionPresentationReader
         }
         catch
         {
-            // Scene labels without an exact localized name are not published.
+            // 缺少精确本地化名称时不以内部场景标签代替显示名称。
         }
         try
         {
@@ -150,6 +152,8 @@ internal static class RuntimeMissionPresentationReader
         return result;
     }
 
+    /// <summary>分别解析角色名和场景名，并保留可独立确认的名称；整体状态仍明确反映任一部分的失败。</summary>
+    /// <remarks>NPC 键或类型冲突时不继续从该对象读取目的地，避免将同名但身份不符的对象用于展示。</remarks>
     private static RuntimeMissionPresentation ReadOne(
         RuntimeMissionPresentationShape shape,
         string receiver,
@@ -249,6 +253,8 @@ internal static class RuntimeMissionPresentationReader
             status);
     }
 
+    /// <summary>优先使用唯一映射目录项；存在 NPC 时交叉核对规范角色 ID，没有映射项才查普通角色语言表。</summary>
+    /// <remarks>重复或不完整的映射属于身份错误，不能回退到普通角色语言表掩盖冲突。</remarks>
     private static string ReadCharacterName(
         RuntimeMissionPresentationShape shape,
         string receiver,
@@ -309,6 +315,8 @@ internal static class RuntimeMissionPresentationReader
         return name.Trim();
     }
 
+    /// <summary>将所有可能目的地的出生标记映射到精确地图及本地化名称，按地图标签排序后消除重名。</summary>
+    /// <remarks>任一目的地未知、歧义或缺少名称时返回空场景列表及失败原因，不发布看似完整的部分列表。</remarks>
     private static IReadOnlyList<string> ReadSceneNames(
         RuntimeMissionPresentationShape shape,
         object? npc,
@@ -341,6 +349,7 @@ internal static class RuntimeMissionPresentationReader
             failure = "destinations";
             return Array.Empty<string>();
         }
+        // 已成功读取的空目的地数组是有效结果，不要求地图目录和语言表也已就绪。
         if (destinations.Count == 0)
         {
             return Array.Empty<string>();
@@ -411,6 +420,7 @@ internal static class RuntimeMissionPresentationReader
             .ToArray();
     }
 
+    /// <summary>完整读取地图及出生标记，建立托管反向索引；字段无效或累计数量超限使整个目录不可用。</summary>
     private static MapCatalogReadResult ReadMapCatalog(
         RuntimeMissionPresentationShape shape)
     {
@@ -461,6 +471,7 @@ internal static class RuntimeMissionPresentationReader
                 {
                     continue;
                 }
+                // 同地图重复标记可合并；跨地图冲突必须从唯一映射中删除并持续记为歧义。
                 if (labelsByMarker.TryGetValue(marker, out var existing)
                     && !string.Equals(existing, mapLabel, StringComparison.Ordinal))
                 {
@@ -478,6 +489,8 @@ internal static class RuntimeMissionPresentationReader
             ambiguousMarkers);
     }
 
+    /// <summary>按任务代次、日间代次和角色目录采集时间缓存成功的托管地图索引，避免同一绑定重复扫描。</summary>
+    /// <remarks>失败结果不进入缓存，允许后续展示重试再次读取；锁保护缓存引用，不授予后台访问 Unity 的权限。</remarks>
     private static MapCatalogReadResult ReadMapCatalogCached(
         RuntimeMissionPresentationShape shape,
         long missionGeneration,

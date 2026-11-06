@@ -120,6 +120,7 @@ static void VerifyExactIdentity()
     AssertEqual(current, repeated, "A repeated receipt lookup returned a different observation.");
 }
 
+// 同一生命周期先得到评价事实后，随后普通移除回执不能把终态降级为“仅移除”。
 static void VerifyEvaluatedTakesPriorityOverRemoved()
 {
     RuntimeOrderTerminalReceiptStore.Clear();
@@ -460,6 +461,7 @@ static void VerifyInvalidIdentityAndSourceFailClosed()
         "An invalid lifecycle token matched the active lifecycle.");
 }
 
+// 清空存储不等于重置身份序列；保持单调性，避免迟到 token 与清理后创建的对象再次重合。
 static void VerifyClearDoesNotRewindEitherSequence()
 {
     RuntimeOrderTerminalReceiptStore.Clear();
@@ -507,6 +509,7 @@ static void VerifyClearDoesNotRewindEitherSequence()
         "Clear rewound the process-local receipt sequence watermark.");
 }
 
+// 终态存储只保留值身份和托管状态，不能因记录回执而延长原生包装对象的生命周期。
 static void VerifyStateContainsNoRuntimeWrapper()
 {
     var allowedTypes = new HashSet<Type>

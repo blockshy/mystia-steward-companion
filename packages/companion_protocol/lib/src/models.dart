@@ -1,6 +1,7 @@
 import 'json.dart';
 import 'profile.dart';
 
+/// 业务查询、设备注册和人工交互分别协商版本，不能以其中一个版本代替其余协议检查。
 const businessProtocolVersion = 1;
 const deviceProtocolVersion = 1;
 const interactionProtocolVersion = 2;
@@ -45,6 +46,8 @@ class DeviceAuthorityState {
   List<JsonMap> get devices => jsonObjects(json['devices']);
 }
 
+/// 一次租约请求的服务端结果；拒绝也是有效响应，不在构造阶段转换为传输异常。
+/// [owned] 只表示该响应中的归属，实际执行还须核对本地期限、权威修订及会话状态。
 class AutomationLease {
   AutomationLease.fromJson(JsonMap value) : json = jsonMap(value) {
     jsonBool(json, 'ok');
@@ -149,6 +152,8 @@ class BusinessSourceContext {
   }
 }
 
+/// 服务端业务计算结果及其来源标识。载荷可以存在但已过期，不能仅凭非空结果执行操作。
+/// [currentFor] 同时匹配快照签名和展示上下文；只读保留策略由会话层另行决定。
 class BusinessStatus {
   BusinessStatus.fromJson(JsonMap value) : json = jsonMap(value) {
     if (jsonInt(json, 'protocolVersion') != businessProtocolVersion) {
@@ -171,6 +176,8 @@ class BusinessStatus {
       json['recommendations'] == null ? null : jsonMap(json['recommendations']);
   JsonMap? get automation =>
       json['automation'] == null ? null : jsonMap(json['automation']);
+
+  /// 服务端声明、非空快照签名和权威上下文必须共同一致；缺少任一证据均返回 false。
   bool currentFor(GameSnapshot? snapshot, BusinessSourceContext? context) =>
       error == null &&
       isCurrent &&
@@ -181,7 +188,8 @@ class BusinessStatus {
       sourceContext?.key == context.key;
 }
 
-/// 每一设备每种 kind 只有一个活动查询；构造器不允许上传库存、预算或客户端推荐。
+/// 页面订阅中的查询意图；同一会话更新时替换原意图，普通与稀客由 kind 区分。
+/// 构造器只编码用户条件，不允许上传库存、预算或客户端计算的推荐结果。
 class PageQuery {
   PageQuery.normal(String place)
     : json = jsonMap({
@@ -207,6 +215,9 @@ class PageQuery {
   String get key => canonicalJson(json);
 }
 
+/// 页面查询的计算状态与只读载荷；重新计算期间可能保留旧载荷。
+/// pending、error 和 isCurrent 分别描述等待、错误与当前性，调用者须结合当前查询意图
+/// 及来源上下文决定展示，不能将旧载荷当作新查询完成。
 class PageResult {
   PageResult.fromJson(JsonMap value) : json = jsonMap(value) {
     if (jsonInt(json, 'protocolVersion') != businessProtocolVersion)

@@ -30,6 +30,10 @@ public static partial class NormalTargetSelector
         if (tags.Count == 0 && matches < 3) return Empty("怪诞料理大赛第一阶段需要至少 3 个喜好 Tag 命中，当前普客没有稳定高评价组合。");
         return Target(o, best.Value.Food, best.Value.Beverage, tags.Count > 0 ? $"怪诞目标 Tag：{text}，高评价命中 {matches} 个喜好 Tag" : $"怪诞高评价命中 {matches} 个喜好 Tag", Object(("specialTargetFoodTags", tags)));
     }
+    /// <summary>
+    /// 未破防本体只使用场上已揭示的偏好；缺少料理或酒水正面标签时停止选择。
+    /// 忽略单个必需标签条件后，仍以揭示标签命中数和无厌恶条件限制组合。
+    /// </summary>
     private static JsonObject WackyBody(JsonObject o, JsonObject s, JsonObject context, JsonObject data, OrderCandidateCache cache)
     {
         var foodsTags = SpecialBusinessRules.NormalizeTags(s["wackyKoishiFoodPreferenceTags"]); var hates = SpecialBusinessRules.NormalizeTags(s["wackyKoishiFoodHateTags"]); var beverageTags = SpecialBusinessRules.NormalizeTags(s["wackyKoishiBeveragePreferenceTags"]);
@@ -43,6 +47,7 @@ public static partial class NormalTargetSelector
         if (best == null) return Empty($"怪诞料理三阶段古明地恋本体当前揭示：正面料理 {string.Join("、", foodsTags)}，厌恶料理 {(hates.Length > 0 ? string.Join("、", hates) : "无")}，酒水 {string.Join("、", beverageTags)}；没有可制作且可稳定高评价的料理/酒水组合。");
         return Target(o, best.Value.Food, best.Value.Beverage, $"古明地恋本体：命中正面料理 {string.Join("、", Strings(best.Value.Food["matchedPositiveTags"]))}，酒水 {string.Join("、", Strings(best.Value.Beverage["matchedTags"]))}，避开厌恶 Tag{(hates.Length > 0 ? " " + string.Join("、", hates) : "")}");
     }
+    /// <summary>破防后固定原料理与酒水，只在可用加料组合间按剩余预算、目标分数和提交次数排序。</summary>
     private static JsonObject WackyBroken(JsonObject o, JsonObject s, JsonObject context, JsonObject data, OrderCandidateCache cache)
     {
         var recipe = Recipe(o, data); if (recipe == null) return Empty($"怪诞料理三阶段古明地恋本体已破防，但无法找到原订单料理 {FoodLabel(o)} 的配方数据。");
@@ -73,6 +78,7 @@ public static partial class NormalTargetSelector
         if (Count(best.Value.Food, "matchedNegativeTags") != 0 || matches < 2 || Evaluation(best.Value.Food, best.Value.Beverage) < 4) return Empty($"怪诞料理大赛需要原订单最高评价，{Str(recipe["name"])} / {Str(drink["name"])} 当前仅命中 {matches} 个喜好 Tag，等待更安全的订单或目标刷新。");
         return Target(o, best.Value.Food, best.Value.Beverage, tags.Count > 0 ? $"怪诞高评价：保持原订单，目标 Tag {text}，命中 {matches} 个喜好 Tag" : $"怪诞高评价：保持原订单，命中 {matches} 个喜好 Tag", Object(("specialTargetFoodTags", tags)));
     }
+    /// <summary>将运行时已拒绝的配方组合按目标标签和加料身份排除，避免同一条件下重复推荐已失败组合。</summary>
     private static bool WackyCandidateAllowed(JsonObject f, JsonArray tags, string[] rejected)
     {
         if (tags.Count > 0 && !SpecialBusinessRules.MatchesTags(f["activeTags"], tags, "any")) return false;

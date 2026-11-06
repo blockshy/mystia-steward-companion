@@ -8,9 +8,8 @@ using UnityEngine;
 namespace MystiaStewardCompanion.Save;
 
 /// <summary>
-/// Resolves the exact keyed desk-order button created by
-/// <c>WorkSceneThrowDeliverPanel</c> and owns one non-raycast target-fill clone per exact target.
-/// Native Images and logical selection remain unchanged.
+/// 根据精确桌号键解析抛送面板的订单按钮，为每个已绑定目标维护不接收射线的自有填充克隆。
+/// 原生背景与选中图像只作为身份和几何证据；颜色脉冲写入自有克隆，不修改原生逻辑选择状态。
 /// </summary>
 internal static class RuntimeThrowDeliverOrderHighlightService
 {
@@ -54,6 +53,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
     private const float HealthCheckIntervalSeconds = 0.25f;
     private static readonly TimeSpan AttachRetryInterval = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan CaptureMaxAge = TimeSpan.FromHours(6);
+    // 元数据、目标发布和活动绑定分别同步；锁不替代 Unity 主线程与营业代次检查。
     private static readonly object PatchRoot = new();
     private static readonly object TargetRoot = new();
     private static readonly object BindingRoot = new();
@@ -117,6 +117,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         TryAttach(force: true);
     }
 
+    /// <summary>原子替换期望的托管目标集；实际 Unity 绑定和视觉更新由主线程后续协调。</summary>
     public static void UpdateTargets(RuntimeUiTargetSetSnapshot targetSet)
     {
         ArgumentNullException.ThrowIfNull(targetSet);
@@ -126,6 +127,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>在主线程驱动绑定健康检查和脉冲更新；失败进入不可用状态，不向游戏更新循环传播异常。</summary>
     public static void Tick()
     {
         TryAttach(force: false);
@@ -139,6 +141,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>暂停并撤销面板注册；仅在登记的 Unity 线程尝试销毁自有视觉，其他线程仅放弃引用。</summary>
     public static void Suspend(string reason)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
@@ -160,6 +163,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>清理旧注册后恢复等待状态；恢复本身不复用旧按钮，须等待后续有效面板打开证据。</summary>
     public static void Resume(string reason)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
@@ -182,6 +186,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>仅放弃托管绑定并暂停服务，不访问或销毁失去安全所有权的 Unity 视觉对象。</summary>
     public static void Abandon(string reason)
     {
         lock (BindingRoot)
@@ -193,6 +198,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>停止当前视觉服务并清理绑定；Hook 保留，后续回调由暂停状态阻止重新注册。</summary>
     public static void Dispose(string reason)
     {
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
@@ -212,6 +218,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>
+    /// 核对面板营业身份，剔除过期目标，再按节流周期重读按钮和视觉证据。
+    /// 每帧脉冲只复核自有视觉身份，较重的目录和布局校验采用独立健康检查周期。
+    /// </summary>
     private static void TickCore()
     {
         ActivePanelRegistration? panel;
@@ -302,6 +312,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             }
         }
 
+        // 同一轮待检查目标共享一次面板目录读取，仍逐目标按桌号和捕获身份建立证据链。
         if (pending.Count > 0)
         {
             if (!TryReadPanelDirectoryEvidence(panel.Panel, out var directory, out var directoryFailure))
@@ -338,6 +349,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>
+    /// 复核已有绑定的捕获生命周期、面板链及源图像身份；任一身份漂移即撤销该绑定。
+    /// 两个背景之间的启用状态切换允许重建克隆，背景或选中图像身份替换则要求重新绑定。
+    /// </summary>
     private static bool TryReconcileActiveTarget(
         ActivePanelRegistration panel,
         NightBusinessLifecycleSnapshot lifecycle,
@@ -420,6 +435,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return true;
     }
 
+    /// <summary>校验所需包装形状后安装打开/关闭 Hook；只有下一营业代次起才认为整个营业受完整覆盖。</summary>
     private static void TryAttach(bool force)
     {
         lock (PatchRoot)
@@ -461,6 +477,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                     && PatchedMethods.Contains(OpenPatchKey)
                     && PatchedMethods.Contains(ClosePatchKey))
                 {
+                    // 安装时可能已错过本轮面板事件，不能补推当前代次具备完整生命周期证据。
                     _firstCoveredBusinessGeneration = checked(RuntimeNightBusinessLifecycle.Generation + 1);
                 }
             }
@@ -481,6 +498,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>
+    /// 验证面板字典、按钮池、逻辑组、事件字段和图像访问器的具体类型与唯一签名。
+    /// 任一形状不符即停用适配，不按相似名称、组件顺序或可视文本猜测目标。
+    /// </summary>
     private static bool TryResolveExactMembers(
         Type panelType,
         out PanelMembers members,
@@ -776,6 +797,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>验证选中事件到持久监听列表的序列化成员链；这里只取得读取元数据，不触发事件或调用监听器。</summary>
     private static bool TryResolveSelectionEventSerializedMembers(
         Type uiLogicalUnitType,
         out PropertyInfo selectionUpdateEvent,
@@ -954,6 +976,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return true;
     }
 
+    // 参数、返回类型及实例性必须全部匹配且唯一；歧义返回 null，避免反射首项选择掩盖版本差异。
     private static MethodInfo? SingleMethod(
         IEnumerable<MethodInfo> methods,
         string name,
@@ -1052,6 +1075,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return matches.Length == 1 ? matches[0] : null;
     }
 
+    /// <summary>在原生面板重建前清理旧填充，并记录营业代次、线程和面板指针供后置回调比较。</summary>
     private static void BeforePanelOpen(object __instance, out PanelOpenEvidence? __state)
     {
         __state = null;
@@ -1100,6 +1124,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>仅注册前后身份一致且处于完整 Hook 覆盖代次的面板；随后从新建按钮目录解析目标。</summary>
     private static void AfterPanelOpen(object __instance, PanelOpenEvidence? __state)
     {
         lock (BindingRoot) _openPostfixes++;
@@ -1167,6 +1192,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>仅清理与关闭实例指针匹配的活动面板，防止其他面板关闭事件误撤销当前绑定。</summary>
     private static void BeforePanelClose(object __instance)
     {
         lock (BindingRoot) _closePrefixes++;
@@ -1210,6 +1236,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return targetSet.Targets.Any(target => target.OrderHighlightEnabled);
     }
 
+    /// <summary>
+    /// 读取有界按钮池及面板根对象身份，供同轮目标查询复用；字典数量只作范围预检。
+    /// 每个目标键对应的订单、控制器和逻辑单元仍需另行核对，不能凭池序号定位。
+    /// </summary>
     private static bool TryReadPanelDirectoryEvidence(
         object panel,
         out PanelDirectoryEvidence directory,
@@ -1299,6 +1329,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>以同一桌号键连接数据元组和逻辑单元，再验证按钮属于原生池且直接挂在按钮容器下。</summary>
     private static bool TryReadTargetPanelEvidence(
         PanelDirectoryEvidence directory,
         RuntimeUiTargetSnapshot target,
@@ -1381,6 +1412,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>核对具体元组形状、基类与具体订单共享的原生指针，以及订单/控制器桌号均等于字典键。</summary>
     private static bool TryReadDataTuple(
         object rawTuple,
         int targetDeskCode,
@@ -1446,6 +1478,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return true;
     }
 
+    /// <summary>通过逻辑组的精确键查询取得按钮；逻辑单元、GameObject 与根 RectTransform 须形成一致身份链。</summary>
     private static bool TryReadKeyedLogicalUnit(
         object group,
         int deskCode,
@@ -1512,6 +1545,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return true;
     }
 
+    /// <summary>完整读取有界按钮列表，拒绝失效对象和重复原生指针；部分可读池不作为绑定依据。</summary>
     private static bool TryReadPoolDirectory(
         object buttonList,
         out HashSet<nint> pointers,
@@ -1584,6 +1618,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         TickCore();
     }
 
+    /// <summary>
+    /// 将当前捕获订单与精确按钮证据交叉核验，然后创建视觉并再次检查目标版本后发布。
+    /// 单一按钮不能同时被不同目标身份占有；失败只影响本目标绑定，不改变游戏订单或逻辑选择。
+    /// </summary>
     private static void TryObserveTarget(
         ActivePanelRegistration panel,
         NightBusinessLifecycleSnapshot lifecycle,
@@ -1661,6 +1699,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             return;
         }
 
+        // 克隆创建期间目标可能更新；发布前复核版本，已过期的临时克隆立即进入回收路径。
         latestTargetSet = Volatile.Read(ref _desiredTargetSet);
         latestLifecycle = RuntimeNightBusinessLifecycle.Snapshot;
         if (latestTargetSet.Generation != targetSet.Generation
@@ -1735,6 +1774,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>
+    /// 由持久选中事件确认选中图像，再要求两个同几何背景的同级索引均小于选中图像，且恰有一个启用。
+    /// 自有克隆仅按已登记原生指针排除；名称、活动状态或相似外观均不能作为排除依据。
+    /// </summary>
     private static bool TryReadVisualSourceEvidence(
         PanelEvidence evidence,
         nint ownedOwnerPointerToExclude,
@@ -1913,6 +1956,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 return false;
             }
 
+            // 用原生图像指针稳定排列两份背景证据；当前启用项独立保存，避免启用切换被误判成身份交换。
             var ordered = backgrounds
                 .OrderBy(item => item.ImagePointer)
                 .ToArray();
@@ -1942,6 +1986,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>
+    /// 只读取唯一持久监听器的序列化目标和方法名，确认其指向按钮直接子项上的精确 Image 启用设置器。
+    /// 不执行该监听器，也不据此宣称验证了事件运行时的全部行为。
+    /// </summary>
     private static bool TryReadSelectionEventTarget(
         PanelEvidence evidence,
         PanelMembers members,
@@ -2117,6 +2165,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return true;
     }
 
+    /// <summary>
+    /// 要求叶节点恰由 RectTransform、CanvasRenderer 和 Image 三个精确组件组成。
+    /// 严格限制克隆源，避免复制未知脚本或子层级；同时记录精灵、材质及渲染类型用于后续复核。
+    /// </summary>
     private static bool TryReadExactLeafImage(
         GameObject owner,
         RectTransform rectTransform,
@@ -2292,6 +2344,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         return true;
     }
 
+    // 新增同级填充不能触发布局组重排原生内容；按钮存在 LayoutGroup 时拒绝建立视觉。
     private static bool TryValidateNoLayoutGroup(
         RectTransform button,
         Type layoutGroupType,
@@ -2335,6 +2388,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             && rect.height > 0f;
     }
 
+    // 比较此适配器明确使用的锚点、偏移、缩放和矩形；它不是完整 Transform 或屏幕像素等价证明。
     private static bool HasSameRectTransformGeometry(
         RectTransform left,
         RectTransform right)
@@ -2399,6 +2453,10 @@ internal static class RuntimeThrowDeliverOrderHighlightService
     private static string FormatFloat(float value) =>
         value.ToString("R", CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// 复制当前启用背景为自有叶图像，保留资源和几何，关闭射线并插入原生背景与选中图像之间。
+    /// 配置后再次验证形状和层级；只有成功输出后才转移克隆所有权，失败由 finally 清理临时对象。
+    /// </summary>
     private static bool TryCreateOwnedVisual(
         VisualSourceEvidence source,
         RuntimeUiTargetKinds claims,
@@ -2582,6 +2640,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>核对已登记自有视觉的 GameObject、Image 及归属指针，供后续颜色写入与回收使用，拒绝身份漂移的包装器。</summary>
     private static bool TryValidateOwnedVisualIdentity(
         OwnedFillVisual visual,
         out string failure)
@@ -2637,6 +2696,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>检查自有填充的身份、资源、父级、几何和层序；身份不安全时要求放弃引用，不能尝试销毁。</summary>
     private static bool TryValidateOwnedVisual(
         ActiveTargetBinding binding,
         VisualSourceEvidence source,
@@ -2752,6 +2812,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    // 每帧只向已验证身份的自有 Image 写颜色；原生背景启用状态和选中状态保持由游戏管理。
     private static bool TryApplyPulseLocked(
         ActiveTargetBinding binding,
         RuntimeTargetHighlightPalette palette,
@@ -2811,6 +2872,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>背景启用项切换时先回收旧克隆再创建新克隆；任一步失败均不继续保留旧视觉作为有效绑定。</summary>
     private static bool TryRebuildOwnedVisualLocked(
         ActiveTargetBinding binding,
         VisualSourceEvidence source,
@@ -2896,6 +2958,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>检查当前包装器及 Unity 缓存指针可用性；这是调用时检查，不提供跨帧存活保证。</summary>
     private static bool IsLiveUnityObject(object target)
     {
         try
@@ -2941,6 +3004,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         NextBindAttemptAt.Clear();
     }
 
+    // 先从活动表移除，再按调用方提供的线程/所有权条件销毁或放弃，确保后续更新不再写入旧绑定。
     private static void ClearActiveBindingLocked(
         string kind,
         bool destroyOwnedVisual,
@@ -3029,6 +3093,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             normalized);
     }
 
+    /// <summary>仅对身份可确认的自有克隆执行停用、脱离父级和延迟销毁；任一步身份丢失即停止原生写入。</summary>
     private static bool RetireOwnedVisual(
         OwnedFillVisual visual,
         string reason,
@@ -3097,6 +3162,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
+    /// <summary>只记录无法安全回收的自有视觉，不再访问对象；不保证已放弃对象已从场景移除。</summary>
     private static void AbandonOwnedVisual(
         OwnedFillVisual visual,
         string reason)
@@ -3106,6 +3172,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             $"Runtime throw-delivery target fill retired: mode=abandoned; reason={NormalizeStatus(reason)}; fill={FormatPointer(visual.OwnerPointer)}; image={FormatPointer(visual.ImagePointer)}.");
     }
 
+    // 按营业代次限制告警预算并按阶段/原因去重；反复失败仍更新状态，只减少重复日志。
     private static void TryLogBoundedFailure(
         string phase,
         string reason)
@@ -3212,7 +3279,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
         catch
         {
-            // Logging must never affect the observed game method.
+            // 日志异常不能传播到被观察的游戏方法。
         }
     }
 
@@ -3224,7 +3291,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
         catch
         {
-            // Logging must never affect the observed game method.
+            // 日志异常不能传播到被观察的游戏方法。
         }
     }
 
@@ -3390,12 +3457,13 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         public OwnedFillVisual? OwnedVisual { get; set; }
         public float NextHealthCheckAt { get; set; }
 
+        /// <summary>目标身份不变时接受新展示配置并推进目标版本；原生按钮及捕获生命周期仍由健康检查复核。</summary>
         public bool HasSameTarget(
             RuntimeUiTargetSetSnapshot targetSet,
             RuntimeUiTargetSnapshot target)
         {
-            // 配方、送达状态及颜色更新不改变投掷送餐按钮的几何；精确订单身份仍须一致。
-            // 发布时重新核验原生 panel/button 绑定，每帧继续沿用既有身份与健康检查。
+            // 配方、送达状态及颜色更新允许复用相同目标身份；此处只比较托管身份并更新展示版本。
+            // 原生面板、按钮和订单生命周期由后续健康检查按周期复核，此方法本身不读取它们。
             if (targetSet.SessionGeneration != BusinessGeneration
                 || Target.IdentityKey != target.IdentityKey || Target.DeskCode != target.DeskCode
                 || !target.OrderHighlightEnabled)

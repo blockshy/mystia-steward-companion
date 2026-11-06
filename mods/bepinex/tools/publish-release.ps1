@@ -1174,6 +1174,9 @@ function Assert-MystiaPreparedMetadata {
     }
 }
 
+# 真实远端写入入口：依次创建精确标签、草稿、上传资产，再复核并发布。
+# 每阶段按同一 Release ID 和目标提交回读，流程中断时不自动删除远端证据或重建同名发布。
+# 这里的事务是经验证的分阶段流程，并不提供 GitHub 多资源写入的原子回滚。
 function Invoke-MystiaReleasePublicationTransaction {
     param(
         [Parameter(Mandatory = $true)][string]$Gh,

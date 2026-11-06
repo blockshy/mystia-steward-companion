@@ -2580,6 +2580,7 @@ static void VerifyTargetUpdatePreservesForceTotals()
     AssertEqual(forcesBeforeUpdate, ReadForcedTotal("recipe"), "Target update reset the process force total.");
 }
 
+// 在独立工作线程建立作用域，检查线程局部状态不会覆盖调用线程的选择上下文。
 static void VerifyThreadLocalScopeIsolation()
 {
     PublishRareTarget(
@@ -2641,6 +2642,8 @@ static void VerifyThreadLocalScopeIsolation()
     AssertTrue(workerMatched, "Worker cooking scope did not match its recipe target.");
 }
 
+// 刷新作用域开始后发布新目标，当前刷新仍应使用原快照；下一作用域才切换到新版本。
+// 这样同一次原生列表遍历不会混合两代目标的置顶判断。
 static void VerifyScopePinsOneTargetSnapshot()
 {
     PublishRareTarget(

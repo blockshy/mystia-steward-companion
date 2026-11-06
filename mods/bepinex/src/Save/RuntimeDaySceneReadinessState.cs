@@ -23,6 +23,8 @@ internal readonly record struct RuntimeDaySceneFinishToken(
     long Generation,
     nint ActionPointer);
 
+/// <summary>以日间进入及地图调度动作的精确回调推进可读状态，避免用固定等待时间猜测场景已就绪。</summary>
+/// <remarks>完成令牌只保存代次和原生指针值；调用方负责在主线程按实际回调顺序驱动本状态机。</remarks>
 internal sealed class RuntimeDaySceneReadinessState
 {
     private bool _panelOpen;
@@ -82,6 +84,7 @@ internal sealed class RuntimeDaySceneReadinessState
         Touch("RunTimeScheduler.OnEnterDayScene action captured");
     }
 
+    /// <summary>离开首次进入的调用作用域；手工工作返回且未产生调度动作时，使用明确的无动作完成路径。</summary>
     public void EndFirstEnter()
     {
         if (_firstEnterDepth <= 0) return;
@@ -160,6 +163,7 @@ internal sealed class RuntimeDaySceneReadinessState
         Touch("RunTimeScheduler.OnEnterDaySceneMap action captured");
     }
 
+    /// <summary>仅当前代次、当前地图动作的完成回调可置为就绪，旧动作回执不会恢复新场景的可读状态。</summary>
     public void CompleteSchedulerFinish(RuntimeDaySceneFinishToken token)
     {
         if (token.Kind != RuntimeDaySceneFinishKind.EnterDayMap
@@ -175,6 +179,7 @@ internal sealed class RuntimeDaySceneReadinessState
         Touch("RunTimeScheduler.OnEnterDaySceneMap action completed");
     }
 
+    /// <summary>就绪阶段之外仍复核管理器身份及所有切场景/事件门禁，防止已就绪状态在新动作开始后继续放行。</summary>
     public bool CanRead(
         nint currentManagerPointer,
         bool isMapSwapping,

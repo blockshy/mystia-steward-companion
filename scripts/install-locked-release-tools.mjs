@@ -241,6 +241,10 @@ function assertInstallDestination(destination) {
   }
 }
 
+/**
+ * 流式计数并计算摘要，超过锁定大小立即中止；响应长度、落盘长度和 SHA-256 均须一致。
+ * 下载结果在调用方验证成功后才用于解压，不能仅凭 HTTP 成功状态信任归档内容。
+ */
 async function downloadVerifiedArchive(record, destination) {
   let outputCreated = false;
   try {
@@ -284,6 +288,7 @@ async function downloadVerifiedArchive(record, destination) {
   }
 }
 
+/** 将初始请求及每次重定向限制在明确的 GitHub HTTPS 主机集合，并限制跳转次数。 */
 function requestArchive(url, redirects) {
   if (redirects > 5) fail('Release-tool archive download exceeded the HTTPS redirect limit.');
   const parsed = new URL(url);
@@ -394,6 +399,7 @@ function writeGitHubPath(directories) {
   appendFileSync(githubPath, `${directories.join('\n')}\n`, { encoding: 'utf8' });
 }
 
+/** 清理调用方已取得所有权的任务目录；收集清理异常供统一报告，避免掩盖最初的安装失败。 */
 function removeOwnedDirectory(directory, label, errors) {
   try {
     rmSync(directory, {

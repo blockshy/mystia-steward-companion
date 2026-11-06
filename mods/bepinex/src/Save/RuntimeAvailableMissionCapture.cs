@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>从完整采集值推导可触发任务，合并来源并排除全部活动任务及已完成的非循环任务，不访问游戏对象。</summary>
 internal static class RuntimeAvailableMissionCapture
 {
     public const string EligibleDisposition = "eligible";
@@ -74,6 +75,7 @@ internal static class RuntimeAvailableMissionCapture
                     sameMission = new List<RuntimeAvailableMissionCandidate>();
                     candidatesByMission.Add(candidate.MissionLabel, sameMission);
                 }
+                // 同任务的不同触发来源可以合并，但定义、状态或展示元数据冲突表示采集不一致。
                 else if (!HasCompatibleMissionMetadata(
                     sameMission[0],
                     candidate))
@@ -231,8 +233,8 @@ internal static class RuntimeAvailableMissionCapture
                     candidate.SourceEventLabel,
                     StringComparison.Ordinal))
             {
-                // FinishNodeExtern adds the source event to finishedEvents before
-                // FinishSchedulerNodePost starts postMissionsAfterPerformance.
+                // 原生 FinishNodeExtern 先将来源事件加入完成集，再由 FinishSchedulerNodePost
+                // 启动演出后任务，因此这里不要求当前采集快照已包含该来源事件的完成记录。
                 continue;
             }
             if (!finishedEvents.Contains(preNode)

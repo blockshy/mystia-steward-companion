@@ -10,6 +10,7 @@ internal static class BepInExConsoleWindow
         new(new WindowsBepInExConsoleRuntime());
 }
 
+/// <summary>封装 BepInEx 控制台与 Win32 窗口操作，供可测试的可见性服务调用。</summary>
 internal sealed class WindowsBepInExConsoleRuntime : IBepInExConsoleRuntime
 {
     private const int ShowWindowHide = 0;
@@ -39,6 +40,7 @@ internal sealed class WindowsBepInExConsoleRuntime : IBepInExConsoleRuntime
         ConsoleManager.CreateConsole();
     }
 
+    /// <summary>移除控制台系统菜单的关闭命令，避免将隐藏日志窗口误操作为关闭宿主进程。</summary>
     public void DisableCloseCommand()
     {
         EnsureSupported();
@@ -68,6 +70,7 @@ internal sealed class WindowsBepInExConsoleRuntime : IBepInExConsoleRuntime
         DrawMenuBar(window);
     }
 
+    /// <summary>在全局监听器锁内按类型去重，防止重复显示控制台时重复输出同一日志。</summary>
     public void EnsureLogListener()
     {
         EnsureSupported();

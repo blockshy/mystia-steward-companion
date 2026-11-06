@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 离线分析入口要求显式游戏根与空输出根；工具归档按锁定摘要验证后使用。
+# 本脚本会下载工具并生成分析数据库，输出存在不代表各阶段已通过，应查看最终报告和退出码。
 set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -98,6 +100,7 @@ verify_sha256() {
   }
 }
 
+# 仅将摘要校验通过的下载副本提升为正式工具归档，失败的 partial 保留供排查。
 download_verified() {
   local url=$1
   local destination=$2

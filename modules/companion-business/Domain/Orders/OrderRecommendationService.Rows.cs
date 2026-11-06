@@ -21,6 +21,8 @@ public static partial class OrderRecommendationService
             && (Bool(c[food ? "meetsRequiredFood" : "meetsRequiredBeverage"]) || Count(c, food ? "matchedPositiveTags" : "matchedTags") > 0 || food && Bool(c["customRecipe"]) || PinRank(c, sort, food) > 0)).ToArray();
         var normalized = RecommendationEngine.NormalizeSortProfile(profile as JsonObject); var objectives = Objects(normalized["objectives"]).ToArray();
         var ranges = objectives.ToDictionary(x => Str(x["key"]), x => display.Length == 0 ? (Min: 0d, Max: 0d) : (Min: display.Min(c => Objective(c, Str(x["key"]), food)), Max: display.Max(c => Objective(c, Str(x["key"]), food))));
+        // 各排序指标先在本次可展示集合内归一化，避免价格、数量等不同量纲直接相加。
+        // 全部候选取值相同的指标不提供区分能力，跳过它也避免零分母。
         double Score(JsonObject c)
         {
             double total = 0;
@@ -84,6 +86,7 @@ public static partial class OrderRecommendationService
         "resourcePressure" => Num(c["resourcePressure"]), "totalCost" => Num(c["baseCost"]) + Num(c["extraCost"]), "profit" => Field(c, "recipe", "price") - Num(c["baseCost"]) - Num(c["extraCost"]), _ => 0
     } : key switch { "beveragePreference" => Count(c, "matchedTags"), "profit" => Field(c, "beverage", "price"), "beverageStock" => StockRank(c), _ => 0 };
     private static double RowLimit(double value) => double.IsFinite(value) ? Math.Max(0, Math.Truncate(value)) : double.PositiveInfinity;
+    /// <summary>复制展示所需的料理与自定义配方字段，使列表行不共享候选节点的 JSON 父级所有权。</summary>
     public static JsonObject FoodRow(JsonObject food)
     {
         var result = Object(("recipe", food["recipe"]), ("extraIngredients", food["extraIngredients"]));
@@ -91,6 +94,10 @@ public static partial class OrderRecommendationService
         result["allTags"] = Clone(food["activeTags"]); result["cancelledTags"] = Clone(food["suppressedTags"]); result["meetsRequiredFood"] = Clone(food["meetsRequiredFood"]); result["baseCost"] = Clone(food["baseCost"]); result["extraCost"] = Clone(food["extraCost"]); return result;
     }
     private static JsonObject BeverageRow(JsonObject beverage) => Object(("beverage", beverage["beverage"]), ("meetsRequiredBev", beverage["meetsRequiredBeverage"]), ("matchedTags", beverage["matchedTags"]));
+    /// <summary>
+    /// 将已选主方案投影到列表首位，并重新应用总数和同配方变体上限。
+    /// 此处只协调展示顺序，不重新选择执行方案；被阻塞的方案不获得置顶资格。
+    /// </summary>
     private static void ProjectPrimary(ref JsonObject[] foods, ref JsonObject[] beverages, JsonObject? plan, double limit, double variants, JsonObject sort)
     {
         if (plan == null || Str(plan["bucket"]) == "blocked") return;

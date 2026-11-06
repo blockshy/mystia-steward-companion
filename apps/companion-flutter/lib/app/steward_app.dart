@@ -30,6 +30,8 @@ final workbenchProvider = Provider<WorkbenchModel>(
   (ref) => throw StateError('应用未注入工作台。'),
 );
 
+/// 组合工作台主题、字号、资源就绪门禁和页面外壳；会话及平台资源由注入模型持有。
+/// 资源初始化期间替换可交互导航树，避免旧弹窗在资源身份变化后继续提交操作。
 class StewardApp extends ConsumerStatefulWidget {
   const StewardApp({this.previewControls, super.key});
 

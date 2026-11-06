@@ -5,6 +5,10 @@ using static MystiaStewardCompanion.Save.RuntimeReflectionUtility;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 在主线程采集稀客名单和订单，使用已缓存的静态目录投影名称与标签。
+/// 正式订单仅接受生命周期捕获来源；服务面板和 HUD 的反射结果只用于诊断。
+/// </summary>
 internal sealed class NightBusinessReflectionProvider
 {
     private static readonly TimeSpan RuntimeCapturedOrderMaxAge = TimeSpan.FromHours(6);
@@ -52,6 +56,10 @@ internal sealed class NightBusinessReflectionProvider
         _sceneName = sceneName;
     }
 
+    /// <summary>
+    /// 开始一次采集，分别维护名单和订单的完整性；部分来源失败仍可返回已确认数据及错误原因。
+    /// 帧内读取缓存每次清空，不以旧帧身份或展示条目补造当前活动控制器。
+    /// </summary>
     public NightBusinessContext LoadContext()
     {
         _performanceMs.Clear();
@@ -191,6 +199,7 @@ internal sealed class NightBusinessReflectionProvider
             errors.Add("稀客订单生命周期 Hook 尚未完整就绪，本轮读取已停止。");
         }
 
+        // 去重导致数量缩减也不能报告订单完整，避免用被合并的捕获项证明旧订单已消失。
         var activeOrders = Measure("deduplicate.orders", () => DeduplicateOrders(orders));
         var placeIdentity = Measure("place.identity", ReadCurrentPlaceIdentity);
         var place = placeIdentity.Place;
@@ -387,6 +396,7 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
+    /// <summary>根据管理成员的已知集合种类严格读取；管理器缺失或集合不可读均作为未知名单失败。</summary>
     private IReadOnlyList<object?> ReadManagerControllers(string memberName)
     {
         var manager = FindGuestsManager();
@@ -421,6 +431,10 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
+    /// <summary>
+    /// 先确认控制器客人种类，再读取身份与资金；明确的普客被正常排除，未知种类则降级名单完整性。
+    /// 资金等可选字段不可读时保留 null，不据此把已确认稀客从名单删除。
+    /// </summary>
     private NightBusinessGuest? ReadRareGuest(object? controller, string source)
     {
         var kind = RuntimeRareGuestReader.Resolve(controller, out var readableController, out var guest, out var reason);
@@ -457,6 +471,10 @@ internal sealed class NightBusinessReflectionProvider
         return result;
     }
 
+    /// <summary>
+    /// 解析诊断来源的稀客订单，要求具体订单类型、原始标签 ID 及运行时标签映射均可确认。
+    /// 此方法生成的诊断 DTO 不会替代正式捕获列表；自动化字段仍须受活动生命周期约束。
+    /// </summary>
     private NightBusinessOrder? ReadOrder(object? order, object? controller, string source)
     {
         if (order == null)
@@ -629,6 +647,10 @@ internal sealed class NightBusinessReflectionProvider
         return queued == null ? "queue=missing" : $"queue={CountObjects(queued)}";
     }
 
+    /// <summary>
+    /// 逐项复核捕获订单的活动生命周期并映射原始标签 ID；身份过期或标签未知的项不发布。
+    /// 外层以接受数量核对捕获数量，因此跳过项会保留“不完整”，不会被解释为已确认消失。
+    /// </summary>
     private IEnumerable<NightBusinessOrder> ReadRuntimeCapturedOrders(
         IReadOnlyList<CapturedRuntimeSpecialOrder> capturedOrders,
         IReadOnlyList<NightBusinessGuest> activeGuests)
@@ -642,6 +664,7 @@ internal sealed class NightBusinessReflectionProvider
                 continue;
             }
 
+            // 名单匹配仅补充展示与资金信息；是否仍为同一活动订单由下方精确生命周期复核决定。
             var activeGuest = FindActiveGuestForCapturedOrder(captured, activeGuests);
             if (!TryReadActiveOrderLifecycle(
                     captured.OrderObject,
@@ -714,6 +737,10 @@ internal sealed class NightBusinessReflectionProvider
         }
     }
 
+    /// <summary>
+    /// 在兼容桌号内优先按已知 ID/名称寻找展示信息，最后仅接受该桌唯一客人。
+    /// 这是信息关联策略，不是执行目标绑定；未知桌号也不能单独支持按桌回退。
+    /// </summary>
     private NightBusinessGuest? FindActiveGuestForCapturedOrder(
         CapturedRuntimeSpecialOrder captured,
         IReadOnlyList<NightBusinessGuest> activeGuests)
@@ -762,6 +789,7 @@ internal sealed class NightBusinessReflectionProvider
         return ResolveRareCustomerIdentity(guestId, fallback)?.Name ?? fallback;
     }
 
+    /// <summary>按营业代次、订单种类及两端原生指针查询活动序号，并复核营业代次未在读取期间改变。</summary>
     private static bool TryReadActiveOrderLifecycle(
         object? order,
         object? controller,
@@ -803,6 +831,10 @@ internal sealed class NightBusinessReflectionProvider
         return guestDeskCode >= 0 && orderDeskCode == guestDeskCode;
     }
 
+    /// <summary>
+    /// 按生命周期、桌号、运行时客人和原始标签身份去重；同键选择展示信息更完整的候选。
+    /// 合并观察时间与免费标志不改变原始身份，也不授予新的自动化权限。
+    /// </summary>
     private static List<NightBusinessOrder> DeduplicateOrders(IEnumerable<NightBusinessOrder> orders)
     {
         var bySlot = new Dictionary<string, NightBusinessOrder>(StringComparer.Ordinal);
@@ -903,6 +935,7 @@ internal sealed class NightBusinessReflectionProvider
         return left.Value >= right.Value ? left : right;
     }
 
+    // 仅决定重复展示项的取舍；此分数不是读取完整性证明，也不是业务推荐评分。
     private static int GetOrderCompletenessScore(NightBusinessOrder order)
     {
         var score = 0;
@@ -934,6 +967,7 @@ internal sealed class NightBusinessReflectionProvider
         return false;
     }
 
+    /// <summary>按桌号与显示身份合并重复名单项，保留资金信息较丰富的整项，而非跨来源拼接字段。</summary>
     private static List<NightBusinessGuest> DeduplicateGuests(IEnumerable<NightBusinessGuest> guests)
     {
         var result = new List<NightBusinessGuest>();
@@ -981,6 +1015,10 @@ internal sealed class NightBusinessReflectionProvider
         return IsSpecialGuestObject(guest) || ResolveOrderingGuestRareCustomerIdentity(guest, allowOrderingGuestId) != null;
     }
 
+    /// <summary>
+    /// 普通包装器优先使用来源客人 ID 或字符串身份映射；纯数字 ID 回退须由明确上下文允许。
+    /// 避免默认把不同客人种类中重号的数字 ID 当成稀客身份。
+    /// </summary>
     private RareCustomerIdentity? ResolveOrderingGuestRareCustomerIdentity(object? guest, bool allowIdOnly = false)
     {
         if (guest == null) return null;
@@ -1026,6 +1064,7 @@ internal sealed class NightBusinessReflectionProvider
         return ResolveCachedMappedGuestIdentity(guestId, runtimeStringId);
     }
 
+    // 只消费本次注入的映射快照，不在热点路径重新扫描目录；缺少本地稀客映射时保留未知。
     private RareCustomerIdentity? ResolveCachedMappedGuestIdentity(int? guestId, string? runtimeStringId)
     {
         if (_mappedGuestSnapshot == null) return null;
@@ -1079,6 +1118,7 @@ internal sealed class NightBusinessReflectionProvider
         return ToNullableInt(GetMemberValue(guest, "SourceGuestID") ?? GetMemberValue(guest, "SourceGuestId"));
     }
 
+    /// <summary>仅在启用诊断且未达到上限时构建候选详情，避免常规采集承担额外反射开销。</summary>
     private void RecordCandidate(string kind, string source, bool accepted, string reason, Func<string>? detailsFactory)
     {
         if (_candidateDiagnostics == null) return;

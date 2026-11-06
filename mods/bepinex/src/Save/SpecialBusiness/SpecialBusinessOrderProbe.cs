@@ -1,5 +1,7 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>汇总客人编号与描述文本供部分挑战分类使用；文本别名命中不是精确的运行时对象身份。</summary>
+/// <remarks>执行写入不得仅凭本探测结果认领对象，必须继续经过各挑战的订单、控制器及生命周期校验。</remarks>
 internal sealed record SpecialBusinessOrderProbe(int? Id, string Text)
 {
     public static SpecialBusinessOrderProbe Read(object? order, object? controller)
@@ -23,6 +25,7 @@ internal sealed record SpecialBusinessOrderProbe(int? Id, string Text)
         return new SpecialBusinessOrderProbe(id, string.Join(" ", textParts.Where(part => part.Length > 0)));
     }
 
+    /// <summary>先比较编号，再检查文本别名；即使存在不同编号，也仍会尝试别名匹配。</summary>
     public bool IsGuest(int id, params string[] aliases)
     {
         if (Id == id) return true;

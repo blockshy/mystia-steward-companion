@@ -70,6 +70,7 @@ assert.doesNotMatch(sourceScript, /\bfetch\s*\(/u);
 assert.doesNotMatch(sourceScript, /\bgh\b.*release/u);
 assert.doesNotMatch(sourceScript, /base64/iu);
 
+// 正式锁只作为结构与来源约束；恢复事务使用人工字节生成的 ZIP，不加载这些伪程序集。
 const fixtureRoot = mkdtempSync(path.join(os.tmpdir(), 'mystia-build-references-audit-'));
 try {
   const contents = new Map(requiredReferenceNames.map((name, index) => [
@@ -117,6 +118,7 @@ try {
   mkdirSync(hashDriftPath);
   for (const [name, content] of contents) writeFileSync(path.join(hashDriftPath, name), content);
   const firstName = requiredReferenceNames[0];
+  // 保持长度不变而修改内容，确保校验不会用文件大小代替摘要验证。
   const sameSizeDrift = Buffer.from(contents.get(firstName));
   sameSizeDrift[0] ^= 0xff;
   writeFileSync(path.join(hashDriftPath, firstName), sameSizeDrift);
@@ -204,6 +206,7 @@ try {
     /SHA-256 mismatch/u,
   );
 
+  // 遗留暂存目录表明上一事务状态不明；再次恢复必须停止，不得擅自覆盖以掩盖证据。
   const pendingOutputPath = path.join(fixtureRoot, 'pending-output');
   mkdirSync(pendingOutputPath);
   mkdirSync(path.join(pendingOutputPath, '.reference-restore-stage-orphan'));

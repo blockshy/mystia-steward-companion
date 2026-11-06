@@ -3,6 +3,8 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>格式化已采集的经营诊断快照，分别保留原始、接受及最终订单集合，便于定位筛选边界。</summary>
+/// <remarks>明细按类别限制输出条数，标题计数仍为完整数量；截断日志不能用于推断其余条目不存在。</remarks>
 internal static class NightBusinessDiagnosticFormatter
 {
     public static string Format(NightBusinessDiagnosticSnapshot snapshot)

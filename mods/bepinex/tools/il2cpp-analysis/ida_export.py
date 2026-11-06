@@ -202,6 +202,8 @@ def export_names(output_dir: str, image_base: int) -> int:
     return count
 
 
+# 每个函数优先导出伪代码，失败则保留汇编后备及失败原因；后备成功不增加伪代码成功数。
+# 调用关系来自 IDA 当前交叉引用，无法单靠此表覆盖运行时动态分派或证明全部控制流。
 def export_functions(
     output_dir: str,
     image_base: int,

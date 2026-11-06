@@ -15,7 +15,7 @@ public static partial class RecommendationEngine
         ["simple"] = new[] { 50, 45, 90, 100, 45, 45, 25, 40 }
     };
 
-    /// <summary>归一化 main 基线的八项目标；未知字段丢弃，相同 key 的最后一项覆盖前项。</summary>
+    /// <summary>按协议规定的八项目标归一化排序配置；未知字段丢弃，相同 key 的最后一项覆盖前项。</summary>
     public static JsonObject NormalizeSortProfile(JsonObject? value)
     {
         value ??= new JsonObject(); var preset = Str(value["preset"], "balanced");
@@ -74,6 +74,8 @@ public static partial class RecommendationEngine
             return left["beverage"] is JsonObject leftDrink && right["beverage"] is JsonObject rightDrink ? CompareBeverageCandidates(leftDrink, rightDrink) : 0;
         }));
     }
+    /// <summary>读取排序使用的候选指标；成本只统计料理基础材料与加料，利润指标再加酒水售价。</summary>
+    /// <remarks>这些指标用于方案间比较，不是原生结算账目；酒水存量为 -1 时按无限库存的排序值处理。</remarks>
     private static double ObjectiveValue(JsonObject plan, string key)
     {
         var food = Obj(plan["food"]); var drink = Obj(plan["beverage"]);
@@ -90,6 +92,11 @@ public static partial class RecommendationEngine
             _ => 0
         };
     }
+    /// <summary>在本次候选集的各指标范围内归一化，再按启用项的方向和权重求和。</summary>
+    /// <remarks>
+    /// 所有候选在某项取值相同时，该项没有区分能力，贡献为零。分数依赖本次候选范围，
+    /// 不能跨请求直接比较；置顶、分桶、警告和特殊经营比较均先于此分数生效。
+    /// </remarks>
     private static double PlanScore(JsonObject plan, JsonObject profile, Dictionary<string, (double Min, double Max)> ranges)
     {
         double score = 0;
@@ -102,6 +109,7 @@ public static partial class RecommendationEngine
         }
         return score;
     }
+    /// <summary>取方案满足的最高置顶等级，而非累加多个来源；阻断方案不获得置顶等级。</summary>
     private static int PinRank(JsonObject plan, JsonObject context)
     {
         if (Str(plan["bucket"]) == "blocked") return 0;
@@ -164,6 +172,11 @@ public static partial class RecommendationEngine
         var sustainable = IsKoishiFeedPlanSustainable(Object(("estimatedPrice", price), ("estimatedFeedScore", feed), ("remainingBudget", budget), ("remainingScore", score), ("remainingOrderCount", remainingOrders)));
         return Object(("feedScore", feed), ("efficiency", Round(feed * 1000000 / Math.Max(1, price))), ("sustainable", sustainable), ("completesTarget", feed >= score), ("meetsAttemptFloor", floor));
     }
+    /// <summary>在剩余目标与双方预算资料都可用时，优先比较可持续性、能否完成及单次最低目标。</summary>
+    /// <remarks>
+    /// 任一方缺少预算评估时返回平局，交回外层等级与偏好比较。双方均可持续时先比较预计得分，
+    /// 再以效率和价格消除平局；这些领域估计不替代游戏最终评价或实际扣款结果。
+    /// </remarks>
     private static int CompareKoishiBudget(JsonObject left, JsonObject right, JsonObject context)
     {
         var score = PositiveInt(context["specialKoishiRemainingScore"]); if (score is null) return 0;

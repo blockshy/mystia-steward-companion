@@ -27,6 +27,8 @@ if (!/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(expectedIntegrity ?? '')) {
 }
 
 assertInstallDestination(installRoot);
+// 下载使用当前 Node 随附的 npm，禁用包脚本；只有整包 SHA-512 与根锁一致才进入安装阶段。
+// 安装暂存目录与目标同级，验证后改名并再次验证；既有安装目录由前置检查拒绝覆盖。
 const stagingRoot = mkdtempSync(path.join(os.tmpdir(), 'mystia-corepack-'));
 const transactionRoot = path.join(
   path.dirname(installRoot),
@@ -120,6 +122,7 @@ function assertInstallDestination(destination) {
   }
 }
 
+/** 核对包版本、入口映射和平台启动器，再执行已验证包的版本查询；不以 PATH 中同名工具替代。 */
 function assertInstalledCorepack(root) {
   const packageRoot = process.platform === 'win32'
     ? path.join(root, 'node_modules', 'corepack')
@@ -167,6 +170,7 @@ function getCorepackPathDirectory(root) {
   return process.platform === 'win32' ? root : path.join(root, 'bin');
 }
 
+/** 从当前 Node 可执行文件定位随附 npm，使安装过程不依赖用户 PATH 中另一套 npm。 */
 function resolveBundledNpmCli() {
   const nodeDirectory = path.dirname(process.execPath);
   const candidate = process.platform === 'win32'

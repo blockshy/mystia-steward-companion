@@ -1,5 +1,7 @@
 namespace MystiaStewardCompanion.LocalApi;
 
+/// <summary>限制同时处理的连接资源数量；达到上限或停止接收时直接释放新资源，不建立无界等待队列。</summary>
+/// <remarks>每次分派应提供独立资源，且 Dispose 须允许重复调用；停止接收与处理器退出都可能触发释放。</remarks>
 internal sealed class BoundedHandlerPool<TResource>
     where TResource : class, IDisposable
 {
@@ -66,6 +68,7 @@ internal sealed class BoundedHandlerPool<TResource>
         return false;
     }
 
+    /// <summary>停止接收并释放当前资源以中断阻塞 I/O；是否已全部退出须另外通过 WaitForIdle 确认。</summary>
     public void StopAccepting()
     {
         TResource[] activeResources;
@@ -127,7 +130,7 @@ internal sealed class BoundedHandlerPool<TResource>
         }
         catch
         {
-            // Handler cleanup must finish even if the diagnostic callback fails.
+            // 诊断回调自身失败也必须继续资源清理，不能遗留活跃计数导致停机一直等待。
         }
     }
 

@@ -7,6 +7,7 @@ internal sealed record RuntimeAvailableMissionTriggerClassification(
     string SourceTiming,
     string ActivationHint);
 
+/// <summary>将已验证的调度来源映射为客户端触发提示，只接纳地图进入、日间进入及羁绊检查点三类触发器。</summary>
 internal static class RuntimeAvailableMissionTriggerClassifier
 {
     public const int OnEnterDaySceneMapTrigger = 0;
@@ -54,6 +55,7 @@ internal static class RuntimeAvailableMissionTriggerClassifier
             return false;
         }
 
+        // 已观察到演出后的待启动过渡时，展示“触发中”；普通排程仍必须具有 eligible 资格证据。
         var transitionObserved = string.Equals(
             sourcePhase,
             WaitingAfterPerformancePhase,
@@ -100,6 +102,7 @@ internal static class RuntimeAvailableMissionTriggerClassifier
         return true;
     }
 
+    /// <summary>合并同一任务的多个有效来源；任一来源已进入过渡时优先显示触发中，其余分歧保留为 multiple。</summary>
     public static RuntimeAvailableMissionTriggerClassification Merge(
         IReadOnlyList<RuntimeAvailableMissionTriggerClassification> sources)
     {

@@ -19,6 +19,8 @@ class AutomationLeaseController {
   Future<void> _tail = Future<void>.value();
   Timer? _timer;
   Stopwatch? _deadline;
+
+  /// 以本地单调时钟保守判断租约；服务端旧响应不能跨越权威修订或本地到期时间恢复许可。
   bool get owned =>
       _enabled &&
       error == null &&
@@ -27,6 +29,8 @@ class AutomationLeaseController {
       _deadline != null &&
       _deadline!.elapsedMilliseconds < lease!.ttlMs;
 
+  /// 更换权威修订前先串行释放旧租约。意图序号保护等待期间发生的停用或再次启用，
+  /// 运行代次则隔离已发送续约的迟到响应；两者分别约束用户意图与网络完成顺序。
   Future<void> enable(int revision) async {
     if (revision <= 0) throw StateError('不能用空权限版本获取租约。');
     if (_enabled && _revision == revision) return;
@@ -38,6 +42,7 @@ class AutomationLeaseController {
     final generation = ++_generation;
     Future<void> renew() => _enqueue(() async {
       if (!_enabled || generation != _generation) return;
+      // 从发送前开始计时，把网络耗时计入 TTL，避免收到迟到响应后额外延长本地许可。
       final clock = Stopwatch()..start();
       try {
         final next = await api.acquireLease(revision);
@@ -68,6 +73,7 @@ class AutomationLeaseController {
 
   bool _renewing = false;
 
+  /// 立即撤销本地可执行状态，再等待串行释放完成；释放失败仍保持禁用并保留错误。
   Future<void> disable() => _disable(cancelPendingEnable: true);
   Future<void> _disable({required bool cancelPendingEnable}) {
     if (cancelPendingEnable) ++_intent;
@@ -92,6 +98,7 @@ class AutomationLeaseController {
     });
   }
 
+  /// 队列尾部吸收异常仅为保证后续释放仍可运行；返回的 next 保留本次操作的失败语义。
   Future<void> _enqueue(Future<void> Function() operation) {
     final next = _tail.then((_) => operation());
     _tail = next.catchError((Object _) {});

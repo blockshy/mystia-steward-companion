@@ -16,6 +16,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 尚未执行的请求超时后必须失去执行资格，避免调用方已放弃而主线程随后产生副作用。
 static void VerifyQueuedTimeoutCancelsExecution()
 {
     using var command = new TestCommand();
@@ -31,6 +32,8 @@ static void VerifyQueuedTimeoutCancelsExecution()
     AssertEqual(false, command.TryBegin(), "A timed-out queued command could still begin.");
 }
 
+// 请求进入执行态后等待确定结果；超时值不能把已开始执行的命令伪装成未执行。
+// 此处延迟只安排隔离测试的线程时序，不模拟游戏帧率或原生动作完成时间。
 static void VerifyRunningCommandReturnsDefinitiveResult()
 {
     using var command = new TestCommand();
@@ -73,6 +76,7 @@ static void VerifyFailurePropagation()
     }
 }
 
+// 用事件明确控制临界区边界，验证代次切换在旧命令结束后才发布并取消剩余队列。
 static void VerifyEpochAdvanceWaitsForRunningCommand()
 {
     var fence = new AutomationCommandEpochFence(initialEpoch: 4);

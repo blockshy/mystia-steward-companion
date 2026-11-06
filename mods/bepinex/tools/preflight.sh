@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 只验证根锁指定的 SDK 和引用摘要；成功不表示已构建或已在真实游戏中验证。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

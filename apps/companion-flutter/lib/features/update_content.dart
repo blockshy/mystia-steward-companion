@@ -40,6 +40,8 @@ String updateStateLabel(DataMap state) {
       '尚未检查';
 }
 
+/// 未知但非空的安装阶段保守视为处理中，只有明确终态才恢复可重复操作的入口。
+/// 这是客户端交互门禁，安装是否可执行仍由服务端和独立更新程序检查。
 bool updateIsBusy(DataMap state) {
   final install = label(state['installState'], '');
   return state['state'] == 'checking' ||

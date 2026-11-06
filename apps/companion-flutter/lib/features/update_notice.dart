@@ -25,6 +25,7 @@ class UpdateReminder {
         state == 'failed';
     final latest = label(status['latestVersion'], '');
     if (!failed && (status['hasUpdate'] != true || latest.isEmpty)) return null;
+    // 暂缓标识同时绑定服务端地址、当前版本与目标版本，防止切换电脑后沿用另一端的选择。
     final scope = '${model.endpoint}|${status['currentVersion']}|$latest';
     final deferred = object(model.localPreferences['updateReminderDeferred']);
     final until = DateTime.tryParse(label(deferred['untilUtc'], ''));

@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>在怪诞挑战内区分分身、本体和一般目标订单；本体分类还要求第三阶段及手动订单/控制器证据。</summary>
 internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrderModule
 {
     private const int KoishiBossGuestId = 2006;
@@ -18,6 +19,7 @@ internal sealed class WackyCookingCompetitionOrderModule : ISpecialBusinessOrder
         var guest = SpecialBusinessOrderProbe.Read(order, controller);
         SpecialBusinessOrderClassification classification;
         var reason = "";
+        // 分身优先于角色名称判定，避免拥有相同角色描述的分身进入本体投食链路。
         if (SpecialBusinessOrderProbe.HasControllerSpawnType(controller, "GhostInChallenge"))
         {
             classification = SpecialBusinessModuleRegistry.AllowedSpecialOrder(

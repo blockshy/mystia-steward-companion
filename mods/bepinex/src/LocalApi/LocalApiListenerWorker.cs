@@ -4,7 +4,7 @@ using System.Net.Sockets;
 namespace MystiaStewardCompanion.LocalApi;
 
 /// <summary>
-/// Owns one TCP listener and its blocking accept thread.
+/// 持有一个 TCP 监听器及其阻塞接收线程，停止时关闭监听器以唤醒 AcceptTcpClient。
 /// </summary>
 internal sealed class LocalApiListenerWorker : IDisposable
 {
@@ -16,6 +16,7 @@ internal sealed class LocalApiListenerWorker : IDisposable
     private int _failureReported;
     private bool _started;
 
+    /// <summary>构造时绑定并开始监听端口；接收线程由 Start 单独启动，构造失败会释放已创建的监听器。</summary>
     public LocalApiListenerWorker(
         string name,
         bool isLan,
@@ -69,6 +70,7 @@ internal sealed class LocalApiListenerWorker : IDisposable
         }
     }
 
+    /// <summary>请求停止并限时等待接收线程退出；从接收线程自身调用时不等待自身，返回 false。</summary>
     public bool Stop(TimeSpan joinTimeout)
     {
         if (joinTimeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(joinTimeout));
@@ -141,7 +143,7 @@ internal sealed class LocalApiListenerWorker : IDisposable
         }
         catch
         {
-            // Stop is idempotent and must not turn shutdown into a listener failure.
+            // 停止请求保持幂等；关闭期间的异常不应作为意外监听故障重复上报。
         }
     }
 
@@ -155,7 +157,7 @@ internal sealed class LocalApiListenerWorker : IDisposable
         }
         catch
         {
-            // The worker still terminates when the diagnostic callback itself fails.
+            // 即使故障通知回调也失败，接收线程仍沿原路径结束并释放监听器。
         }
     }
 }

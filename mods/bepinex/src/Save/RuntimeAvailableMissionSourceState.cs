@@ -48,6 +48,8 @@ internal sealed record RuntimeAvailableMissionSourceSnapshot(
         LastError: "");
 }
 
+/// <summary>按任务代次和所属线程记录演出前后任务启动边界，保存尚待原生启动的来源引用。</summary>
+/// <remarks>锁保护托管状态；ownerThreadId 是调用方提供的身份，不会把后台调用自动切换到 Unity 主线程。</remarks>
 internal sealed class RuntimeAvailableMissionSourceState
 {
     public const string BeforePerformanceSource = "postMissions";
@@ -183,6 +185,7 @@ internal sealed class RuntimeAvailableMissionSourceState
         }
     }
 
+    /// <summary>仅在演出前启动结果全部确定后登记演出后引用；重复事件或不确定结果使当前来源状态失效。</summary>
     public bool CommitBeforePerformance(
         long missionGeneration,
         int ownerThreadId,
@@ -243,6 +246,7 @@ internal sealed class RuntimeAvailableMissionSourceState
         }
     }
 
+    /// <summary>按来源、原始序号和任务标签逐项匹配待启动引用，确认结果后撤销过渡记录。</summary>
     public bool CommitAfterPerformance(
         long missionGeneration,
         int ownerThreadId,
@@ -344,6 +348,7 @@ internal sealed class RuntimeAvailableMissionSourceState
             && ownerThreadId > 0;
     }
 
+    // 不保留无法确认的待启动任务，避免错误过渡继续向客户端呈现为可执行来源。
     private void FailLocked(string error, DateTime changedAtUtc)
     {
         _runtimeAvailable = false;

@@ -8,7 +8,7 @@ internal enum AutomationOrderActionKind
 }
 
 /// <summary>
-/// Validates automation stage combinations before any game runtime access or side effect.
+/// 在访问游戏或产生副作用前验证自动化步骤组合，拒绝启用送达却关闭订单完成的矛盾配置。
 /// </summary>
 internal static class AutomationOrderConfigurationPolicy
 {

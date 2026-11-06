@@ -28,6 +28,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 无法读取与已确认无任务必须分开表达；业务响应也不能泄漏内部诊断错误正文。
 static void TestUnavailablePhases()
 {
     var state = new RuntimeMissionDiagnosticState();
@@ -500,6 +501,7 @@ static void TestPresentationProjection()
         "A rejected presentation mutated the last exact managed snapshot.");
 }
 
+// 使用注入时间推进退避和总次数预算；预算耗尽后只有新的场景身份才能重新触发读取。
 static void TestPresentationRetryBudget()
 {
     var threadId = Environment.CurrentManagedThreadId;
@@ -598,6 +600,7 @@ static void TestPresentationRetryBudget()
         "A new day-scene identity did not reset the retry budget.");
 }
 
+// 展示补充以任务为单位；同一角色的另一个任务暂不可用，不应撤销已确认任务的展示状态。
 static void TestPresentationApplyIsTaskScoped()
 {
     var threadId = Environment.CurrentManagedThreadId;

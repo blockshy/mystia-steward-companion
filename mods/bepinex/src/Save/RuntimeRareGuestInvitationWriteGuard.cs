@@ -4,6 +4,8 @@ internal readonly record struct RareGuestInvitationWriteExpectation(
     long DaySceneGeneration,
     string MapLabel);
 
+/// <summary>在邀请写入前比较候选读取时的日间代次和地图，拒绝跨场景的迟到请求。</summary>
+/// <remarks>此检查只证明场景上下文一致；候选身份、邀请次数及执行权限仍由调用方验证。</remarks>
 internal static class RuntimeRareGuestInvitationWriteGuard
 {
     public static bool Matches(

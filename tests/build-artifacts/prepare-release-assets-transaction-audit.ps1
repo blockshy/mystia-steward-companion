@@ -18,6 +18,7 @@ $PrepareAst = [System.Management.Automation.Language.Parser]::ParseFile(
 if ($Errors.Count -ne 0) {
     throw "PowerShell parser errors in $PreparePath`: $($Errors.Message -join '; ')"
 }
+# 从正式脚本提取单个提交函数，避免运行包含外部输入与发布准备的顶层入口。
 $CommitAst = $PrepareAst.Find(
     {
         param($Node)
@@ -40,6 +41,8 @@ function Write-TestFile {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.UTF8Encoding]::new($false))
 }
 
+# 同时准备旧元数据和新暂存元数据，借助错误摘要或缺失校验文件验证失败时完整恢复。
+# 所有载荷均是测试创建的文本，事务根不指向正式发布目录。
 function New-TestTransaction {
     param(
         [Parameter(Mandatory = $true)][string]$Root,

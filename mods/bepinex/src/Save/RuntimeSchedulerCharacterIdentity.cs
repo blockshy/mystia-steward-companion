@@ -2,6 +2,7 @@ using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>从装箱的调度器角色值读取明确的身份枚举；字段形状或枚举值变化时抛错，不猜测普通/特殊身份。</summary>
 internal static class RuntimeSchedulerCharacterIdentity
 {
     private const int SpecialIdentity = 0;

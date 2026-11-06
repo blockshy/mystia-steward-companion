@@ -31,7 +31,8 @@ class ApiConnection {
   bool get isLoopback => endpoint.host.split('.').first == '127';
 }
 
-/// 只允许 HTTP 回环或私有 IPv4；不解析 DNS、不跟随重定向，不经过系统代理。
+/// 只允许显式端口的 HTTP 回环、私有或链路本地 IPv4；localhost 直接规范化为回环地址。
+/// 此函数负责地址验证；禁止重定向及系统代理由 [DartIoTransport] 在发送时实施。
 Uri validateEndpoint(String input) {
   final uri = Uri.tryParse(input.trim());
   if (uri == null ||
@@ -87,6 +88,8 @@ abstract interface class CompanionImageTransport {
   });
 }
 
+/// 使用同一 HTTP 客户端传输 JSON 与图片，并在发送、接收和错误转换处限制协议边界。
+/// 实例关闭后不再接受请求；每次操作只发送一次，写入结果未知时交由上层重新读取确认。
 class DartIoTransport implements CompanionTransport, CompanionImageTransport {
   DartIoTransport({this.maxResponseBytes = 32 * 1024 * 1024}) {
     _client.findProxy = (_) => 'DIRECT';
@@ -190,6 +193,7 @@ class DartIoTransport implements CompanionTransport, CompanionImageTransport {
       );
       if (body != null) request.headers.contentType = ContentType.json;
       request.contentLength = bytes.length;
+      // 从准备提交正文开始按“可能已执行”处理；底层失败不能证明服务端未收到写请求。
       sent = true;
       if (bytes.isNotEmpty) request.add(bytes);
       final response = await request.close();
@@ -197,6 +201,7 @@ class DartIoTransport implements CompanionTransport, CompanionImageTransport {
         throw const ApiException('redirect-rejected', '本地 API 不允许重定向。');
       if (response.contentLength > responseLimit)
         throw const ApiException('response-too-large', '响应超过允许大小。');
+      // Content-Length 可能未知或不可信，因此接收每个分块时仍累计核对实际大小。
       final buffer = BytesBuilder(copy: false);
       await for (final chunk in response) {
         if (buffer.length + chunk.length > responseLimit)

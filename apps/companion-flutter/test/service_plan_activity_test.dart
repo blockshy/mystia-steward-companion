@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:mystia_steward_companion/app/workbench_model.dart';
 import 'package:mystia_steward_companion/features/service_plan_activity.dart';
 
+/// 使用合成现场订单区分实际计算、等待更新和旧结果参考；只验证页头投影，
+/// 不执行推荐算法或租约判定。错误优先级与无可见订单时的静默行为分别断言。
 void main() {
   const matched = <String, Object?>{
     'order': {'traceId': 'R-1'},

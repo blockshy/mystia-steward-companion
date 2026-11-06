@@ -45,6 +45,8 @@ class _DeviceNameEditorState extends State<DeviceNameEditor> {
     _synchronize();
   }
 
+  /// 身份变化时重新绑定设备名；同一身份的后台刷新只更新未修改且无输入法组合文本的输入。
+  /// _bound 记录最新服务端值，用于区分本地草稿与已确认名称。
   void _synchronize() {
     final name = label(_device?['label'], '');
     final changedOwner = _owner != _identity;

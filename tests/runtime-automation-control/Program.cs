@@ -22,6 +22,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 配置权威与执行租约分别发布；仅有新配置不能使旧租约重新获得执行资格。
 static void VerifyAuthorityAndLeaseGate()
 {
     var now = Utc(12, 0, 0);
@@ -148,6 +149,7 @@ static void VerifyCurrentStageConfiguration()
         14);
 }
 
+// 特殊路径可覆盖当前阶段开关，但不能越过自动化总开关或稀客类别开关。
 static void VerifySpecialOverrideScope()
 {
     var now = Utc(12, 10, 0);
@@ -237,6 +239,8 @@ static void VerifyProfileShapeAndRevisionValidation()
         "A non-boolean automation profile field was accepted.");
 }
 
+// 先持有正式许可，再并发切换权威，验证切换必须等已准入的副作用边界释放。
+// 本测试只持有许可而不执行游戏动作，保护的是同步顺序和随后读取到的拒绝原因。
 static void VerifyPermitSerializesAuthorityTransition()
 {
     var now = Utc(12, 20, 0);

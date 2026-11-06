@@ -190,6 +190,8 @@ internal sealed record RuntimeMissionServeInWorkDefinition(
     IReadOnlyList<int> FoodIds,
     RuntimeMissionDiagnosticFreshness Freshness);
 
+/// <summary>维护任务加载代次、精确身份映射及完成事实，供 API 与任务优先级读取纯托管快照。</summary>
+/// <remarks>标签与对象身份分别建索引，活跃身份冲突使当前代次不可用；旧回调不能重新激活已退役任务。</remarks>
 internal sealed class RuntimeMissionDiagnosticState
 {
     private readonly object _syncRoot = new();
@@ -229,6 +231,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>只发布完整可投影的活跃任务集合；任一任务条件或展示形状无效时返回不可用，而非部分成功列表。</summary>
     public RuntimeTrackedMissionsSnapshot ReadTrackedMissions()
     {
         lock (_syncRoot)
@@ -294,6 +297,8 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>清空上一轮任务索引与计数，递增加载代次并绑定捕获线程；新种子完成前不发布可用任务。</summary>
+    /// <returns>后续加载与初始化调用必须携带的代次、线程令牌。</returns>
     public RuntimeMissionDiagnosticLoadToken BeginLoadCapture(
         int threadId,
         DateTime changedAtUtc)
@@ -350,6 +355,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>仅为当前加载令牌登记序列化摘要与解析统计；种子已解析不等于原生任务已完成初始化。</summary>
     public bool TryMarkLoadSeedReady(
         RuntimeMissionDiagnosticLoadToken token,
         RuntimeMissionDiagnosticLoadMetrics metrics,
@@ -383,6 +389,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>只允许同一加载线程将种子就绪状态推进为初始化中，拒绝旧代次与重复消费。</summary>
     public bool TryBeginInitialization(
         RuntimeMissionDiagnosticLoadToken loadToken,
         int threadId,
@@ -416,6 +423,8 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>先验证整个初始化种子的身份与集合约束，再建立任务索引并复制当前条件数组。</summary>
+    /// <remarks>过期令牌仅返回当前快照；当前令牌的种子不完整则将代次标为不可用，不发布部分任务列表。</remarks>
     public bool TryCommitInitialization(
         RuntimeMissionDiagnosticInitializationToken token,
         RuntimeMissionDiagnosticInitializationSeed seed,
@@ -518,6 +527,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>只使仍处于种子捕获或种子就绪阶段的匹配令牌失效；迟到失败不能污染下一次加载。</summary>
     public void FailLoadCapture(
         RuntimeMissionDiagnosticLoadToken token,
         string failure,
@@ -572,6 +582,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>关闭指定当前代次的任务发布；同代次的错误线程回调也视为生命周期一致性故障。</summary>
     public void FailCurrentGeneration(
         long generation,
         int threadId,
@@ -621,6 +632,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>登记已观察到的任务启动；仅已退役任务可释放旧身份后重建，活跃标签或指针重复均拒绝。</summary>
     public bool TryCommitStartedMission(
         long generation,
         int threadId,
@@ -767,6 +779,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>将同代次、同线程、同活跃身份的条件刷新应用到任务；完成数组会复制后存储。</summary>
     public bool TryObserveStateRefresh(
         long generation,
         int threadId,
@@ -822,6 +835,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>将精确匹配的活跃任务转为退役；保留其身份记录供后续完成回调核验，不凭移除推断任务完成。</summary>
     public bool TryObserveRemoval(
         long generation,
         int threadId,
@@ -861,6 +875,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>接受已登记任务的完成事实，即使其已被先行移除；完成标签去重保存，任务不再保持活跃。</summary>
     public bool TryObserveFinish(
         long generation,
         int threadId,
@@ -901,6 +916,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>登记游戏直接写入的完成标签，并停用同标签任务；没有对应活跃任务也可保留该完成事实。</summary>
     public bool TryObserveFinishedLabel(
         long generation,
         int threadId,
@@ -934,6 +950,7 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>应用捕获层已验证为追加尾部的完成标签；空增量仍记录一次节点观测，不制造完成任务。</summary>
     public bool TryObserveFinishNode(
         long generation,
         int threadId,
@@ -974,6 +991,8 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>只在当前任务代次可用且全部活跃定义成功时导出送餐任务定义，复制料理列表供下游核验。</summary>
+    /// <remarks>任一送餐任务缺少接收角色则整批拒绝，避免把缺失角色误当作无需核对身份。</remarks>
     public bool TryGetServeInWorkDefinitions(
         long generation,
         out IReadOnlyList<RuntimeMissionServeInWorkDefinition> definitions)
@@ -1013,6 +1032,8 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>为具有接收角色的活跃任务生成展示补充请求；同一目录绑定采用有限重试，绑定变化后重新请求。</summary>
+    /// <remarks>本方法要求实际调用线程为加载所有者，返回请求不预占重试次数，次数在结果提交时累计。</remarks>
     public bool TryReadPresentationRequests(
         long generation,
         long daySceneGeneration,
@@ -1058,6 +1079,8 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>整批验证任务标签唯一性及接收角色后，逐任务保存展示结果和下一次重试时间。</summary>
+    /// <remarks>未包含的任务保持原值；角色相同不合并任务状态，目录绑定改变时重新计算该任务的重试预算。</remarks>
     public bool TryApplyPresentations(
         long generation,
         long daySceneGeneration,
@@ -1108,6 +1131,7 @@ internal sealed class RuntimeMissionDiagnosticState
                 requestedMissions[index] = (mission, result.Presentation);
             }
 
+            // 所有输入先校验完毕再变更状态，避免同批中后面的非法任务留下前面的部分展示更新。
             var changed = false;
             foreach (var requested in requestedMissions)
             {
@@ -1166,6 +1190,8 @@ internal sealed class RuntimeMissionDiagnosticState
         }
     }
 
+    /// <summary>核对加载与运行时桶数量、空缓冲区、任务身份唯一性，以及完成标签的出现次数。</summary>
+    /// <remarks>这里只验证托管输入之间的一致性；原生集合是否完整已由捕获层按精确形状读取。</remarks>
     private string ValidateInitializationSeed(
         RuntimeMissionDiagnosticInitializationToken token,
         RuntimeMissionDiagnosticInitializationSeed seed)
@@ -1252,6 +1278,8 @@ internal sealed class RuntimeMissionDiagnosticState
         return "";
     }
 
+    /// <summary>优先按已绑定原生身份核对标签；仅已退役的旧绑定可释放，且新标签必须尚未绑定身份。</summary>
+    /// <remarks>允许原生地址被后续任务复用，不允许覆盖仍活跃任务的身份或仅按同名标签替换现有绑定。</remarks>
     private bool TryResolveCallbackMissionLocked(
         RuntimeMissionDiagnosticTrackedSeed seed,
         bool requireActive,
@@ -1420,6 +1448,7 @@ internal sealed class RuntimeMissionDiagnosticState
             && _snapshot.OwnerThreadId == token.ThreadId;
     }
 
+    // 旧代次直接忽略；当前就绪代次出现错误线程则主动失效，避免把并发错序当成正常漏报。
     private bool CanObserve(long generation, int threadId)
     {
         if (_snapshot.Phase != RuntimeMissionDiagnosticPhase.Ready
@@ -1439,6 +1468,7 @@ internal sealed class RuntimeMissionDiagnosticState
         return false;
     }
 
+    // 保留已采集条目供诊断，但关闭业务可用标志；真正清空索引由下一次 BeginLoadCapture 执行。
     private RuntimeMissionDiagnosticSnapshot MarkUnavailableLocked(
         long generation,
         string failure,
@@ -1524,6 +1554,7 @@ internal sealed class RuntimeMissionDiagnosticState
             mission.ValidationError);
     }
 
+    /// <summary>在定义、标题与完成状态形状一致时投影公开任务；未知条件使用 null，不以 false 冒充未完成事实。</summary>
     private static bool TryProjectTrackedMission(
         TrackedMissionState mission,
         out RuntimeTrackedMissionSnapshot snapshot)

@@ -135,6 +135,8 @@ static void VerifyReleaseCatalogValidationAndFiltering()
         "晚于 owner");
 }
 
+// 版本说明目录是附属信息：其下载或验证失败应独立报告，不能隐藏已确认可用的更新包。
+// 每个服务使用独立临时目录与合成下载委托，不访问正式安装或远端 Release。
 static void VerifyOptionalReleaseHistoryIsolation()
 {
     var root = Path.Combine(Path.GetTempPath(), $"mystia-update-history-{Guid.NewGuid():N}");
@@ -221,6 +223,7 @@ static void VerifyOptionalReleaseHistoryIsolation()
     }
 }
 
+// 缓存中的说明必须仍绑定当前清单的大小与摘要；仅保留相同版本号不足以建立信任。
 static void VerifyCachedReleaseHistoryValidation()
 {
     var root = Path.Combine(Path.GetTempPath(), $"mystia-update-history-cache-{Guid.NewGuid():N}");
@@ -293,6 +296,7 @@ static void VerifyCachedStateValidation()
     AssertEqual(false, UpdateService.HasAvailableUpdate(state), "A cached candidate without package size was accepted.");
 }
 
+// 校验流复制的实际字节数，覆盖长度不足和超出声明大小，防止只信任响应元数据。
 static void VerifyBoundedDownloadCopy()
 {
     var content = new byte[] { 1, 2, 3, 4 };
@@ -691,6 +695,7 @@ static void VerifyDisposeRetryAfterTimeout()
     }
 }
 
+// 从中断状态文件重建服务，验证未完成操作的清理与恢复规则；这不执行正式包安装事务。
 static void VerifyAbruptOperationRecovery()
 {
     var root = Path.Combine(Path.GetTempPath(), $"mystia-update-abrupt-recovery-{Guid.NewGuid():N}");

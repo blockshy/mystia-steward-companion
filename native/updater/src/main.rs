@@ -696,7 +696,7 @@ mod windows_updater_ui {
             if instance.is_null() {
                 return Err("get updater module handle failed".to_string());
             }
-            // tauri-build 将统一的 icons/icon.ico 以资源 ID 32512 嵌入两个 Windows 可执行文件。
+            // build.rs 通过 Windows SDK rc.exe 将 resources/app_icon.ico 以资源 ID 32512 嵌入本更新器。
             // IDI_APPLICATION 的数值同为 32512；必须传入当前模块实例，才能读取更新器自己的
             // 程序图标，而不是系统默认图标。LoadIconW 返回共享资源句柄，不应调用 DestroyIcon。
             let window_icon = LoadIconW(instance as HINSTANCE, IDI_APPLICATION);

@@ -6,6 +6,7 @@ internal enum SpecialFoodTargetMatchMode
     All,
 }
 
+/// <summary>携带挑战、所有者、经营代次及标签匹配模式的目标快照，用于发现计划与实时挑战的漂移。</summary>
 internal sealed record SpecialFoodTargetPolicy(
     string ChallengeType,
     string Owner,
@@ -30,6 +31,7 @@ internal sealed record SpecialFoodTargetPolicy(
             : FoodTags.Any(tag => actualTags.Contains(tag, StringComparer.Ordinal));
     }
 
+    /// <summary>同时比较签名和各结构字段，避免仅依赖可读字符串拼接判断目标身份。</summary>
     public bool HasSameIdentity(SpecialFoodTargetPolicy other)
     {
         return string.Equals(Signature, other.Signature, StringComparison.Ordinal)
@@ -40,6 +42,7 @@ internal sealed record SpecialFoodTargetPolicy(
             && FoodTags.SequenceEqual(other.FoodTags, StringComparer.Ordinal);
     }
 
+    /// <summary>校验外部传入的目标及签名；标签会去空、去重和排序，而挑战及所有者不得含首尾空白。</summary>
     public static bool TryCreate(
         string challengeType,
         string owner,
@@ -110,6 +113,7 @@ internal sealed record SpecialFoodTargetPolicy(
         return true;
     }
 
+    /// <summary>为已核验的活动上下文生成目标；不重复执行 TryCreate 的合法性检查，调用方负责输入前置条件。</summary>
     public static SpecialFoodTargetPolicy CreateActive(
         string challengeType,
         string owner,
@@ -143,6 +147,7 @@ internal sealed record SpecialFoodTargetPolicy(
             .ToArray();
     }
 
+    /// <summary>构造便于诊断和一致性比较的内容标识；这是普通字符串，不是密码学签名或鉴权证明。</summary>
     public static string BuildSignature(
         string challengeType,
         string owner,

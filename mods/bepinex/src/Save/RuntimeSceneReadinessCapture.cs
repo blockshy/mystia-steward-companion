@@ -5,6 +5,8 @@ using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>通过日间进入、地图调度及准备界面回调维护读取门禁，切场景时撤销此前就绪事实。</summary>
+/// <remarks>运行时反射读取须在 Unity 主线程执行；本类锁不赋予后台线程访问游戏对象的权限。</remarks>
 internal static class RuntimeSceneReadinessCapture
 {
     private const string DaySceneSustainedPanelTypeName = "DayScene.UI.DaySceneSustainedPannel";
@@ -148,6 +150,7 @@ internal static class RuntimeSceneReadinessCapture
         }
     }
 
+    /// <summary>要求完整日间 Hook、精确管理器身份和全部运行中标志可读取且安全；未知字段一律不放行。</summary>
     public static bool CanReadDaySceneRuntime()
     {
         Type? managerType;
@@ -320,6 +323,7 @@ internal static class RuntimeSceneReadinessCapture
         }
     }
 
+    // 前缀保存值令牌，后缀只提交同一代次的完成事件，避免原生回调重入后使用新的状态误认旧动作。
     private static void OnSchedulerFinishPrefix(object[] __args, out RuntimeDaySceneFinishToken __state)
     {
         __state = default;

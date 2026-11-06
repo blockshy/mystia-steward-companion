@@ -84,6 +84,10 @@ namespace MystiaStewardCompanion.Save
 
 namespace Il2CppSystem
 {
+    /// <summary>
+    /// 用可控整数模拟原生身份，支持同指针的多个托管包装对象及失效指针负例。
+    /// Pointer 不指向真实内存，不能用本替身推断原生对象存活或封送行为。
+    /// </summary>
     public class Object
     {
         private static long _nextPointer = 0x1000;
@@ -248,6 +252,7 @@ namespace NightScene.GuestManagementUtility
 
         public SpecialGuest SpecialGuest { get; }
 
+        /// <summary>构造不同托管对象但保留同一原生身份，检查逻辑不依赖 CLR 引用相等。</summary>
         public GuestGroupController AsBaseWrapper()
         {
             return new GuestGroupController(OrderingGuest, this)

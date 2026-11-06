@@ -6,6 +6,7 @@ internal enum CookControllerFoodResultKind
     DarkCuisine,
 }
 
+/// <summary>厨具成品的托管值身份；黑暗料理使用独立种类，不能作为普通目录料理编号解析。</summary>
 internal readonly record struct CookControllerFoodResultIdentity(
     int SellableType,
     int FoodId,
@@ -18,6 +19,7 @@ internal readonly record struct CookControllerFoodResultIdentity(
     public bool IsDarkCuisine => Kind == CookControllerFoodResultKind.DarkCuisine;
 }
 
+/// <summary>同时验证精确 Sellable 类型、Food 分类和编号域，拒绝仅凭编号猜测成品种类。</summary>
 internal static class CookControllerFoodResultIdentityPolicy
 {
     public static bool TryCreate(

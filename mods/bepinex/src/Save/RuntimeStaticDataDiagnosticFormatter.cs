@@ -3,6 +3,8 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>将静态目录投影为分节日志，并按每节内容标识抑制重复输出；读取时间不参与变化判断。</summary>
+/// <remarks>去重标识在返回日志节前更新，表示已生成过该内容，不表示下游磁盘写入已经成功。</remarks>
 internal static class RuntimeStaticDataDiagnosticFormatter
 {
     private static readonly object SyncRoot = new();

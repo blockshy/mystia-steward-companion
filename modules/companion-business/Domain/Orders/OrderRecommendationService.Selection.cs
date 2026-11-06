@@ -15,6 +15,7 @@ public static partial class OrderRecommendationService
         if (mode == "story-level-sum") return true;
         return (!Bool(rule["requiresHighEvaluation"]) && !Bool(rule["preferKoishiDamage"])) || Count(f, "matchedNegativeTags") == 0;
     }
+    /// <summary>强制和禁止加料均按精确材料编号验证；损坏或重复的规则编号不能被当作空规则放行。</summary>
     private static bool ExtrasAllowed(JsonObject f, JsonObject rule)
     {
         var required = Arr(rule["requiredExtraIngredientIds"]); var forbidden = Arr(rule["forbiddenExtraIngredientIds"]); var ids = Objects(f["extraIngredients"]).Select(x => Num(x["id"])).ToArray();
@@ -34,6 +35,10 @@ public static partial class OrderRecommendationService
         if (Str(Obj(rule["foodTarget"])["enforcement"]) != "require" && Count(rule, "requiredExtraIngredientIds") == 0 && Count(rule, "forbiddenExtraIngredientIds") == 0 && !Bool(rule["requiresBaseOrderMatch"]) && !Bool(rule["requiresHighEvaluation"])) return plans;
         return plans.Where(p => SafePlan(p, rule));
     }
+    /// <summary>
+    /// 在已生成方案上复核特殊经营的组合约束，包括原订单、加料及预测评价。
+    /// 这里只判定方案与规则是否相容；实时库存、对象身份和副作用准入仍由执行侧复核。
+    /// </summary>
     public static bool SafePlan(JsonObject p, JsonObject rule)
     {
         if (p["food"] is not JsonObject f || p["beverage"] is not JsonObject b || Str(p["bucket"]) == "blocked" || Str(rule["blockingReason"]).Length > 0) return false;
@@ -122,6 +127,10 @@ public static partial class OrderRecommendationService
         }
         return null;
     }
+    /// <summary>
+    /// 在配对资格过滤后构造有界执行候选集；特殊评价扩大搜索窗口，钉选与收藏在截断前提升。
+    /// 任务候选仅在本身合格时补入首位，避免普通截断丢失任务目标，也不绕过资源约束。
+    /// </summary>
     private static JsonObject[] ExecutionCandidates(JsonObject[] candidates, JsonObject[] other, bool food, JsonNode? budget, string policy, JsonObject sort, JsonObject? mission)
     {
         var canPair = PairEligibility(other, food, budget, policy);

@@ -1,5 +1,6 @@
 import 'platform.g.dart';
 
+/// 跨平台导航意图，不包含游戏写入；焦点目标和可见页签由 UI 层进一步决定。
 enum GamepadAction {
   up,
   down,
@@ -21,6 +22,9 @@ class GamepadInputController {
   bool _active = false;
   final Map<GamepadAction, Duration> _held = {};
   final Set<GamepadAction> _analogHeld = {};
+
+  /// [now] 应来自同一单调时钟，供首次延迟及方向重复使用；不依据系统墙钟计算长按。
+  /// 返回本帧新发生的导航事件，调用方不应缓存后在页面切换完成时重放。
   List<GamepadAction> update(PlatformInput input, Duration now) {
     final active = input.focused && input.connected && enabled;
     if (!active || !_active) {

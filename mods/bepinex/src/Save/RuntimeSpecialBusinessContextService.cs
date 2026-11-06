@@ -7,6 +7,8 @@ using UnityEngine;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>采集挑战 HUD 与阶段回调，按挑战类型、目标所有者及经营代次维护特殊经营上下文。</summary>
+/// <remarks>展示投影与自动化目标有不同完整性要求；缺失目标、阶段或身份不能由展示文字反推补齐。</remarks>
 internal static class RuntimeSpecialBusinessContextService
 {
     private const string NightSceneDirectorTypeName = "NightScene.NightSceneDirector";
@@ -24,6 +26,7 @@ internal static class RuntimeSpecialBusinessContextService
     private const string NoDifficultyMode = "None";
     private const int MaxCaptureFailureDiagnostics = 128;
 
+    // 锁保护托管目标状态；游戏成员和 IL2CPP 元数据读取仍由主线程生命周期调用，不能因加锁而跨线程访问。
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, ChallengeDisplayNameResolution> ChallengeDisplayNameCache = new(StringComparer.Ordinal);
     private static readonly HashSet<string> PatchedMethods = new(StringComparer.Ordinal);
@@ -100,6 +103,10 @@ internal static class RuntimeSpecialBusinessContextService
         ? ReadRawChallengeType(out _)
         : SpecialBusinessChallengeTypes.NotChallenge;
 
+    /// <summary>
+    /// 分开报告挑战类型可读性与挑战值；非营业期明确为普通营业，读取失败则不能仅凭回退值作此判断。
+    /// 返回值只反映原始挑战类型是否可读，难度等辅助读取错误仍通过 error 返回。
+    /// </summary>
     public static bool TryGetCurrentChallengeType(out string challengeType, out string? error)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -138,6 +145,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>在目标状态锁内读取匹配营业代次的完整双标签目标及正修订号，供开锅和结算复核同一目标版本。</summary>
     internal static bool TryGetActiveYuumaFoodTargetState(
         out SpecialFoodTargetPolicy? policy,
         out long revision)
@@ -177,6 +185,7 @@ internal static class RuntimeSpecialBusinessContextService
 
     public static bool IsRetakeYuyukoChallenge => string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.RetakeYuyuko, StringComparison.Ordinal);
 
+    /// <summary>仅在幽幽子挑战活动期间记录返场证据；非相关挑战的回调不能改变有效挑战类型。</summary>
     public static void MarkYuyukoRetakeEvidence(string source)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -240,6 +249,10 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>
+    /// 仅为已确认的恋恋或尤魔目标构造执行策略；恋恋标签采用任一匹配，尤魔要求完整双标签全部匹配。
+    /// 所有者、挑战或营业代次不一致，以及目标标签不可用时，均不返回策略。
+    /// </summary>
     public static bool TryGetActiveSpecialFoodTargetPolicy(out SpecialFoodTargetPolicy? policy)
     {
         policy = null;
@@ -278,6 +291,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    // 恋恋第一阶段不暴露料理目标，即使旧 HUD 回调仍留有标签；输出排序消除标签顺序带来的身份差异。
     private static string[] NormalizeFoodTargetTagsLocked()
     {
         if (string.Equals(_targetKind, "koishi", StringComparison.Ordinal)
@@ -300,6 +314,7 @@ internal static class RuntimeSpecialBusinessContextService
         TryAttach(log, force: true);
     }
 
+    /// <summary>结束营业时清除目标、返场证据与失败去重记录，并重置尤魔拓扑观察和专项诊断。</summary>
     public static void ClearForBusinessEnd(string reason)
     {
         lock (SyncRoot)
@@ -319,6 +334,10 @@ internal static class RuntimeSpecialBusinessContextService
         SpecialBusinessDiagnostics.Reset();
     }
 
+    /// <summary>
+    /// 将当前挑战状态、静态规则和匹配所有者的捕获目标投影为托管上下文。
+    /// 挑战不可读时清除旧目标；名称元数据失败只作为展示错误保留，不反推或改写挑战身份。
+    /// </summary>
     public static SpecialBusinessContext Snapshot()
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -394,6 +413,7 @@ internal static class RuntimeSpecialBusinessContextService
         };
     }
 
+    /// <summary>按重试间隔补装尚未就绪的 Hook；成功项记入集合，后续重试只处理缺项。</summary>
     private static void TryAttach(ManualLogSource? log, bool force)
     {
         if (!force && !RuntimeNightBusinessLifecycle.IsActive) return;
@@ -526,6 +546,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    // 旧兼容入口仅按名称和参数数量选首个候选，不等价于精确签名校验；要求精确类型的路径使用专用入口。
     private static void PatchMethod(
         Harmony harmony,
         string typeName,
@@ -560,6 +581,7 @@ internal static class RuntimeSpecialBusinessContextService
         patchedNow.Add(key);
     }
 
+    /// <summary>限定声明在目标类型上的公开实例 void 方法及精确参数类型，候选歧义交由外层报告。</summary>
     private static void PatchExactInstanceMethod(
         Harmony harmony,
         string typeName,
@@ -627,6 +649,7 @@ internal static class RuntimeSpecialBusinessContextService
         LogKoishiClueGenerationPatchSuccess(target);
     }
 
+    // 此闭包方法名称属于当前适配约定；只匹配已知闭包族、实例零参数 void 形状，不猜测邻近方法。
     private static MethodInfo? FindKoishiClueTagGenerationMethod()
     {
         return GetKoishiDisplayClassMethods()
@@ -734,6 +757,7 @@ internal static class RuntimeSpecialBusinessContextService
         RunCaptureCallback("koishi shield", () => CaptureKoishiShieldModeChanged(__0, __1));
     }
 
+    // 恢复标志优先于破盾标志；状态只有在当前挑战所有者确认为恋恋后才进入缓存。
     private static void CaptureKoishiShieldModeChanged(object? brokenValue, object? recoverValue)
     {
         var broken = RuntimeReflectionUtility.ToBool(brokenValue);
@@ -755,6 +779,7 @@ internal static class RuntimeSpecialBusinessContextService
         RunCaptureCallback("koishi clue tags", () => CaptureKoishiClueTagsGenerated(__instance, __args));
     }
 
+    /// <summary>在生成回调之后读取本次线索分组；失败仅记录诊断，不以部分解析结果覆盖缓存。</summary>
     private static void CaptureKoishiClueTagsGenerated(object? instance, object[] args)
     {
         if (!string.Equals(CurrentChallengeType, SpecialBusinessChallengeTypes.WackyCookingCompetition, StringComparison.Ordinal)) return;
@@ -840,6 +865,10 @@ internal static class RuntimeSpecialBusinessContextService
             && fullName.Contains("DisplayClass13_0", StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// 根据三个计数字段切分线索序列，依次解释为料理喜好、料理厌恶和酒水喜好。
+    /// 要求序列至少覆盖声明分组且料理/酒水喜好解析非空；额外尾项不进入分组，未解析标签会被过滤。
+    /// </summary>
     private static bool TryReadKoishiGeneratedClues(
         object __instance,
         out string[] foodPreferenceTags,
@@ -972,6 +1001,10 @@ internal static class RuntimeSpecialBusinessContextService
         RunCaptureCallback("mausoleum target fund", () => UpdateTargetFund("mausoleum", __0, "目标营业额"));
     }
 
+    /// <summary>
+    /// 捕获采集回调异常并记录诊断；诊断按内容去重并限制保留条数。
+    /// 此包装不回滚回调抛出前已写入的状态，因此具体更新方法仍须先验证输入再发布。
+    /// </summary>
     private static void RunCaptureCallback(string source, Action callback)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1006,6 +1039,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    // 资金目标与料理标签目标互斥；有效资金回调会清除旧标签和对应计时，而非法数值不更新状态。
     private static void UpdateTargetFund(string kind, object? value, string label)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1069,6 +1103,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>更新通用料理目标；空标签回调不更新，尤魔双标签的失效撤销由其专用方法处理。</summary>
     private static void UpdateFoodTarget(string kind, params string[] tags)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1095,6 +1130,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>仅完整且不同的双标签身份推进目标修订；不完整回调撤销可用标签，保留上次身份用于后续比较。</summary>
     private static void UpdateYuumaFoodTarget(string firstTag, string secondTag, bool useEffect)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1147,6 +1183,10 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>
+    /// 发布阶段基线及当前进度；上下文或阶段切换时清除不再适用的瞬态字段。
+    /// 未读到的数值保留 null，不将默认零当成有效进度。
+    /// </summary>
     private static void UpdateProgressContext(
         string kind,
         string label,
@@ -1179,7 +1219,7 @@ internal static class RuntimeSpecialBusinessContextService
             _phase = phase;
             if (string.Equals(kind, "yuuma", StringComparison.Ordinal))
             {
-                // Native SetContext initializes both current and target progress.
+                // 尤魔上下文回调同时给出当前值和目标值的基线，后续目标进度回调再单独推进目标字段。
                 _targetValue = _currentValue;
                 _targetAnger = _currentAnger;
             }
@@ -1198,6 +1238,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>先检查营业活动性，再用可读原始挑战类型限定回调所属对象；不以 HUD 名称推断所有者。</summary>
     private static bool TryReadTargetOwner(string expectedKind, out string rawChallengeType)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -1240,6 +1281,7 @@ internal static class RuntimeSpecialBusinessContextService
         YuumaCookerTopologyObserver.Reset("challenge type unavailable");
     }
 
+    // 所有者、挑战或经营代次改变时先清空旧目标，防止沿用上一挑战的标签、计时或护盾状态。
     private static void SwitchTargetContextLocked(string rawChallengeType, string kind)
     {
         if (TargetContextMatchesLocked(rawChallengeType, kind))
@@ -1260,6 +1302,7 @@ internal static class RuntimeSpecialBusinessContextService
             && _targetBusinessGeneration == RuntimeNightBusinessLifecycle.Generation;
     }
 
+    // 必须持有 SyncRoot；修订号和目标身份随整个上下文一并重置，不跨营业代次连续复用。
     private static void ResetTargetStateLocked()
     {
         _targetRawChallengeType = "";
@@ -1288,6 +1331,7 @@ internal static class RuntimeSpecialBusinessContextService
         _lastTargetUpdatedUtc = null;
     }
 
+    /// <summary>切换阶段时撤销标签和计时；恋恋第三阶段允许保留该阶段使用的护盾及线索，其余阶段清空。</summary>
     private static void ResetTransientStateForContextLocked(string kind, string phase)
     {
         if (string.Equals(kind, "koishi", StringComparison.Ordinal))
@@ -1326,6 +1370,7 @@ internal static class RuntimeSpecialBusinessContextService
         return string.Equals(phase.Trim(), "Phase3", StringComparison.Ordinal);
     }
 
+    // HUD 的目标进度与当前显示基线分开存储；此回调不改写 _currentValue。
     private static void UpdateTargetValue(string kind, object? value)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1368,6 +1413,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    // 即时进度也只更新已捕获的两个目标字段；两项均可读后一起发布，避免半次回调污染状态。
     private static void UpdateYuumaImmediateProgress(object? targetValueValue, object? targetAngerValue)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1390,6 +1436,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>记录归一化 HUD 时间进度；尤魔在同一进度分桶内不更新，避免高频细小变化反复推进版本。</summary>
     private static void UpdateTargetTime(string kind, object? value)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive) return;
@@ -1468,6 +1515,10 @@ internal static class RuntimeSpecialBusinessContextService
             .ToArray();
     }
 
+    /// <summary>
+    /// 为线索闭包读取整数序列：优先按正 Count/Length 逐项访问，否则使用兼容枚举。
+    /// 此路径没有前后数量一致性验证，成功只表示取得非空可转换序列；分组覆盖要求由调用方检查。
+    /// </summary>
     private static bool TryReadIntList(object collection, out int[] values, out int count)
     {
         values = Array.Empty<int>();
@@ -1827,6 +1878,10 @@ internal static class RuntimeSpecialBusinessContextService
             $"gen:{generation}|hud|{eventName}|{_currentValue}|{_maxValue}");
     }
 
+    /// <summary>
+    /// 保留原始挑战类型，并结合难度及本轮返场证据判定幽幽子有效变体。
+    /// 非幽幽子挑战会撤销返场证据；原始类型不可读时不据辅助状态推断有效挑战。
+    /// </summary>
     private static ChallengeTypeState ReadChallengeTypeState(out string? error)
     {
         var rawChallengeType = ReadRawChallengeType(out var rawError);
@@ -1876,6 +1931,7 @@ internal static class RuntimeSpecialBusinessContextService
             string.IsNullOrWhiteSpace(rawError));
     }
 
+    /// <summary>按挑战值缓存元数据名称；成功和确定性缺失长期缓存，类型尚未加载及读取异常按不同间隔重试。</summary>
     private static string ReadChallengeDisplayName(string challengeType, out string? error)
     {
         error = null;
@@ -1906,6 +1962,10 @@ internal static class RuntimeSpecialBusinessContextService
         return resolution.DisplayName;
     }
 
+    /// <summary>
+    /// 从 IL2CPP 枚举字段的 InspectorName 元数据读取官方显示名称。
+    /// 解码前核对原生值确为 System.String；缺失属性不使用猜测译名补齐。
+    /// </summary>
     private static ChallengeDisplayNameResolution ResolveChallengeDisplayName(string challengeType, DateTime now)
     {
         var stage = "type-discovery";
@@ -2054,6 +2114,7 @@ internal static class RuntimeSpecialBusinessContextService
         }
     }
 
+    /// <summary>读取原始挑战类型；失败采用普通挑战枚举作占位并同时返回错误，调用者必须检查错误。</summary>
     private static string ReadRawChallengeType(out string? error)
     {
         error = null;
@@ -2135,6 +2196,7 @@ internal static class RuntimeSpecialBusinessContextService
             && !string.Equals(difficultyMode, NoDifficultyMode, StringComparison.Ordinal);
     }
 
+    // 仅映射已确认的数字值；未知数字或文本保持原样，交由规则注册表按未知挑战处理。
     private static string NormalizeChallengeTypeText(string value)
     {
         return value switch
@@ -2161,6 +2223,7 @@ internal static class RuntimeSpecialBusinessContextService
         };
     }
 
+    /// <summary>只有原始挑战、目标种类和当前营业代次均匹配时才投影缓存；否则返回明确空目标。</summary>
     private static SpecialBusinessTarget ReadTargetForChallenge(string rawChallengeType, string challengeType)
     {
         var expectedKind = GetExpectedTargetKind(challengeType);

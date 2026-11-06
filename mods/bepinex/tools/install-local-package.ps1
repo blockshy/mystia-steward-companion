@@ -114,6 +114,8 @@ function Read-Protection {
     }
     return $result
 }
+# 按客户端、更新器及游戏根 EXE 的进程名做保守拒绝；不终止进程，也不声称识别了精确可执行路径。
+# 同名无关进程也会阻止安装，避免在无法确认占用来源时继续替换文件。
 function Assert-ProcessesStopped {
     $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($name in @('mystia-steward-companion', 'mystia-steward-companion-updater')) { [void]$names.Add($name) }
@@ -133,6 +135,7 @@ function Is-Preserved([string]$Relative) {
     }
     return $false
 }
+# 先校验完整清单，再逐项比对本次待安装载荷摘要；成功仅证明磁盘内容，不证明游戏加载成功。
 function Assert-InstalledBundle([string]$Root) {
     [void](Read-Tree $Root)
     & node $manifestTool validate $Root @PreserveRelativePaths | Out-Null

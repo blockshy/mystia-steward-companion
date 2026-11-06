@@ -17,6 +17,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 调度诊断使用自身的有界采集窗口，并同时绑定任务代次、日间场景代次与所有者线程。
 static void AssertIndependentStateLifecycle()
 {
     var limits = new RuntimeScheduledEventDiagnosticLimits(
@@ -222,6 +223,7 @@ static void AssertIndependentStateLifecycle()
     AssertEqual(0, state.Report().Events.Count, "A generation reset retained stale events.");
 }
 
+// 资格读取失败使报告不可用，但已读到的事件结构仍保留为诊断证据，不能误归类为定义缺失。
 static void AssertEligibilityFailureClassification()
 {
     var limits = new RuntimeScheduledEventDiagnosticLimits(
@@ -663,6 +665,7 @@ static RuntimeScheduledEventKizunaEvidence KizunaEvidence(
         level5Gate);
 }
 
+// 游戏标签属于不透明身份；空白和重复来源均须按契约处理，不通过显示规范化改变匹配语义。
 static void AssertOpaqueExactIdentifierContracts()
 {
     const int maximumLength = 8;
@@ -829,6 +832,7 @@ static void AssertOpaqueExactIdentifierContracts()
         "An overlong trigger identity was accepted.");
 }
 
+// 源码审计检查允许的读取形状与禁用副作用入口，不证明真实游戏中的资格判断已执行成功。
 static void AssertSourceContracts()
 {
     var root = FindRepositoryRoot(AppContext.BaseDirectory);

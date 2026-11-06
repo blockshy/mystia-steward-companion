@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>在幽幽子剧情及重修挑战中标注对应客人订单；该分类使用编号/别名探测，原生评价资格由执行侧复核。</summary>
 internal sealed class YuyukoChallengeOrderModule : ISpecialBusinessOrderModule
 {
     private static readonly HashSet<string> ChallengeTypes = new(StringComparer.Ordinal)

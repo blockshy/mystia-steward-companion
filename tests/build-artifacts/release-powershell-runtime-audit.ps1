@@ -6,6 +6,7 @@ Set-StrictMode -Version Latest
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $ReleaseCommonPath = Join-Path $RepoRoot "mods/bepinex/tools/release-common.ps1"
 $PublishPath = Join-Path $RepoRoot "mods/bepinex/tools/publish-release.ps1"
+# 先解析正式脚本，再提取待测函数；不直接执行发布脚本的顶层入口。
 $PowerShellSources = @(
     $ReleaseCommonPath,
     (Join-Path $RepoRoot "mods/bepinex/tools/prepare-release-assets.ps1"),
@@ -47,6 +48,7 @@ $PublishAst = [System.Management.Automation.Language.Parser]::ParseFile(
     [ref]$Tokens,
     [ref]$Errors
 )
+# 仅导入明确列出的函数定义。后续外部命令由测试替身接管，用于验证请求顺序与失败处理。
 foreach ($Name in @(
     "Get-MystiaRepositoryReleases",
     "Get-MystiaReleaseByTag",
@@ -111,6 +113,7 @@ function Assert-ThrowsLike {
     throw "$Label did not fail closed."
 }
 
+# 独立列举产物 MIME 类型作为预期值，避免测试直接调用待测映射而掩盖映射错误。
 function Get-TestReleaseAssetContentType {
     param([Parameter(Mandatory = $true)][string]$AssetName)
 
@@ -196,6 +199,7 @@ function Write-TestMetadataFixture {
     Write-TestChecksums -Root $Root -IncludeAndroid $IncludeAndroid
 }
 
+# 生成当前测试专用的清单与载荷；合成摘要和文件大小只用于隔离验证，不代表正式发布产物。
 function New-TestMetadataFixture {
     param(
         [Parameter(Mandatory = $true)][string]$Root,

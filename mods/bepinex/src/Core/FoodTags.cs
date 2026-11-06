@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Core;
 
+/// <summary>集中提供料理标签的标准名称集合及已知显示别名归一化规则。</summary>
 public static class FoodTags
 {
     public static readonly HashSet<string> All = new(StringComparer.Ordinal)
@@ -14,6 +15,7 @@ public static class FoodTags
         "燃起来了", "毒", "适合拍照", "生",
     };
 
+    /// <summary>仅转换已知的流行标签别名；其余输入原样保留，不据此判断标签是否合法。</summary>
     public static string? NormalizeName(string value)
     {
         return value switch

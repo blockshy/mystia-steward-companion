@@ -68,6 +68,7 @@ internal sealed class LocalApiBepInExConsoleActionDto
     public string? Error { get; init; }
 }
 
+/// <summary>受鉴权保护的连接管理响应；包含可编辑凭据，不能作为普通诊断对象整体记录或导出。</summary>
 internal sealed class LocalApiConnectionConfigDto
 {
     public bool Ok { get; init; } = true;
@@ -165,6 +166,7 @@ internal sealed class LocalApiInventoryEditDto
     public string? Error { get; init; }
 }
 
+/// <summary>批量库存编辑的逐项汇总；Changed、Unchanged 和 Failed 分别计数，不代表整批具有事务原子性。</summary>
 internal sealed class LocalApiInventoryBulkEditDto
 {
     public bool Ok { get; init; }

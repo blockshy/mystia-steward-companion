@@ -166,6 +166,7 @@ internal static class RuntimeScheduledEventDiagnosticBounds
         }
     }
 
+    /// <summary>先按原始列表数量校验读取上限，再建立精确字符串成员集；重复项不能用于绕过数量限制。</summary>
     public static IReadOnlySet<string> BuildMembershipSet(
         IReadOnlyList<string> labels,
         int maximumCount,
@@ -179,6 +180,7 @@ internal static class RuntimeScheduledEventDiagnosticBounds
 
 internal static class RuntimeScheduledEventDiagnosticIdentity
 {
+    /// <summary>保留历史中的原始标签，允许空字符串但拒绝 null、错误类型和超长值。</summary>
     public static string ReadHistoryLabel(
         object? value,
         int maximumLength,
@@ -193,6 +195,7 @@ internal static class RuntimeScheduledEventDiagnosticIdentity
             allowEmpty: true);
     }
 
+    /// <summary>读取必须存在的节点标签；不裁剪空白或改变大小写，字符串内容属于精确身份。</summary>
     public static string ReadNodeLabel(
         object? value,
         int maximumLength,
@@ -207,6 +210,7 @@ internal static class RuntimeScheduledEventDiagnosticIdentity
             allowEmpty: false);
     }
 
+    /// <summary>保留可选标识的 null 与空字符串区别，非空值仍接受相同类型与长度约束。</summary>
     public static string? ReadOptionalIdentifier(
         object? value,
         int maximumLength,
@@ -302,6 +306,7 @@ internal static class RuntimeScheduledEventDiagnosticIdentity
     }
 }
 
+/// <summary>协调日间调度诊断的等待、采集及发布阶段，以任务代次、日间代次和状态修订隔离迟到结果。</summary>
 internal sealed class RuntimeScheduledEventDiagnosticState
 {
     private readonly object _syncRoot = new();
@@ -333,6 +338,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>在同一锁内取得摘要和外层集合副本；条目中的嵌套值按只读数据约定使用。</summary>
     public RuntimeScheduledEventDiagnosticReport Report()
     {
         lock (_syncRoot)
@@ -345,6 +351,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>更新反射读取器可用性并撤销采集授权；重新附着后仍须等待任务初始化与日间就绪。</summary>
     public void SetReaderStatus(
         string status,
         bool attached,
@@ -370,6 +377,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>清空诊断条目并等待指定任务代次初始化；旧采集令牌随状态修订递增而失效。</summary>
     public void ResetForMissionGeneration(
         long missionGeneration,
         int ownerThreadId,
@@ -397,6 +405,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>仅为已经登记的任务代次和所有者线程开放日间采集，清除旧日间结果。</summary>
     public bool ArmMissionGeneration(
         long missionGeneration,
         int ownerThreadId,
@@ -430,6 +439,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>日间前提不成立时撤回已发布条目；相同代次、相同原因的等待通知不重复推进修订。</summary>
     public void WaitForDayScene(
         long missionGeneration,
         long daySceneGeneration,
@@ -470,6 +480,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>为当前稳定日间代次取得采集令牌；已就绪、失败或正在采集的同一代次不会重复开始。</summary>
     public bool TryBeginCapture(
         long missionGeneration,
         long daySceneGeneration,
@@ -520,6 +531,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>仅接纳仍为当前采集的令牌，复制外层结果集合并发布诊断计数；不完整结果明确标记不可用。</summary>
     public bool TryCommitCapture(
         RuntimeScheduledEventDiagnosticCaptureToken token,
         RuntimeScheduledMissionSourceReadResult result,
@@ -602,6 +614,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    /// <summary>只结束匹配当前状态修订的采集，清空失败结果并记录耗时；迟到失败不覆盖后来状态。</summary>
     public bool FailCapture(
         RuntimeScheduledEventDiagnosticCaptureToken token,
         string failure,
@@ -632,6 +645,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         }
     }
 
+    // 除任务与日间身份外还核对状态修订，避免等待、重置或再次授权后接受旧令牌的迟到回执。
     private bool IsCurrentCaptureLocked(
         RuntimeScheduledEventDiagnosticCaptureToken token)
     {
@@ -667,6 +681,7 @@ internal sealed class RuntimeScheduledEventDiagnosticState
         };
     }
 
+    // 内部状态修订用于拒绝旧采集令牌，对外 ChangeVersion 用于通知诊断变化；每次发布同时推进。
     private void PublishLocked(
         RuntimeScheduledEventDiagnosticSnapshot snapshot,
         IReadOnlyList<RuntimeScheduledEventDiagnosticEntry> events,
@@ -681,6 +696,8 @@ internal sealed class RuntimeScheduledEventDiagnosticState
             references);
     }
 
+    /// <summary>检查数量硬上限、资格枚举及完整性声明相互一致，防止无效证据被包装成成功采集。</summary>
+    /// <remarks>验证失败抛出异常且不发布；调用方负责用同一采集令牌进入失败路径。</remarks>
     private void ValidateResult(
         RuntimeScheduledMissionSourceReadResult result,
         IReadOnlyList<RuntimeScheduledEventDiagnosticEntry> events,

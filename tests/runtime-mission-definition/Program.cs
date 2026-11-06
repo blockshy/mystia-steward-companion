@@ -1,3 +1,5 @@
+// 本工程检查任务定义读取器的源码约束，不加载或执行游戏程序集。
+// 字符串存在性只能保护已声明的读取入口，不能证明实际原生字段与反射调用可用。
 var repositoryRoot = FindRepositoryRoot(AppContext.BaseDirectory);
 var sourcePath = Path.Combine(
     repositoryRoot,
@@ -42,6 +44,7 @@ RequireContains(
     "method.Name == \"GetText\"",
     "finished.GetRawConstantValue()");
 
+// 明确排除会重新解析任务、更新完成状态或扩大扫描范围的入口，保持诊断读取的边界。
 RequireAbsent(
     source,
     "GetMissionLanguage",
@@ -56,6 +59,7 @@ RequireAbsent(
     "m_Name",
     ".ToString(");
 
+// 标题属于可缺失的展示信息；结构结果的构建顺序不能被标题可用性替代。
 var titleRead = source.IndexOf("var title = TryReadTitle(trustedLabel);", StringComparison.Ordinal);
 var definitionRead = source.IndexOf(
     "var definition = new RuntimeMissionDefinitionDiagnostic(",

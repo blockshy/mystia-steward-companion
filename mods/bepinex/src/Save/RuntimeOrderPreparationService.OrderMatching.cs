@@ -7,6 +7,7 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    // 查找用途决定是否允许已满足订单，以及是否必须补齐手动评价绑定；不能复用配送门禁代替结算门禁。
     private enum RuntimeOrderLookupPurpose
     {
         Delivery,
@@ -15,6 +16,8 @@ internal static partial class RuntimeOrderPreparationService
         YuumaSettlement,
     }
 
+    /// <summary>优先从采集记录重新校验稀客订单；只有恋 Boss 或幽幽子第三阶段评价允许进入实时控制器回退路径。</summary>
+    /// <remarks>返回对象仅供当前主线程调用使用。未匹配时保留诊断，不从相同菜品或客人显示名猜测目标。</remarks>
     private static RuntimeOrderMatch FindRuntimeOrder(
         OrderPreparationRequest request,
         RuntimeOrderLookupPurpose purpose = RuntimeOrderLookupPurpose.Delivery)
@@ -232,6 +235,7 @@ internal static partial class RuntimeOrderPreparationService
         };
     }
 
+    /// <summary>以采集身份查找普通订单；一般请求缺少有效采集即失败，恋 Boss 才继续检查控制器及订单 UI。</summary>
     private static RuntimeOrderMatch FindRuntimeNormalOrder(
         OrderPreparationRequest request,
         RuntimeOrderLookupPurpose purpose = RuntimeOrderLookupPurpose.Delivery)
@@ -469,6 +473,8 @@ internal static partial class RuntimeOrderPreparationService
         return null;
     }
 
+    /// <summary>检查订单类型、特殊经营许可及请求中已指定的订单键、桌位与目标编号。</summary>
+    /// <remarks>负桌位或目标编号表示该条件未指定；Match 编号优先于配送编号，以支持刷新请求匹配原订单。</remarks>
     private static bool IsMatchingNormalOrder(object order, OrderPreparationRequest request, object? controller = null)
     {
         if (!TryResolveRuntimeOrder(order, RuntimeOrderKind.Normal, out var readableOrder, out _)) return false;
@@ -541,6 +547,7 @@ internal static partial class RuntimeOrderPreparationService
         Unknown,
     }
 
+    /// <summary>先比较同一包装器，再比较可读的原生地址；地址读取失败为 Unknown，不能推定相同或已经换单。</summary>
     private static RuntimeObjectIdentityComparison CompareObjectIdentity(object left, object right)
     {
         if (ReferenceEquals(left, right)) return RuntimeObjectIdentityComparison.Same;
@@ -559,6 +566,8 @@ internal static partial class RuntimeOrderPreparationService
         return CompareObjectIdentity(left, right) == RuntimeObjectIdentityComparison.Same;
     }
 
+    /// <summary>按请求生命周期与稀客身份筛选采集记录，再确认仍是控制器当前订单，并按用途补齐手动结算上下文。</summary>
+    /// <remarks>采集时间只决定候选顺序，不替代当前归属、完成状态或特殊经营角色校验。</remarks>
     private static RuntimeOrderMatch FindCapturedRuntimeOrder(
         OrderPreparationRequest request,
         object manager,
@@ -666,6 +675,8 @@ internal static partial class RuntimeOrderPreparationService
         };
     }
 
+    /// <summary>按具体订单类型还原采集到的幽幽子手动评价绑定，区分“确认无绑定”与“绑定无法确认”。</summary>
+    /// <remarks>返回 true 且 manualBindingCaptured=false 表示已知没有绑定；返回 false 时禁止据默认值走普通评价路线。</remarks>
     private static bool TryResolveCapturedYuyukoPhase3ManualEvaluationBinding(
         object order,
         object controller,
@@ -697,6 +708,7 @@ internal static partial class RuntimeOrderPreparationService
                 out diagnostic);
     }
 
+    /// <summary>仅合并同一订单及控制器原生身份的稀客采集；来源标记、绑定观测与回调身份任一冲突即失败。</summary>
     private static bool TryResolveCapturedYuyukoPhase3SpecialManualEvaluationBinding(
         object order,
         object controller,
@@ -767,6 +779,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>对普通订单执行相同的绑定一致性检查；不能用最新一条有效记录覆盖同身份下已出现的冲突证据。</summary>
     private static bool TryResolveCapturedYuyukoPhase3NormalManualEvaluationBinding(
         object order,
         object controller,
@@ -837,6 +850,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>先读取订单当前手动标记；只有手动订单才要求同一对象采集中存在设置来源与非空评价回调。</summary>
     private static bool TryResolveSpecialManualContext(
         object order,
         object controller,
@@ -886,6 +900,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>恢复普通订单的当前手动上下文；非手动状态无需回调，手动状态缺少控制器或采集证据则拒绝。</summary>
     private static bool TryResolveNormalManualContext(
         object order,
         object? controller,
@@ -941,6 +956,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>沿继承链读取首个声明的布尔手动标记，拒绝同名非布尔属性；读取失败不能降级为普通订单。</summary>
     private static bool TryReadExactManualOrder(
         object order,
         out bool manualOrder,
@@ -992,6 +1008,7 @@ internal static partial class RuntimeOrderPreparationService
             .Contains(expectedSource, StringComparer.Ordinal);
     }
 
+    /// <summary>先用采集条件为候选排序，再逐项验证当前归属和请求条件；评分本身不产生执行许可。</summary>
     private static RuntimeOrderMatch FindCapturedRuntimeNormalOrder(
         OrderPreparationRequest request,
         object manager,
@@ -1102,6 +1119,7 @@ internal static partial class RuntimeOrderPreparationService
         };
     }
 
+    /// <summary>生命周期不符直接排除，其余已知条件累计权重并要求最低分；该分数仅用于候选筛选与排序。</summary>
     private static int ScoreCapturedNormalOrder(CapturedRuntimeNormalOrder captured, OrderPreparationRequest request)
     {
         if (captured.OrderObject == null
@@ -1307,6 +1325,7 @@ internal static partial class RuntimeOrderPreparationService
         return string.Join("; ", items) + suffix;
     }
 
+    /// <summary>重读完成状态及控制器当前订单身份；配送拒绝已满足订单，完成检查和原生评价可继续检查已满足订单。</summary>
     private static bool IsCapturedSpecialOrderLive(
         CapturedRuntimeSpecialOrder captured,
         OrderPreparationRequest request,
@@ -1469,6 +1488,7 @@ internal static partial class RuntimeOrderPreparationService
         return TryMatchLiveSpecialOrderIdentity(readableOrder, controller, request, out rejectReason);
     }
 
+    /// <summary>重新分类当前对象并核对请求角色；瑞灵校验角色配对，尤魔额外要求双方都指向经验证的 Boss 身份。</summary>
     private static bool IsSpecialBusinessOrderAllowedForRequest(
         object order,
         object? controller,
@@ -1526,6 +1546,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>为第三阶段评价要求订单已满足、覆写回调存在，并核对请求中指定的实际已上菜品与酒水身份。</summary>
     private static bool IsMatchingYuyukoPhase3EvaluationOrder(
         object order,
         object controller,
@@ -1588,6 +1609,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>仅对非负 expectedId 执行已上物品的种类及编号校验；负值表示本请求未指定这一侧目标。</summary>
     private static bool ServedYuyukoPhase3TargetMatches(
         object? sellable,
         int sellableType,
@@ -1630,6 +1652,8 @@ internal static partial class RuntimeOrderPreparationService
             : SpecialBusinessDiagnostics.DescribeObject(sellable);
     }
 
+    /// <summary>以经营代次、具体订单类型及双方原生地址查找活动生命周期，读取前后再次确认经营代次未变化。</summary>
+    /// <remarks>失败输出 0 表示没有可用生命周期，不能用来授权后续写入。</remarks>
     private static bool TryCaptureRuntimeOrderLifecycle(
         object? order,
         object? controller,
@@ -1708,6 +1732,7 @@ internal static partial class RuntimeOrderPreparationService
         return true;
     }
 
+    /// <summary>当前查找调用中的借用运行时对象与生命周期证据；诊断文本不替代 Order、Controller 及代次检查。</summary>
     private sealed class RuntimeOrderMatch
     {
         public object? Manager { get; init; }

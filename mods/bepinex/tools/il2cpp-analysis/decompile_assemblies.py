@@ -30,6 +30,7 @@ def require_empty_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
+# 每个程序集独立保存标准输出和错误，返回码进入报告；不因并行任务先完成而丢失失败项目。
 def run_process(command: list[str], log_path: Path) -> int:
     with log_path.open("w", encoding="utf-8") as log:
         completed = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False)
@@ -96,6 +97,8 @@ def main() -> int:
 
     project_failures = [result for result in results if result["projectReturnCode"] != 0]
     fallback_failures: list[dict[str, object]] = []
+    # C# 工程导出失败时保留部分结果，并显式回退到 IL 文本。
+    # IL 成功只证明替代输出存在，报告仍保留原工程失败计数，不能解释为 C# 反编译成功。
     if project_failures and fallback_output:
         partial_root = output / "_partial"
         partial_root.mkdir()

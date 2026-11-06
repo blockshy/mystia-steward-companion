@@ -5,14 +5,21 @@ using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 为运行时适配层提供兼容性反射读取；缺失成员和调用失败通常折叠为 null。
+/// 本类不调度线程，也不延长 Unity/IL2CPP 对象寿命；调用方须在允许访问对象的线程和生命周期内使用。
+/// 精确身份、集合完整性及可执行状态仍需由专用读取器验证，不能仅凭兼容性读取成功推断。
+/// </summary>
 internal static class RuntimeReflectionUtility
 {
+    // 缓存仅保存类型和反射元数据，不持有游戏实例；并发字典不代表被反射对象可跨线程访问。
     private static readonly ConcurrentDictionary<string, Type> TypeCache = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<MemberCacheKey, CachedLookup<PropertyInfo>> PropertyCache = new();
     private static readonly ConcurrentDictionary<MemberCacheKey, CachedLookup<FieldInfo>> FieldCache = new();
     private static readonly ConcurrentDictionary<MethodCacheKey, CachedLookup<MethodInfo>> MethodCache = new();
     private static readonly ConcurrentDictionary<Type, CachedLookup<MethodInfo>> TryCastMethodCache = new();
 
+    /// <summary>查找已经加载的类型；仅缓存命中，以便后续程序集加载后能够重试。</summary>
     public static Type? FindType(string fullName)
     {
         if (TypeCache.TryGetValue(fullName, out var cachedType)) return cachedType;
@@ -35,14 +42,15 @@ internal static class RuntimeReflectionUtility
             }
             catch
             {
-                // Ignore assemblies that cannot resolve unrelated IL2CPP types.
+                // 单个程序集无法解析目标类型时继续搜索，不将其视为全局不存在的证据。
             }
         }
 
-        // Assemblies can load after plugin startup, so failed lookups must remain retryable.
+        // 插件启动之后仍可能加载程序集，失败结果不能进入永久类型缓存。
         return null;
     }
 
+    /// <summary>通过 IL2CPP 包装器的泛型转换尝试取得目标视图；不支持的类型或转换失败返回 null。</summary>
     public static object? TryCastRuntimeObject(object? value, string targetTypeName)
     {
         var targetType = FindType(targetTypeName);
@@ -85,6 +93,7 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    /// <summary>按既有命名候选查找首个非空静态实例；结果仍须由业务读取器核对对象身份和状态。</summary>
     public static object? GetSingletonInstance(Type type)
     {
         foreach (var name in new[] { "Instance", "UniqueInstance", "instance", "m_Instance", "m_instance", "s_Instance", "m_UniqueInstance", "Main", "Singleton", "Current" })
@@ -96,6 +105,7 @@ internal static class RuntimeReflectionUtility
         return null;
     }
 
+    /// <summary>调用 Unity 的单对象查找入口；空值同时涵盖未找到、入口缺失和调用失败。</summary>
     public static object? FindUnityObject(Type type)
     {
         var method = typeof(UnityEngine.Object).GetMethod("FindObjectOfType", new[] { typeof(Type) });
@@ -111,6 +121,7 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    /// <summary>延迟枚举 Unity 查找结果；枚举过程也必须留在允许访问 Unity 对象的线程。</summary>
     public static IEnumerable<object?> FindUnityObjects(Type type)
     {
         var method = typeof(UnityEngine.Object).GetMethod("FindObjectsOfType", new[] { typeof(Type) });
@@ -132,6 +143,10 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    /// <summary>
+    /// 合并常规查找与 Resources 查找，尽量覆盖非活动对象；两路结果可能重复。
+    /// 场景过滤仅用于排除可识别的非运行场景对象，不保证结果完整或对象仍然存活。
+    /// </summary>
     public static IEnumerable<object?> FindUnityObjectsIncludingInactive(Type type)
     {
         foreach (var item in FindUnityObjects(type))
@@ -158,6 +173,7 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    /// <summary>使用可读的场景信息作兼容性过滤；缺少 gameObject 或 scene 时保留候选。</summary>
     public static bool IsRuntimeSceneObject(object? value)
     {
         if (value == null) return false;
@@ -175,6 +191,7 @@ internal static class RuntimeReflectionUtility
         return !string.IsNullOrWhiteSpace(sceneName);
     }
 
+    /// <summary>按参数兼容性、参数数量及名称依次选取候选；无法调用时返回 null。</summary>
     public static object? InvokeStaticMethod(Type type, string methodName, params object?[] args)
     {
         var method = FindMethod(type, methodName, args, isStatic: true)
@@ -192,6 +209,10 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    /// <summary>
+    /// 尝试调用实例成员；候选匹配属于兼容性策略，不构成精确原生签名的验证。
+    /// 返回 null 无法区分合法空返回值、成员缺失和执行异常。
+    /// </summary>
     public static object? InvokeMethod(object? instance, string methodName, params object?[] args)
     {
         if (instance == null) return null;
@@ -210,6 +231,7 @@ internal static class RuntimeReflectionUtility
         }
     }
 
+    /// <summary>沿继承链按候选名称读取非空静态字段或属性；空值和读取失败均继续尝试。</summary>
     public static object? GetStaticMemberValue(Type type, string name)
     {
         const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.FlattenHierarchy;
@@ -230,6 +252,10 @@ internal static class RuntimeReflectionUtility
         return null;
     }
 
+    /// <summary>
+    /// 依次尝试已知字段命名、属性、字段和零参数方法，以适配包装器差异。
+    /// 属性和方法可能执行游戏代码；本方法并非纯内存字段读取，也不证明读取结果来自同一时刻。
+    /// </summary>
     public static object? GetMemberValue(object? instance, string name)
     {
         if (instance == null) return null;
@@ -256,7 +282,7 @@ internal static class RuntimeReflectionUtility
                 }
                 catch
                 {
-                    // Try the next candidate.
+                    // 当前候选无法调用时继续兼容性查找，不把异常解释为业务空值。
                 }
             }
         }
@@ -264,6 +290,10 @@ internal static class RuntimeReflectionUtility
         return null;
     }
 
+    /// <summary>
+    /// 尽力枚举兼容对象；中途异常、空索引项或不支持的形状可能使结果不完整。
+    /// 需要证明集合完整性的路径应使用 RuntimeConcreteCollectionReader，并检查其失败原因。
+    /// </summary>
     public static IEnumerable<object?> EnumerateObjects(object? value)
     {
         if (value == null || value is string) yield break;
@@ -300,6 +330,7 @@ internal static class RuntimeReflectionUtility
             yield break;
         }
 
+        // IL2CPP 包装器不强转为托管 IEnumerable；Values 与索引器是独立尝试，结果可能重复。
         var values = GetMemberValue(value, "Values");
         if (values != null && !ReferenceEquals(values, value))
         {
@@ -323,7 +354,7 @@ internal static class RuntimeReflectionUtility
                 }
                 catch
                 {
-                    // Try the next index.
+                    // 保留后续可读项；调用方不得把已经产出的部分项视作完整集合。
                 }
 
                 if (success) yield return item;
@@ -353,6 +384,7 @@ internal static class RuntimeReflectionUtility
             ?? value;
     }
 
+    /// <summary>优先读取 Count/Length；最后的枚举回退最多计数 256 项，只适合兼容性诊断。</summary>
     public static int CountObjects(object? value)
     {
         if (value == null) return 0;
@@ -363,6 +395,7 @@ internal static class RuntimeReflectionUtility
         return EnumerateObjects(value).Take(256).Count();
     }
 
+    /// <summary>用于宽松展示转换；无法匹配或解析时采用默认值，不提供范围、溢出异常和精确身份保证。</summary>
     public static int ToInt(object? value, int fallback = 0)
     {
         if (value == null) return fallback;
@@ -374,6 +407,7 @@ internal static class RuntimeReflectionUtility
         return int.TryParse(value.ToString(), out var parsed) ? parsed : fallback;
     }
 
+    /// <summary>将空值和无法解析的值折叠为 false；需要区分未知状态的读取器应自行保留可读性。</summary>
     public static bool ToBool(object? value)
     {
         if (value == null) return false;
@@ -387,6 +421,9 @@ internal static class RuntimeReflectionUtility
         return value[..maxLength] + "...";
     }
 
+    /// <summary>
+    /// 获取兼容性对象标识；原生指针不可读时回退到托管对象哈希，不能用作精确原生身份凭据。
+    /// </summary>
     public static nint ReadObjectPointer(object target)
     {
         var pointer = GetMemberValue(target, "Pointer") ?? GetMemberValue(target, "NativePointer") ?? GetMemberValue(target, "m_CachedPtr");
@@ -407,6 +444,7 @@ internal static class RuntimeReflectionUtility
         return new IntPtr(System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(target));
     }
 
+    /// <summary>仅接受可读且非零的原生指针值；成功不保证对象存活或指针不会在以后复用。</summary>
     public static bool TryReadNativeObjectPointer(object? target, out nint pointer)
     {
         pointer = 0;
@@ -582,6 +620,7 @@ internal static class RuntimeReflectionUtility
         }).Value;
     }
 
+    // 此处只筛选候选，不执行参数转换；宽松匹配仍可能在反射调用阶段失败。
     private static bool ArgumentsAreCompatible(IReadOnlyList<ParameterInfo> parameters, IReadOnlyList<object?> args)
     {
         for (var i = 0; i < parameters.Count; i++)

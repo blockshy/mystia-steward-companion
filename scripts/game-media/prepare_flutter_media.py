@@ -122,6 +122,8 @@ def main() -> None:
     if not recipes or not items:
         raise ValueError("不可生成空资源集")
 
+    # 来源清单与实体身份检查完成后才开始生成图片；逐图解码仍可能失败并留下部分输出。
+    # 调用方应保留失败现场检查，不能因目录存在就将它当作完成的资源集。
     image_directory = output / "images"
     image_directory.mkdir(parents=True)
     image_evidence = []

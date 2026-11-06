@@ -13,6 +13,8 @@ class GameFocusOverlayControls extends StatelessWidget {
   final WorkbenchModel model;
   final bool active;
 
+  /// 写入使用当前资源修订执行 CAS；未确认状态仅允许服务端明确开放的恢复默认操作。
+  /// 页面活跃性和编辑权在点击时再次检查，禁用控件本身不能替代请求边界。
   Future<void> _save(DataMap changes) async {
     final current = model.resources[resourcePath] ?? const <String, Object?>{};
     final recovery =

@@ -9,6 +9,7 @@ try
     AssertEqual(0L, initial.Version, "Initial version was not zero.");
     AssertEqual(NightBusinessLifecyclePhase.Inactive, initial.Phase, "Initial phase was not Inactive.");
 
+    // 固定时间和线程编号用于检查快照保真，不依赖测试进程的真实时钟或 Unity 线程。
     var firstAt = new DateTime(2026, 7, 16, 1, 2, 3, DateTimeKind.Utc);
     AssertTrue(tracker.TryActivate("  panel ready  ", firstAt, 101, out var first), "First activation was rejected.");
     AssertEqual(1L, first.Generation, "First activation did not create generation 1.");
@@ -23,6 +24,7 @@ try
     AssertRuntimeBoundaryContract();
     AssertRuntimeLifecycleCallbacks();
 
+    // 关闭与销毁只递增状态版本；直到下一次激活才建立新的经营代次。
     AssertTrue(tracker.TryBeginClosing("close", firstAt.AddSeconds(2), 103, out var closing), "Active session did not enter Closing.");
     AssertEqual(first.Generation, closing.Generation, "Closing changed the business generation.");
     AssertEqual(first.Version + 1, closing.Version, "Closing did not advance the version once.");
@@ -71,6 +73,7 @@ static void AssertEqual<T>(T expected, T actual, string message)
     }
 }
 
+// 静态检查禁止把营业计时结束误当作对象销毁；该阶段仍可能有已入座订单需要服务。
 static void AssertRuntimeBoundaryContract()
 {
     var assembly = typeof(NightBusinessLifecycleTracker).Assembly;
@@ -106,6 +109,7 @@ static void AssertRuntimeBoundaryContract()
         "Recipe-variant identities are not retired before UI target invalidation.");
 }
 
+// 直接调用生产回调并观察替身服务收到的通知；这里不验证 Harmony 的实际注入。
 static void AssertRuntimeLifecycleCallbacks()
 {
     RuntimeBoundaryProbe.Reset();

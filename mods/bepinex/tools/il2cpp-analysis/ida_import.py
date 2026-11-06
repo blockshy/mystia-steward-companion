@@ -32,6 +32,8 @@ def set_name(address: int, name: str) -> bool:
     return bool(idc.set_name(address, f"{name}_{address:X}", flags))
 
 
+# 修改的是当前 IDA 数据库中的分析边界；用下一已识别函数限制范围，避免跨越相邻函数。
+# 此操作不执行游戏二进制，也不能单独证明反编译后的控制流完整正确。
 def recreate_function(start: int, end: int) -> bool:
     next_function = idc.get_next_func(start)
     if next_function != idc.BADADDR and next_function < end:
@@ -104,6 +106,8 @@ def main() -> int:
                     method.get("Signature") or "",
                 ])
 
+    # 多个托管方法可能共享原生地址；完整别名已写入 method_map，数据库命名只保留每地址最后一项。
+    # 查阅精确重载时应结合映射表，不能把 IDA 中的唯一显示名称当作唯一方法身份。
     methods_by_address = {int(method["Address"]): method for method in script_methods}
     unique_methods = sorted(methods_by_address.items())
     for index, (relative_address, method) in enumerate(unique_methods):

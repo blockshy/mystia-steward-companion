@@ -88,6 +88,10 @@ function failUsage() {
   );
 }
 
+/**
+ * 从显式环境变量生成临时签名材料，先验证规范 Base64 与调用方提供的预期摘要，再独占创建两个文件。
+ * 失败仅回滚本次已创建的路径，不覆盖既有材料；校验错误不包含秘密值。
+ */
 function materializeAndroidSigning(options, environment) {
   assertOutputCanBeCreated(options.keystoreOutput, 'Android keystore');
   assertOutputCanBeCreated(options.propertiesOutput, 'Android signing properties');
@@ -138,7 +142,7 @@ function materializeAndroidSigning(options, environment) {
       try {
         closeSync(descriptor);
       } catch {
-        // Cleanup of the exclusively claimed paths remains the authoritative rollback.
+        // 关闭失败不跳过后续路径清理；回滚范围仅限本次独占创建成功的文件。
       }
     }
     if (propertiesCreated) rmSync(options.propertiesOutput, { force: true });
@@ -149,6 +153,7 @@ function materializeAndroidSigning(options, environment) {
   console.log('Android signing material was created without exposing secret values.');
 }
 
+/** 先检查两个显式目标的文件类型，再删除存在的普通文件；调用方应传入本次任务专用输出路径。 */
 function cleanupAndroidSigningMaterial(options) {
   const cleanupTargets = [
     inspectCleanupTarget(options.propertiesOutput, 'Android signing properties'),
@@ -231,6 +236,7 @@ function serializeProperties(values) {
   ].join('\n');
 }
 
+/** 按 Java properties 的转义规则保存原值；逐 UTF-16 单元编码非 ASCII 字符，避免路径或密码被截断解析。 */
 function escapeJavaProperty(value) {
   let escaped = '';
   for (let index = 0; index < value.length; index += 1) {

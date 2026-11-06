@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>区分邀请列表运行时编号与稀客目录编号；只有来源客人和 NPC 角色编号一致时才能建立映射。</summary>
 internal readonly record struct RuntimeRareGuestInvitationIdentity(
     int RuntimeId,
     int CanonicalGuestId)

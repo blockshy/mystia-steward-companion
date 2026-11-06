@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>任务交付对象和地图的展示投影，显式区分无接收者、待读取及不同读取失败状态。</summary>
 internal sealed record RuntimeMissionPresentation(
     string ReceiverLabel,
     string CharacterName,
@@ -57,6 +58,7 @@ internal sealed record RuntimeMissionPresentation(
             PresentationStatus: PendingStatus);
     }
 
+    /// <summary>验证长度、集合唯一性和状态对应的必需字段；展示就绪允许没有场景，但必须有角色名称。</summary>
     public static bool IsValid(RuntimeMissionPresentation? presentation)
     {
         if (presentation == null
@@ -118,6 +120,7 @@ internal sealed record RuntimeMissionPresentation(
             or EntryReadUnavailableStatus;
     }
 
+    /// <summary>返回前四次失败后的退避间隔；总尝试次数上限由调用方按 MaxAttemptCount 执行。</summary>
     public static TimeSpan RetryDelayAfterAttempt(int attemptCount)
     {
         return attemptCount switch

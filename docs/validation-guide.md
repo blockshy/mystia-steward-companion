@@ -7,13 +7,14 @@
 | 范围 | 检查 |
 | --- | --- |
 | Flutter UI/状态 | apps/companion-flutter 中 flutter analyze、flutter test；1280/640/390、大字体、深色、中文IME、焦点、空/错状态 |
-| Dart协议与客户端 | companion_protocol / companion_client 的独立包测试；tests/flutter-contracts 中 dart analyze、dart run bin/verify.dart；完整模式先构建真实 .NET 6 host |
+| Dart协议与客户端 | companion_protocol / companion_client 分别 analyze；共用回归位于 tests/flutter-contracts，运行 dart analyze、dart run bin/verify.dart；完整模式先构建真实 .NET 6 host |
 | Windows平台 | packages/companion_platform 测试 + Windows Release构建 + 隔离控制端口/存储的原生smoke |
 | Android平台 | 平台Dart测试 + 双ABI Release编译；正式升级还需正确签名与设备测试 |
 | C#业务 | corepack pnpm audit:business；冻结oracle差分、模拟订单/租约/场景边界 |
 | 完整包/更新 | Node/C#/Rust共同manifest负例、updater测试、隔离安装/故障回退、路径/链接拒绝 |
 | Mod | Release构建，真实.NET6宿主；按变化补现有runtime smoke |
 | 文档 | 路径/链接/命令审查、git diff --check |
+| 仅源码注释 | 对照实现和调用方复核语义，检查源码词法单元或语法结构未变；执行相关语言分析/编译及现有回归，生成注释另做生成一致性检查 |
 
 ## 非游戏验证入口
 
@@ -44,7 +45,9 @@ cargo test --locked --manifest-path native/updater/Cargo.toml
 corepack pnpm audit:business
 ```
 
-以上在仓库根目录执行，Flutter/Dart 入口核对根工具锁。`flutter:verify` 只覆盖应用 analyze/test，`flutter:contracts-test` 覆盖独立 Dart runner；二者不隐含格式、生成一致性或全部独立包测试。修改 `packages/companion_protocol`、`packages/companion_client` 或 `packages/companion_platform` 时，还应分别在受影响包目录用同一 SDK 的 Flutter 执行 `pub get --enforce-lockfile`、`analyze --fatal-infos` 和 `test`；纯 Dart 契约工程的 analyze 另在 `tests/flutter-contracts` 执行。
+以上在仓库根目录执行，Flutter/Dart 入口核对根工具锁。`flutter:verify` 只覆盖应用 analyze/test，`flutter:contracts-test` 覆盖独立 Dart runner；二者不隐含格式、生成一致性或平台包测试。
+
+修改 `packages/companion_platform` 时，在包目录用同一 SDK 的 Flutter 执行 `pub get --enforce-lockfile`、`analyze --fatal-infos` 和 `test`。协议包与客户端包当前均没有独立 `test` 目录；客户端包有受管 `pubspec.lock`，可用同一 SDK 的 Dart 执行 `pub get --enforce-lockfile`，同时解析其协议包路径依赖。协议包自身没有受管锁文件，不应单独套用 `--enforce-lockfile`。两包分别执行 `dart analyze --fatal-infos`，完整回归通过 `tests/flutter-contracts` 的锁定依赖及统一 runner 执行。纯 Dart 契约工程本身的 analyze 也需另行运行，不能将不存在的测试入口记为通过。
 
 公开仓库或没有私有引用的环境使用 `flutter:verify-unit`（排除 `production-http` 测试）与 `flutter:contracts-unit`。这是明确缩小的公共子集，不代表真实生产 HTTP、Mod 构建或原生平台已经验证。普通 CI 仅由 `.github/workflows/ci.yml` 的 `workflow_dispatch` 手动触发，推送或创建 PR 不会自动运行。
 

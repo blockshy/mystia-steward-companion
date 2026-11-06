@@ -4,6 +4,8 @@ using HarmonyLib;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>观察幽幽子评价入口并按回调元数据描述识别剧情或复战路线，提供诊断与路线选择证据。</summary>
+/// <remarks>识别结果不代表评价已经执行或进度已经增加；访问控制器及委托包装器须处于游戏主线程。</remarks>
 internal static class YuyukoChallengeEvaluationTracker
 {
     private const string GuestsManagerTypeName = "NightScene.GuestManagementUtility.GuestsManager";
@@ -28,6 +30,8 @@ internal static class YuyukoChallengeEvaluationTracker
         }
     }
 
+    /// <summary>为已有评价入口安装只观察的前置补丁；已登记的入口跳过，缺失类型留待后续 Attach 重试。</summary>
+    /// <remarks>匹配依据是类型、方法名及参数数量，不提供参数类型级的唯一重载证明。</remarks>
     public static void Attach(ManualLogSource log)
     {
         var patchedNow = new List<string>();
@@ -66,6 +70,7 @@ internal static class YuyukoChallengeEvaluationTracker
         }
     }
 
+    /// <summary>在活动经营中查找剧情计分回调的已知描述特征；只检查元数据，不主动调用委托。</summary>
     public static bool TryFindYuyukoStoryPhase3ScoreCallback(object? callback, out string detail)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -96,6 +101,7 @@ internal static class YuyukoChallengeEvaluationTracker
         return false;
     }
 
+    /// <summary>识别复战 Boss 进度回调，并向特殊经营上下文登记复战证据；不修改游戏进度。</summary>
     public static bool TryFindYuyukoRetakePhase3BossProgressCallback(object? callback, out string detail)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -127,6 +133,7 @@ internal static class YuyukoChallengeEvaluationTracker
         return false;
     }
 
+    /// <summary>识别复战客群进度回调；命中后登记复战证据，调用者仍须校验当前订单与阶段。</summary>
     public static bool TryFindYuyukoRetakePhase3GroupProgressCallback(object? callback, out string detail)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -158,6 +165,7 @@ internal static class YuyukoChallengeEvaluationTracker
         return false;
     }
 
+    /// <summary>按已知闭包及方法描述识别复战手动完成回调；返回 true 仅表明存在匹配项。</summary>
     public static bool TryFindYuyukoRetakePhase3ManualProgressCallback(object? callback, out string detail)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -188,6 +196,7 @@ internal static class YuyukoChallengeEvaluationTracker
         return false;
     }
 
+    /// <summary>查找剧情手动推进所需的回调特征；不把委托存在或名称相似单独当作可结算许可。</summary>
     public static bool TryFindYuyukoPhase3ManualProgressCallback(object? callback, out string detail)
     {
         if (!RuntimeNightBusinessLifecycle.IsActive)
@@ -310,10 +319,11 @@ internal static class YuyukoChallengeEvaluationTracker
         }
         catch
         {
-            // Harmony diagnostics must never affect the game's evaluation path.
+            // 诊断读取失败在观察边界内终止，不能把异常传播到游戏原有评价调用。
         }
     }
 
+    /// <summary>仅在第三阶段采集评价入口附近的即时状态；记录的是调用观测，不是原生调用完成确认。</summary>
     private static void AppendNativeEvaluationTrace(
         string eventName,
         object? controller,
@@ -389,10 +399,11 @@ internal static class YuyukoChallengeEvaluationTracker
         }
         catch
         {
-            // Evaluation tracing must never affect gameplay.
+            // 采集与写入诊断失败均不改变原评价流程的返回或控制流。
         }
     }
 
+    /// <summary>按事件、对象标识、附加参数及进度压缩重复日志；节流只影响诊断，不承担业务去重。</summary>
     private static bool ShouldThrottle(
         string eventName,
         object? controller,
@@ -483,6 +494,7 @@ internal static class YuyukoChallengeEvaluationTracker
                 && text.Contains("|70", StringComparison.Ordinal));
     }
 
+    /// <summary>优先读取调用列表，无法枚举时保留原回调供描述匹配；不据此保证调用列表完整或只有一项。</summary>
     private static IEnumerable<object> EnumerateCallbackEntries(object? callback)
     {
         if (callback == null) yield break;

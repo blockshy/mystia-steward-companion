@@ -28,6 +28,8 @@ public static partial class NormalTargetSelector
         var best = BestPair(foods.Where(x => NoHardFailures(x)), beverages, FoodScore, BeverageScore, (f, b) => FoodScore(f) + BeverageScore(b));
         var tags = Obj(rule["foodTarget"])["tags"]; var text = string.Join("、", Strings(tags));
         if (best != null) return Target(o, best.Value.Food, best.Value.Beverage, $"保持原订单料理与酒水，并同时满足{label}目标标签：{text}", Object(("specialTargetFoodTags", tags)));
+        // 受控推进只放宽特殊目标标签这一项；配方、基础材料、厨具和酒水的硬性失败仍然有效。
+        // 返回策略显式携带允许低收益推进的标记，由执行侧继续核验原订单与运行时角色。
         best = BestPair(foods.Where(x => NoHardFailures(x, "food.special-target-tag")), beverages, FoodScore, BeverageScore, (f, b) => FoodScore(f) + BeverageScore(b));
         if (best == null) return Empty(YuumaBlockMessage(label, recipe, drink, context, data, tags));
         var matched = Strings(best.Value.Food["matchedSpecialFoodTargetTags"]); var matchText = matched.Length > 0 ? $"仅命中 {matched.Length}/{Arr(tags).Count} 个目标标签：{string.Join("、", matched)}" : $"未命中当前目标标签：{text}";

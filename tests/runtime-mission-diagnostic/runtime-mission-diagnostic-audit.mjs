@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+// 通过正式源码约束任务读取、投影及发布的依赖边界；不读取存档或调用游戏任务系统。
 const readSource = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
 const capture = readSource(

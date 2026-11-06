@@ -16,6 +16,7 @@ internal sealed record YuumaCookerTopologySnapshotIdentity(
     int ControllerCount,
     int LockedControllerCount);
 
+/// <summary>校验厨具索引、原生身份、格位及锁定集合后计算结构摘要，用于执行前后比对厨具拓扑。</summary>
 internal static class YuumaCookerTopologySnapshotIdentityBuilder
 {
     private const int SignatureVersion = 1;
@@ -62,6 +63,7 @@ internal static class YuumaCookerTopologySnapshotIdentityBuilder
             return false;
         }
 
+        // 先规范排序，再以固定端序和长度前缀编码；避免枚举顺序或字符串拼接歧义改变拓扑身份。
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         AppendInt32(hash, SignatureVersion);
         AppendInt32(hash, orderedControllers.Length);

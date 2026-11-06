@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>先读取当前挑战上下文再分派订单分类；挑战读取失败必须保留阻止原因，不能假定普通经营。</summary>
 internal static class SpecialBusinessOrderClassifier
 {
     public static SpecialBusinessOrderClassification Classify(object? order, object? controller, string source = "")

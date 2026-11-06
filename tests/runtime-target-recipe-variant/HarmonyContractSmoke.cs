@@ -1,6 +1,10 @@
 using System.Runtime.CompilerServices;
 using HarmonyLib;
 
+/// <summary>
+/// 在当前托管进程中实际安装 Harmony 补丁，验证参数回写、共享状态与 finalizer 的调用契约。
+/// 目标均为本工程的探针类；通过结果不代表游戏 IL2CPP 目标已成功注入。
+/// </summary>
 internal static class HarmonyContractSmoke
 {
     private const string HarmonyId =
@@ -177,6 +181,7 @@ internal static class HarmonyContractSmoke
         }
     }
 
+    // 对比参数数组修改和精确 ref 参数替换，固定当前 HarmonyX 依赖的非回写行为。
     private static void VerifyArgumentArrayDoesNotWriteBack()
     {
         var originalRecipe = new RecipeProbe("original");
@@ -337,6 +342,7 @@ internal static class HarmonyContractSmoke
         AssertSubmitLeaseContract(target, SubmitTarget.ExpectedException);
     }
 
+    // 正常返回与异常返回共用这些断言：许可在原方法内有效，并在原线程恰好释放一次。
     private static void AssertSubmitLeaseContract(
         SubmitTarget target,
         Exception? expectedException)
@@ -484,6 +490,7 @@ internal static class HarmonyContractSmoke
             "The skipped-original finalizer did not dispose the exact prefix lease.");
     }
 
+    // 前缀在已赋予状态后失败，仍必须进入清理，防止把异常路径变成许可泄漏。
     private static void VerifyPrefixFailureStillFinalizesAssignedState()
     {
         PrefixFailurePatch.ResetInvocation();

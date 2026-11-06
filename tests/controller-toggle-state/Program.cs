@@ -14,6 +14,8 @@ catch (Exception ex)
     return 1;
 }
 
+// 同一次物理按住期间，即使输入源再次报告按下边沿，也只能触发一次切换。
+// 松开只解除锁存，不应自身触发操作。
 static void VerifyPressIsLatchedUntilRelease()
 {
     var state = new ControllerToggleState();
@@ -24,6 +26,7 @@ static void VerifyPressIsLatchedUntilRelease()
     AssertEqual(true, state.Update(held: true, pressedThisFrame: true), "A new edge after release was not accepted.");
 }
 
+// 连续帧数用于放大长按场景；测试要求由释放事件重新武装，而非由冷却时间重新武装。
 static void VerifyHeldInputDoesNotRearmAfterTime()
 {
     var state = new ControllerToggleState();
@@ -34,6 +37,7 @@ static void VerifyHeldInputDoesNotRearmAfterTime()
     }
 }
 
+// 首次观察到的状态可能已经处于按住阶段；迟到的边沿不能被视为新的物理按压。
 static void VerifyHeldObservationWithoutEdgeStillLatches()
 {
     var state = new ControllerToggleState();

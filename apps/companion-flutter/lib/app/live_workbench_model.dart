@@ -1370,7 +1370,7 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     });
   }
 
-  /// 模式变更同样进入共享配置队列：自定义读取出队时的最新九项，不能由页面
+  /// 模式变更同样进入共享配置队列：自定义读取出队时的最新目标集合，不能由页面
   /// 携带旧目标列表覆盖先前保存；预设切换一次替换整套固定值，不经过中间状态。
   @override
   Future<void> updateSortMode(String mode) => _queueProfile(

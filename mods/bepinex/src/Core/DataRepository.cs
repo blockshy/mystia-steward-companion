@@ -1,5 +1,7 @@
 namespace MystiaStewardCompanion.Core;
 
+/// <summary>保存一次运行时目录的托管列表及查询索引；目录刷新时整体替换实例，避免索引与内容跨版本混用。</summary>
+/// <remarks>FromRuntime 复制容器但不深复制元素；发布后调用方须将目录对象视为只读。</remarks>
 public sealed class DataRepository
 {
     private DataRepository(

@@ -5,6 +5,10 @@ using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>
+/// 从游戏运行时数据库构建供业务层使用的纯托管目录；关键依赖读取失败时整批目录不可用。
+/// 首次读取和重置后的重建必须由可访问游戏对象的线程发起；锁只保护缓存发布，不调度主线程。
+/// </summary>
 internal sealed class RuntimeStaticDataCatalog
 {
     private const string DataBaseCoreTypeName = "GameData.Core.Collections.DataBaseCore";
@@ -23,6 +27,7 @@ internal sealed class RuntimeStaticDataCatalog
     private static RuntimeStaticMethodSet? _cachedMethods;
     private static bool _loaded;
 
+    /// <summary>复用已完整加载的目录；上次失败时重新采集，使数据库尚未就绪的情况可以恢复。</summary>
     public RuntimeStaticDataSnapshot Snapshot()
     {
         EnsureLoaded();
@@ -32,6 +37,7 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
+    /// <summary>撤销已发布数据的可复用状态；反射方法元数据保留，后续仍按实际 Type 校验缓存。</summary>
     public static void ResetSnapshot()
     {
         lock (SyncRoot)
@@ -48,6 +54,7 @@ internal sealed class RuntimeStaticDataCatalog
             if (_loaded) return;
         }
 
+        // 游戏读取放在发布锁外；调用方仍须串行安排采集，锁本身不提供跨线程快照一致性。
         var nextSnapshot = ReadSnapshot();
         lock (SyncRoot)
         {
@@ -56,6 +63,10 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
+    /// <summary>
+    /// 先建立映射根及配方依赖闭包，再读取名称、标签和客户目录，全部关键检查通过后发布。
+    /// phase 标记用于定位失败阶段；任何必需项失败都返回空业务目录，避免把部分目录当成完整数据。
+    /// </summary>
     private static RuntimeStaticDataSnapshot ReadSnapshot()
     {
         var phase = "resolve-types";
@@ -98,6 +109,7 @@ internal sealed class RuntimeStaticDataCatalog
 
             phase = "read-recipe-descriptors";
             var recipeDescriptors = ReadRecipeDescriptors(methods.RefRecipe, recipeIds);
+            // 配方引用可能不在映射根中；先补齐依赖 ID，再读取食材和成品，不能靠连续 ID 扫描推测。
             phase = "resolve-recipe-dependencies";
             var recipeDependencies = RuntimeRecipeDependencyProjection.Build(
                 ingredientIds,
@@ -138,6 +150,7 @@ internal sealed class RuntimeStaticDataCatalog
                 beverageTags,
                 places.RarePlacesByGuestId);
 
+            // 此完整性针对本适配器所需目录及过滤规则，不表示游戏所有隐藏内容均向业务层开放。
             phase = "validate-catalog";
             var catalog = new RuntimeDataCatalog
             {
@@ -212,6 +225,7 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
+    /// <summary>读取映射根及配方依赖食材，并核对返回对象 ID；失败诊断保留引用配方来源。</summary>
     private static List<Ingredient> ReadIngredients(
         MethodInfo refIngredient,
         MethodInfo getIngredientLang,
@@ -333,6 +347,7 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
+    /// <summary>将已验证配方身份及依赖复制为托管描述，后续构建不保留原生配方对象。</summary>
     private static List<RuntimeRecipeDescriptor> ReadRecipeDescriptors(
         MethodInfo refRecipe,
         IReadOnlyList<int> ids)
@@ -362,6 +377,10 @@ internal sealed class RuntimeStaticDataCatalog
         return result;
     }
 
+    /// <summary>
+    /// 以已读依赖组装配方；FoodId 是成品身份，RecipeId 保留原配方身份，两者不可互换。
+    /// 缺少任一依赖立即拒绝目录，不用显示名称补配或省略重复食材。
+    /// </summary>
     private static List<Recipe> MaterializeRecipes(
         IReadOnlyList<RuntimeRecipeDescriptor> descriptors,
         IReadOnlyDictionary<int, RuntimeFoodData> foods,
@@ -410,6 +429,7 @@ internal sealed class RuntimeStaticDataCatalog
         return result;
     }
 
+    /// <summary>仅纳入可见、具有已支持出没地点且至少有一类偏好的普客；筛选规则不代表原生名单为空。</summary>
     private static List<NormalCustomer> ReadNormalCustomers(
         MethodInfo getAllNormalGuests,
         MethodInfo getNormalGuestLang,
@@ -445,6 +465,10 @@ internal sealed class RuntimeStaticDataCatalog
         return result.OrderBy(customer => customer.Id).ToList();
     }
 
+    /// <summary>
+    /// 投影具备可点单料理标签和酒水偏好的稀客；全地图类型使用支持的地点列表。
+    /// 其他稀客允许地点列表为空，但有效条目的本地化名称缺失会使目录构建失败。
+    /// </summary>
     private static List<RareCustomer> ReadRareCustomers(
         MethodInfo getAllSpecialGuests,
         IReadOnlyDictionary<int, string> names,
@@ -494,6 +518,7 @@ internal sealed class RuntimeStaticDataCatalog
         return result.OrderBy(customer => customer.Id).ToList();
     }
 
+    /// <summary>按居酒屋配置汇总客户地点；不支持的地点跳过客池，已支持地点的客池不可读则拒绝目录。</summary>
     private static RuntimeIzakayaPlaces ReadIzakayaPlaces(
         MethodInfo refIzakaya,
         IReadOnlyList<int> ids)
@@ -625,6 +650,7 @@ internal sealed class RuntimeStaticDataCatalog
         };
     }
 
+    // 使用具体字典完整读取结果和各映射的 ID 域规则；缺失成员不能按空映射继续。
     private static IReadOnlyList<int> ReadCoreMappingIds(
         Type coreType,
         string memberName,
@@ -641,6 +667,7 @@ internal sealed class RuntimeStaticDataCatalog
         return RuntimeCoreMappingProjection.ReadIds(entries, memberName, idDomain);
     }
 
+    /// <summary>要求非空、有界且键值类型精确的语言映射；拒绝重复 ID，负 ID 是否允许由映射用途决定。</summary>
     private static IReadOnlyDictionary<int, string> ReadRequiredIntStringDictionary(
         MethodInfo method,
         bool allowNegativeIds)
@@ -735,6 +762,7 @@ internal sealed class RuntimeStaticDataCatalog
         return items;
     }
 
+    // 业务目录只需要偏好标签集合，此投影提取 tagId，不把原生抽取权重解释为推荐评分。
     private static List<string> ReadWeightedTagNames(
         IReadOnlyList<object?> weightedTags,
         IReadOnlyDictionary<int, string> tagNames)
@@ -749,6 +777,7 @@ internal sealed class RuntimeStaticDataCatalog
         return ReadTagNames(ids, tagNames);
     }
 
+    /// <summary>严格解析每个标签 ID，再按规范名称去重；语言映射缺项不以数字或未知标签代替。</summary>
     private static List<string> ReadTagNames(
         IEnumerable<int> ids,
         IReadOnlyDictionary<int, string> tagNames)
@@ -822,6 +851,7 @@ internal sealed class RuntimeStaticDataCatalog
             ?? throw new InvalidOperationException($"{fullName} is not loaded.");
     }
 
+    // 缓存绑定到三个实际 Type；同名类型来自不同程序集实例时重新解析整组方法。
     private static RuntimeStaticMethodSet ResolveRequiredMethods(
         Type coreType,
         Type languageType,
@@ -860,6 +890,7 @@ internal sealed class RuntimeStaticDataCatalog
         }
     }
 
+    /// <summary>要求名称、静态性及参数类型精确匹配且候选唯一；返回类型须非 void，具体值形状由读取步骤复核。</summary>
     private static MethodInfo RequireExactStaticMethod(
         Type type,
         string methodName,
@@ -885,6 +916,7 @@ internal sealed class RuntimeStaticDataCatalog
         return matches[0];
     }
 
+    // 展开反射包装异常并保留原异常堆栈，让失败阶段指向数据库调用本身而非反射外壳。
     private static object InvokeRequiredStatic(MethodInfo method, params object?[] args)
     {
         try
@@ -1040,6 +1072,7 @@ internal sealed class RuntimeStaticDataCatalog
         return FoodTags.NormalizeName(text) ?? text;
     }
 
+    // 只转换已知枚举名称；未知名称保留原值，避免误归入任一已知厨具。
     private static string NormalizeCooker(string value)
     {
         return value.Trim() switch

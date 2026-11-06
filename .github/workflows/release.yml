@@ -20,6 +20,7 @@ on:
 
 permissions: {}
 
+# 正式发布串行排队且不取消进行中的任务，避免在标签、草稿或资产写入之间被新任务中断。
 concurrency:
   group: official-release
   cancel-in-progress: false
@@ -884,6 +885,7 @@ jobs:
           overwrite: false
           retention-days: 40
 
+  # 只消费此前校验并组装的资产；发布步骤按同一提交重新确认远端身份，不在此重新构建载荷。
   publish:
     name: Publish immutable official release
     needs:

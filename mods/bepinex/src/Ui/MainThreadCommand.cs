@@ -7,6 +7,8 @@ internal interface IMainThreadCommand : IDisposable
     bool Cancel(Exception error);
 }
 
+/// <summary>协调工作线程等待与主线程执行，使用原子状态转换保证排队命令只能被执行或取消一次。</summary>
+/// <remarks>派生类保存托管请求值；实际 Unity 访问只能在主线程取得执行权后进行。</remarks>
 internal abstract class MainThreadCommand<TResult> : IMainThreadCommand
     where TResult : class
 {
@@ -52,6 +54,7 @@ internal abstract class MainThreadCommand<TResult> : IMainThreadCommand
         _completion.Set();
     }
 
+    /// <summary>仅取消尚未开始的命令；已开始的操作可能产生副作用，不能用超时伪装成已取消。</summary>
     public bool Cancel(Exception error)
     {
         if (error == null) throw new ArgumentNullException(nameof(error));
@@ -69,8 +72,8 @@ internal abstract class MainThreadCommand<TResult> : IMainThreadCommand
             var timeoutError = new TimeoutException(timeoutMessage);
             if (Cancel(timeoutError)) throw timeoutError;
 
-            // Once execution has started, wait for its definitive result so callers never retry an
-            // operation that may already have changed game state.
+            // 超时后若无法撤销排队，则等待最终执行结果。此处刻意不再使用超时，
+            // 避免调用方把可能已改变游戏状态的操作当作失败并重复提交。
             _completion.Wait();
         }
 

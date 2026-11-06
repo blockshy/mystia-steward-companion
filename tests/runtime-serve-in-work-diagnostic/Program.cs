@@ -68,6 +68,7 @@ static void AssertSnapshotIsManagedAndSerializable()
     AssertContains(json, "\"Events\"", "Snapshot JSON omitted bounded diagnostic events.");
 }
 
+// 服务任务信号同时属于任务与经营两种代次；任一代次失效或经营未激活都不能继续使用。
 static void AssertSignalsRequireCurrentActiveGenerations()
 {
     var state = new RuntimeServeInWorkMissionDiagnosticState();
@@ -399,6 +400,7 @@ static void AssertActiveSignalKeyConstructionFailsClosed()
         "A negative task food ID produced an active key.");
 }
 
+// 重复观察只更新有界诊断状态，不得无限追加事件；此处不把诊断采样次数视为游戏执行次数。
 static void AssertEventsAreStableDeduplicatedAndBounded()
 {
     var state = CreateActiveState();

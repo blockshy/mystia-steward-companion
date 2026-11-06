@@ -135,6 +135,10 @@ function stageAndVerifyAndroidApks(signedApksToStage, signer, aapt2Command) {
   }
 }
 
+/**
+ * 对已经验证的各 ABI 副本先备份旧资产，再按完整集合安装；失败按逆序撤销本次安装并恢复备份。
+ * 若回滚不完整则保留暂存目录，不以清理临时文件为由销毁恢复材料。
+ */
 function commitStagedAndroidApks(stagedApksToCommit) {
   const installedPaths = [];
   const backups = [];
@@ -432,6 +436,10 @@ function isSignedReleaseApk(candidate) {
     && (normalized.includes('/release/') || normalized.endsWith('-release.apk'));
 }
 
+/**
+ * 以 APK 内部 applicationId、版本和 ABI 核对候选，文件名只用于关联预期目标。
+ * 每个目标必须恰有一个候选，任何多余或歧义产物都会失败，避免发布旧增量构建残留。
+ */
 function resolveReleaseAndroidApkCandidates(candidates, inspectBadging, expectedVersionName, expectedVersionCode = readFlutterAndroidVersionCode(expectedVersionName)) {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     throw new Error('Expected signed Android release APK candidates.');

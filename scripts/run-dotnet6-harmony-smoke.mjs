@@ -13,6 +13,8 @@ if (dotnet6GlobalJson.sdk?.version !== toolchain.dotnet6HarmonySdk
   throw new Error('The .NET 6 Harmony SDK selector does not match toolchain.lock.json.');
 }
 
+// 探针依赖锁定的 .NET 6/Harmony 运行环境，普通宿主编译通过不能替代实际补丁初始化。
+// 命令来自固定白名单，用户参数只选择条目，不参与容器内 shell 命令拼接。
 const smokeTests = new Map([
   ['automation-cooking-job', [
     'dotnet run --project tests/automation-cooking-job/AutomationCookingJobSmoke.csproj -c Release',
@@ -39,6 +41,8 @@ if (selected.length === 0 || selected.some((name) => !smokeTests.has(name))) {
 for (const name of selected) {
   const commands = smokeTests.get(name);
   console.log(`Running locked .NET 6 Harmony smoke: ${name}`);
+  // 仓库以可写目录挂载以容纳构建输出，SDK 选择文件单独只读覆盖；不会挂载游戏目录。
+  // 容器命令失败立即停止，不把前面已通过的项目误报为整组通过。
   const dockerArgs = [
     'run',
     '--rm',

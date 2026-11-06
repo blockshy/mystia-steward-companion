@@ -1,3 +1,5 @@
+// 从 Flutter 生成的本地配置定位 SDK，再加载同一 SDK 的 Gradle 插件；缺失配置直接失败。
+// local.properties 属于本机环境，不应把其中的绝对路径写入受管构建配置。
 pluginManagement {
     val flutterSdkPath =
         run {

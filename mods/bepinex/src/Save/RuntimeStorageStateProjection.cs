@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>按有界、去重后的目录编号读取库存与配方解锁状态，将运行时访问委托的结果投影为托管集合。</summary>
 internal static class RuntimeStorageStateProjection
 {
     private const int MaxCatalogItems = 4096;
@@ -52,6 +53,7 @@ internal static class RuntimeStorageStateProjection
                     $"Runtime {itemType} {id} returned invalid quantity {quantity}.");
             }
 
+            // 零库存不占用结果项；保留 -1 哨兵，不能把该有效库存状态截断为零。
             if (quantity != 0) result.Add(id, quantity);
         }
 

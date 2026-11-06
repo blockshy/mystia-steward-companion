@@ -28,6 +28,7 @@ class CompanionApi {
     return binary.image(connection, generation: generation, key: key);
   }
 
+  /// 返回未经业务成功判定的只读载荷；pending/error 等字段由对应 DTO 或页面资源解释。
   Future<JsonMap> read(
     String path, {
     Map<String, String> query = const {},
@@ -41,6 +42,8 @@ class CompanionApi {
     authorityRevision: authorityRevision,
     timeout: timeout,
   );
+
+  /// 发送一次操作请求并统一检查业务拒绝；不重试，也不把 HTTP 成功等同于操作成功。
   Future<JsonMap> write(
     String path, {
     Map<String, String> query = const {},
@@ -85,6 +88,8 @@ class CompanionApi {
   );
   Future<DeviceAuthorityState> devices() async =>
       DeviceAuthorityState.fromJson(await read('/devices'));
+
+  /// 同时提交预期权威修订与本设备配置修订，服务端据此拒绝基于旧状态的覆盖。
   Future<DeviceAuthorityState> updateProfile(
     DeviceAuthorityState expected,
     CompanionProfile profile,
@@ -113,6 +118,9 @@ class CompanionApi {
       },
     ),
   );
+
+  /// 确认指定同步事务及配置摘要。调用者必须先完成本地原子持久化与回读校验；
+  /// 此 API 只编码确认请求，不能代替存储层证明配置已经落盘。
   Future<DeviceAuthorityState> acknowledgeSync(
     DeviceAuthorityState expected,
   ) async => DeviceAuthorityState.fromJson(
@@ -234,6 +242,7 @@ class CompanionApi {
     return null;
   }
 
+  /// 查询、获取及释放均返回租约状态，包括明确拒绝；控制器据此维护本地可执行门禁。
   Future<AutomationLease> lease(int revision) async => AutomationLease.fromJson(
     await read('/automation/lease', authorityRevision: revision),
   );

@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Plugin;
 
+/// <summary>控制台窗口的最小平台能力接口；实现负责实际窗口操作及状态读取。</summary>
 internal interface IBepInExConsoleRuntime
 {
     bool IsSupported { get; }
@@ -14,6 +15,7 @@ internal interface IBepInExConsoleRuntime
     void Hide();
 }
 
+/// <summary>一次操作的结果快照；配置可见性与实际窗口可见性分别返回，避免混淆保存意图和执行结果。</summary>
 internal sealed class BepInExConsoleWindowState
 {
     public bool Ok { get; init; }
@@ -25,6 +27,7 @@ internal sealed class BepInExConsoleWindowState
     public string? Error { get; init; }
 }
 
+/// <summary>串行协调控制台窗口状态和持久化偏好，并在失败时尽力恢复操作前的状态。</summary>
 internal sealed class BepInExConsoleWindowService
 {
     private readonly object _gate = new();
@@ -38,6 +41,7 @@ internal sealed class BepInExConsoleWindowService
         _runtime = runtime ?? throw new ArgumentNullException(nameof(runtime));
     }
 
+    /// <summary>绑定一次偏好读写委托，防止运行中更换存储来源导致回滚写入不同配置。</summary>
     public void ConfigurePreference(
         Func<bool> readConfiguredVisibility,
         Action<bool> writeConfiguredVisibility)
@@ -66,6 +70,8 @@ internal sealed class BepInExConsoleWindowService
         }
     }
 
+    /// <summary>先操作并读回窗口状态，再保存偏好；任一步失败均返回失败及可观测的回滚错误。</summary>
+    /// <remarks>回滚只恢复可见性及偏好，不销毁本次新建的控制台，也不移除日志监听器。</remarks>
     public BepInExConsoleWindowState ApplyVisibility(bool visible)
     {
         lock (_gate)
@@ -252,6 +258,8 @@ internal sealed class BepInExConsoleWindowService
         _pendingCloseProtectionWindow = 0;
     }
 
+    // 仅保护本服务从“无句柄”状态创建的窗口，不改动调用前已存在控制台的关闭策略。
+    // 保护失败保留精确句柄；后续显示请求仅在该窗口仍存在时重试。
     private Exception? TryProtectNewWindow(nint previousWindow)
     {
         try

@@ -4,7 +4,7 @@ import '../app/workbench_model.dart';
 int? favoriteEntityId(Object? value) =>
     value is int && value >= 0 ? value : null;
 
-/// 收藏身份沿用 main/FavoriteStore 的集合语义：重复材料去重后按 ID 排序。
+/// 收藏身份遵循服务端 FavoriteStore 的集合语义：重复材料去重后按 ID 排序。
 /// 这里只生成新的收藏键，不修改原方案的制作材料序列；未知材料不按空加料处理。
 List<int>? safeFavoriteExtraIds(Object? value, {bool entities = false}) {
   if (value is! List) return null;

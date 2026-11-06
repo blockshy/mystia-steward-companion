@@ -1,3 +1,5 @@
+// 此工程读取正式源码，检查厨具重新获取与最终提交的调用顺序。
+// 它不执行原生送达、取出或复位，因此通过结果仅属于结构契约证据。
 try
 {
     var root = FindRepositoryRoot();
@@ -23,6 +25,7 @@ catch (Exception ex)
     return 1;
 }
 
+// 跨帧任务应保存预约与精确身份值，临执行时再获取包装对象，防止沿用起锅时的陈旧引用。
 static void VerifyJobRetainsOnlyManagedCookerIdentity(string service, string cooking)
 {
     var job = ExtractBlock(service, "private sealed class AutomationCookingJob");

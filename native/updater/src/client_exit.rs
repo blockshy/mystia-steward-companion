@@ -8,6 +8,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// 严格解析单行退出回执，返回 PID 与创建时间；格式有效只证明身份字段可读，不能证明进程已经退出。
 pub fn parse_reply(bytes: &[u8]) -> Result<(u32, u64), String> {
     let reply = std::str::from_utf8(bytes).map_err(|_| "exit ACK is not UTF-8")?;
     let body = reply
@@ -105,6 +106,7 @@ pub fn request_and_wait_cancellable(
                 return Ok(false);
             }
         }
+        // 无监听者时仍须检查安装树内可执行载荷是否被占用；连接被拒绝本身不是退出证明。
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
         Err(error) => return Err(format!("client control connection failed: {error}")),
     }
@@ -194,6 +196,8 @@ fn wait_identity_cancellable(
     Err("client identity exit wait requires Windows".into())
 }
 
+/// 在 Windows 上逐项尝试独占打开 exe/dll，发现占用立即失败。
+/// 检查后释放句柄，因此这是替换前检查而非持续锁定；后续目录重命名仍必须处理失败与回滚。
 pub fn assert_unlocked(root: &Path) -> Result<(), String> {
     for (name, path) in package_manifest::tree(root)? {
         if !(name.to_ascii_lowercase().ends_with(".exe")

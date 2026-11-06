@@ -1,5 +1,6 @@
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>可触发任务的发布值；不可用状态必须清空任务列表，避免将读取失败伪装成已确认的候选结果。</summary>
 internal sealed record RuntimeAvailableMissionSnapshot(
     bool RuntimeAvailable,
     long MissionGeneration,
@@ -68,6 +69,7 @@ internal sealed record RuntimeAvailableMissionSnapshotEntry(
     string SourceTiming,
     string ActivationHint);
 
+/// <summary>同次采集的完成记录、候选和版本证据；Complete 为假时，即使存在部分候选也不得发布为就绪。</summary>
 internal sealed record RuntimeAvailableMissionCaptureInput(
     bool Complete,
     long MissionGeneration,
@@ -78,6 +80,7 @@ internal sealed record RuntimeAvailableMissionCaptureInput(
     IReadOnlyList<RuntimeAvailableMissionCandidate> Candidates,
     string Error);
 
+/// <summary>一条调度来源与任务定义的关联；同一任务允许多个来源，投影时需先确认定义元数据一致。</summary>
 internal sealed record RuntimeAvailableMissionCandidate(
     string SourceEventLabel,
     int TriggerType,

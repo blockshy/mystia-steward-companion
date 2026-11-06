@@ -539,6 +539,8 @@ class CompanionProfile {
 
   bool flag(String key) => jsonBool(json, key);
   bool get automationEnabled => flag('automationEnabled');
+
+  /// 合并顶层补丁后重新执行完整 schema 校验；嵌套对象是整体替换，不做递归宽松合并。
   CompanionProfile copyWith(JsonMap changes) =>
       CompanionProfile({...json, ...changes});
   JsonMap toJson() => json;

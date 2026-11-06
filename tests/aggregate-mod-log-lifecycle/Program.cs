@@ -387,7 +387,7 @@ static void TryDeleteDirectory(string path)
     }
     catch
     {
-        // The primary assertion reports any leaked handle; final cleanup is best effort.
+        // 主要断言已负责报告句柄泄漏；最终清理尽力执行，避免覆盖最初的失败原因。
     }
 }
 

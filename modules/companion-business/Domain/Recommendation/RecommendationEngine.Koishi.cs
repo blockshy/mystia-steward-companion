@@ -29,7 +29,10 @@ public static partial class RecommendationEngine
         var damage = levelScore > 0 ? levelScore : priceScore;
         return damage <= 0 ? evaluationScore : Math.Min(evaluationScore, damage);
     }
-    /// <summary>剩余次数包括当前订单；未知次数必须保持未知，不猜测为零。</summary>
+    /// <summary>
+    /// 将输入的后续订单次数加上当前订单，得到可尝试次数及本次平均最低分要求。
+    /// 未知次数或未知正数目标保持未知，不按零次或已达成目标处理。
+    /// </summary>
     public static JsonObject BuildKoishiFeedPlanningInfo(JsonObject input)
     {
         var score = PositiveInt(input["remainingScore"]);

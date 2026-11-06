@@ -2,6 +2,8 @@ using System.Reflection;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>瑞灵订单身份的值证据，包括客人编号、附身控制类型及评价闭包身份，不保留原生对象包装器。</summary>
+/// <remarks>Read 必须在运行时可读的主线程执行；Verified 仅描述该次读取，后续副作用仍需重新读取。</remarks>
 internal sealed record MizuchiOrderIdentity(
     bool Verified,
     bool IsPossessed,
@@ -48,6 +50,11 @@ internal sealed record MizuchiOrderIdentity(
     private const string CallbackMethodName =
         "<MainChallengeLoop>g__GroupOverrideEvaluationCallback|74";
 
+    /// <summary>
+    /// 将挑战规则、订单客人、控制器及当前评价委托闭包组成同一次身份校验。
+    /// 任一读取失败或证据冲突均返回未验证结果；只有全部约束成立后才区分附身与普通客人。
+    /// </summary>
+    /// <remarks>只读取委托的调用列表与闭包字段，不执行评价。返回的指针用于关联证据，不延长原生对象寿命。</remarks>
     public static MizuchiOrderIdentity Read(
         string challengeType,
         object? order,
@@ -103,6 +110,7 @@ internal sealed record MizuchiOrderIdentity(
                 controllerGuestId);
         }
 
+        // 基类包装器的托管类型不足以证明稀客身份；精确转换后还必须保持同一原生地址。
         var specialController = RuntimeReflectionUtility.TryCastRuntimeObject(
             controller,
             SpecialGuestsControllerTypeName);
@@ -143,6 +151,7 @@ internal sealed record MizuchiOrderIdentity(
             return Failed(error, orderGuestId: orderGuestId, controllerGuestId: controllerGuestId);
         }
 
+        // 客人编号 0 属于有效内容域；三处客人信息必须一致，不能用正数判断替代身份比较。
         if (orderGuestId < 0
             || orderGuestId != controllerGuestId
             || orderGuestId != controllerSpecialGuestId)
@@ -184,6 +193,7 @@ internal sealed record MizuchiOrderIdentity(
                 controllerPointer);
         }
 
+        // 必须追到唯一评价委托及指定闭包，不能仅根据角色编号或错误订单的显示文本推断附身状态。
         if (!TryReadSingleInvocation(callback, out var invocation, out error)
             || invocation == null)
         {
@@ -297,6 +307,7 @@ internal sealed record MizuchiOrderIdentity(
                 callbackMethod: callbackMethodName);
         }
 
+        // 相同客人编号仍可能来自不同批次控制器，闭包保存的 group 必须就是当前控制器。
         if (!RuntimeReflectionUtility.TryReadNativeObjectPointer(closureGroup, out var closureGroupPointer)
             || closureGroupPointer != controllerPointer)
         {
@@ -416,6 +427,8 @@ internal sealed record MizuchiOrderIdentity(
                 callbackMethodName);
         }
 
+        // 原生 -1 表示当前没有附身目标，必须与 None 控制类型同时出现；不能把未知值视作普通客人。
+        // 有目标时剧情允许已知控制类型集合，试炼则按各自契约限制为指定类型。
         var hasControlledGuest = controlledGuestId != MizuchiConstants.NoControlledGuestId;
         var activeControlMatches = contract.ExpectedControlType.HasValue
             ? controlType == contract.ExpectedControlType.Value
@@ -477,6 +490,8 @@ internal sealed record MizuchiOrderIdentity(
                     : "exact Mizuchi no-target state identifies the order guest as ordinary");
     }
 
+    /// <summary>要求准确的 IL2CPP 委托数组形状且恰有一个调用项，避免从多播委托中任意挑选一个身份。</summary>
+    /// <remarks>长度为零、多项、空调用项或反射异常均失败；本方法不会调用数组中的委托。</remarks>
     private static bool TryReadSingleInvocation(
         object callback,
         out object? invocation,
@@ -622,6 +637,7 @@ internal sealed record MizuchiOrderIdentity(
         return true;
     }
 
+    /// <summary>先核对枚举声明类型再读取底层数值；具体数值是否属于当前挑战由调用方继续验证。</summary>
     private static bool TryReadExactEnumInt(
         object source,
         string propertyName,
@@ -656,6 +672,7 @@ internal sealed record MizuchiOrderIdentity(
         }
     }
 
+    /// <summary>按指定声明类型及可选属性类型约束定位唯一实例属性后读取，不接受同名字段代替。</summary>
     private static bool TryReadExactProperty(
         object source,
         string propertyName,
@@ -700,6 +717,7 @@ internal sealed record MizuchiOrderIdentity(
         return $"{root.GetType().Name}: {root.Message}";
     }
 
+    /// <summary>保留已读取的局部证据用于诊断，并统一撤销验证标记；此处的 IsPossessed=false 不构成普通客人证明。</summary>
     private static MizuchiOrderIdentity Failed(
         string reason,
         int? orderGuestId = null,

@@ -1,5 +1,6 @@
 name: CI
 
+# 公共检查仅由手动触发；推送或创建 PR 不会自动运行本工作流。
 on:
   workflow_dispatch:
 
@@ -45,6 +46,7 @@ jobs:
       - name: Resolve locked Flutter dependencies
         run: corepack pnpm flutter:get
 
+      # 公共 runner 不持有游戏引用程序集；显式单元子集不提供正式 HTTP 宿主或真实游戏验证证据。
       - name: Analyze Flutter and run public unit tests
         run: |
           corepack pnpm flutter:format-check

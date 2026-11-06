@@ -2,6 +2,7 @@ using UnityEngine;
 
 namespace MystiaStewardCompanion.Ui;
 
+/// <summary>将 Unity 主线程生命周期转发给托管控制器，并在配置尚未就绪时逐帧尝试初始化。</summary>
 public sealed class StewardOverlayBehaviour : MonoBehaviour
 {
     private object? _controller;
@@ -32,6 +33,7 @@ public sealed class StewardOverlayBehaviour : MonoBehaviour
         _controller = null;
     }
 
+    // 退出与销毁回调可能先后发生，控制器的 Dispose 必须保持幂等。
     private void OnApplicationQuit()
     {
         (_controller as StewardOverlayController)?.Dispose();

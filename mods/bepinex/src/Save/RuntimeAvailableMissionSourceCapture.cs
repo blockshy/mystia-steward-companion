@@ -10,6 +10,7 @@ internal readonly record struct RuntimeAvailableMissionSourceStartToken(
     public bool IsActive => Sequence > 0;
 }
 
+/// <summary>关联原生调度结束与任务启动回调，区分演出前后来源并向托管来源状态提交确定结果。</summary>
 internal static class RuntimeAvailableMissionSourceCapture
 {
     private const string SchedulerTypeName =
@@ -26,6 +27,7 @@ internal static class RuntimeAvailableMissionSourceCapture
     private static readonly object AttachRoot = new();
     private static readonly RuntimeAvailableMissionSourceState State = new();
 
+    // 调用帧属于同步原生调用栈；线程局部栈避免嵌套任务启动被当作外层来源的直接启动。
     [ThreadStatic]
     private static Stack<FinishHookFrame>? _finishFrames;
 
@@ -103,6 +105,8 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>结束当前线程遗留的来源调用帧，并将托管来源状态切换到新的任务加载代次。</summary>
+    /// <remarks>线程局部栈仅清理调用线程；后续是否接纳回调仍由状态中的任务代次和所有者线程校验决定。</remarks>
     public static void ResetForMissionGeneration(
         long missionGeneration,
         int ownerThreadId,
@@ -123,6 +127,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>任务初始化完成后开放同代次的来源捕获；未成功绑定时保持不可用，不补造遗漏的来源记录。</summary>
     public static void ArmMissionGeneration(
         long missionGeneration,
         int ownerThreadId,
@@ -145,6 +150,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>仅关联已进入调度完成作用域的任务启动；直接子调用必须与来源列表的原始顺序一致。</summary>
     public static RuntimeAvailableMissionSourceStartToken BeginMissionStart(
         string missionLabel)
     {
@@ -165,6 +171,7 @@ internal static class RuntimeAvailableMissionSourceCapture
                 finishFrame,
                 isDirect: !nested,
                 sourceOrdinal: -1);
+            // 只有完成边界直接发起的启动才消费来源数组序号；启动内部的递归任务不占用外层位置。
             if (!nested)
             {
                 if (finishFrame.NextMissionOrdinal >= finishFrame.MissionLabels.Count)
@@ -196,6 +203,8 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>按启动序列结束栈顶帧，仅将直接子调用的确定结果写回对应来源位置。</summary>
+    /// <remarks>嵌套调用只负责配平栈；缺帧、乱序、重复位置或不确定结果会使对应来源无法正常提交。</remarks>
     public static void CompleteMissionStart(
         RuntimeAvailableMissionSourceStartToken token,
         RuntimeAvailableMissionStartOutcome outcome)
@@ -382,6 +391,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         CompleteFinishBoundary(__state);
     }
 
+    /// <summary>对未完成的事件结束调用尝试清理帧并标记来源失效；原始游戏异常原样交还 Harmony。</summary>
     private static Exception? OnFinishBoundaryFinalizer(
         Exception? __exception,
         FinishHookFrame? __state)
@@ -408,6 +418,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         return __exception;
     }
 
+    /// <summary>为排程或撤销操作保留代次、线程与事件标签，供返回时推进来源状态；不保留原生事件对象。</summary>
     private static SchedulerBoundaryHookFrame? BeginSchedulerBoundary(
         object? rawLabel,
         string boundary)
@@ -440,6 +451,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>在原生排程或撤销正常返回后记录边界；观察状态更新失败时关闭对应来源代次。</summary>
     private static void CompleteSchedulerBoundary(
         SchedulerBoundaryHookFrame? frame)
     {
@@ -468,6 +480,8 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>只为精确事件节点建立结束帧，复制演出前后任务标签，并选择当前阶段需要核对的启动序列。</summary>
+    /// <remarks>非事件节点不属于此来源捕获范围；事件字段读取失败则不能按空任务数组继续。</remarks>
     private static FinishHookFrame? BeginFinishBoundary(
         object? node,
         string source)
@@ -521,6 +535,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    // 所有预期启动都必须出现且得到确定结果，缺项、重复、乱序或泄漏的嵌套帧都会使来源代次失效。
     private static void CompleteFinishBoundary(FinishHookFrame? frame)
     {
         if (frame == null || frame.Completed) return;
@@ -543,6 +558,7 @@ internal static class RuntimeAvailableMissionSourceCapture
             var outcomes = frame.Outcomes
                 .Select(outcome => outcome!.Value)
                 .ToArray();
+            // 演出前完成后仍可能留下演出后待启动项；演出后完成则必须结清此前登记的同一来源。
             if (string.Equals(
                     frame.Source,
                     RuntimeAvailableMissionSourceState.BeforePerformanceSource,
@@ -582,6 +598,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>要求结束帧处于栈顶且没有未配平的启动帧；错序时清理关联栈，避免泄漏到下一次事件。</summary>
     private static void PopFinishFrame(FinishHookFrame frame)
     {
         if (_finishFrames is not { Count: > 0 } frames
@@ -601,6 +618,7 @@ internal static class RuntimeAvailableMissionSourceCapture
         }
     }
 
+    /// <summary>复制完整来源数组并限制数量与标签长度；保留顺序和重复值，以便逐次对照实际直接启动。</summary>
     private static IReadOnlyList<string> ReadMissionLabels(
         object? rawArray,
         string eventLabel,

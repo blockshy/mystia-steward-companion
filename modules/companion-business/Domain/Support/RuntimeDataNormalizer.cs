@@ -12,6 +12,10 @@ public static class RuntimeDataNormalizer
     private static readonly HashSet<string> Places = new(StringComparer.Ordinal)
     { "妖怪兽道", "人间之里", "博丽神社", "红魔馆", "迷途竹林", "魔法森林", "妖怪之山", "旧地狱", "地灵殿", "命莲寺", "神灵庙", "太阳花田", "辉针城", "月之都", "魔界" };
 
+    /// <summary>
+    /// 清洗宿主发布的目录值；任一必需类别清洗后为空时，整体返回不可用目录。
+    /// 可选特殊成品单独验证，不以补入历史数据的方式掩盖当前目录缺失。
+    /// </summary>
     public static JsonObject Build(JsonNode? source)
     {
         var raw = Obj(source);

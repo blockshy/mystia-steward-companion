@@ -3,6 +3,8 @@ import path from 'node:path';
 import process from 'node:process';
 
 const repoRoot = process.cwd();
+// 可接任务的业务快照须保持独立：下面以源码约束阻止依赖诊断状态或调用有副作用的游戏入口。
+// 字符串检查不能证明原生方法签名或执行行为，相关状态投影另由 C# 工程验证。
 const availableFiles = [
   'mods/bepinex/src/Save/RuntimeAvailableMissionCapture.cs',
   'mods/bepinex/src/Save/RuntimeAvailableMissionSourceState.cs',

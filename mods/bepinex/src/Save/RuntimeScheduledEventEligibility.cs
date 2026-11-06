@@ -23,6 +23,7 @@ internal sealed record RuntimeScheduledEventEligibilityDiagnostic(
     int? RequiredBondExp,
     bool? Level5Gate);
 
+/// <summary>根据已读取的触发类型和羁绊证据判定事件资格；不执行事件，也不把缺少证据等同于条件未满足。</summary>
 internal static class RuntimeScheduledEventEligibility
 {
     public const int OnEnterDaySceneMapTrigger = 0;
@@ -115,6 +116,7 @@ internal static class RuntimeScheduledEventEligibility
                 kizunaEvidence,
                 requiredBondExp: null);
         }
+        // 此处要求恰好达到当前等级的满额值；不能自行放宽为“大于等于”并接受异常经验状态。
         if (kizunaEvidence.CurrentBondExp != requiredBondExp.Value)
         {
             return ResultFromEvidence(
@@ -164,6 +166,7 @@ internal static class RuntimeScheduledEventEligibility
         return Result("invalid", reason);
     }
 
+    // 不同身份解析阶段允许的字段不同；拒绝“身份未知却带有羁绊值”等互相矛盾的半成品证据。
     private static void ValidateKizunaEvidence(
         RuntimeScheduledEventKizunaEvidence evidence)
     {

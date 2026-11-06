@@ -47,6 +47,8 @@ internal sealed class RareGuestInvitationEntry
     public List<string> SceneNames { get; set; } = new();
 }
 
+/// <summary>读取日间稀客候选并按原生羁绊、邀请对话和场景条件登记邀请；所有游戏对象访问由主线程执行。</summary>
+/// <remarks>调用方负责主线程调度及写入许可；本服务同步读取游戏对象，不提供线程切换或原生写入回滚。</remarks>
 internal static class RuntimeRareGuestInvitationService
 {
     private const string DataBaseCharacterTypeName = "GameData.Core.Collections.CharacterUtility.DataBaseCharacter";
@@ -66,6 +68,8 @@ internal static class RuntimeRareGuestInvitationService
     private const string Il2CppDictionaryTypeName = "Il2CppSystem.Collections.Generic.Dictionary`2";
     private const int MaxInvitationGuestCount = 4096;
 
+    /// <summary>按指定场景范围与羁绊筛选读取候选，解析或运行时读取异常转换为明确不可用结果。</summary>
+    /// <remarks>候选仅反映本次读取；后续写入仍需重新读取上下文并核对调用方保存的日间身份。</remarks>
     public static RareGuestInvitationResult ListAvailable(
         DataRepository? repository,
         ManualLogSource? log,
@@ -99,6 +103,8 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
+    /// <summary>以规范角色 ID 邀请一个候选，并返回同范围候选状态；已登记的目标也可作为成功结果返回。</summary>
+    /// <remarks>登记后的读回或其余候选读取仍可能异常，失败回执不保证本次调用从未发生原生登记。</remarks>
     public static RareGuestInvitationResult InviteOne(
         DataRepository? repository,
         int guestId,
@@ -127,6 +133,8 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
+    /// <summary>逐个处理当前范围内符合羁绊筛选的候选；批量成功表示遍历完成，实际登记数由 InvitedCount 表示。</summary>
+    /// <remarks>每次登记独立复核场景身份；中途异常会返回失败，但已经登记的前序候选不会被回滚。</remarks>
     public static RareGuestInvitationResult InviteAllAvailable(
         DataRepository? repository,
         ManualLogSource? log,
@@ -171,6 +179,7 @@ internal static class RuntimeRareGuestInvitationService
         };
     }
 
+    /// <summary>复用候选判定但禁止写入，列表查询不会为了验证可邀请状态而登记邀请。</summary>
     private static RareGuestInvitationResult ListAvailableCore(
         DataRepository? repository,
         ManualLogSource? log,
@@ -204,6 +213,7 @@ internal static class RuntimeRareGuestInvitationService
         return result;
     }
 
+    /// <summary>只对精确规范身份的目标执行写入，其余候选仅更新返回列表，避免同一请求扩大邀请范围。</summary>
     private static RareGuestInvitationResult InviteOneCore(
         DataRepository? repository,
         int guestId,
@@ -292,6 +302,8 @@ internal static class RuntimeRareGuestInvitationService
         return result;
     }
 
+    /// <summary>确认日间就绪、当前地图、邀请跟踪器及完整映射目录后，按范围构造本次同步调用的候选上下文。</summary>
+    /// <remarks>上下文含原生包装器，不能缓存到后台或下一帧；位置读取对当前范围是前提，对全部范围仅是展示补充。</remarks>
     private static InvitationContext ReadInvitationContext(
         DataRepository? repository,
         RareGuestInvitationScope scope)
@@ -423,6 +435,7 @@ internal static class RuntimeRareGuestInvitationService
         var source = scope == RareGuestInvitationScope.AllScenes
             ? "all-day-npcs-keyed"
             : "current-day-scene-keyed";
+        // 已完成读取但没有候选与运行时不可读不同；前者保留 RuntimeAvailable，供界面展示范围为空的原因。
         if (candidates.Count == 0)
         {
             var failed = Fail(scope == RareGuestInvitationScope.AllScenes
@@ -465,6 +478,7 @@ internal static class RuntimeRareGuestInvitationService
         };
     }
 
+    /// <summary>逐项核对候选条件；写入前复核日间身份，登记后读回确认。批量调用不是可回滚的整批事务。</summary>
     private static void ProcessCandidate(
         RareGuestInvitationResult result,
         object statusTracker,
@@ -506,6 +520,7 @@ internal static class RuntimeRareGuestInvitationService
             return;
         }
 
+        // 以规范角色身份查询已有登记，运行时别名不能造成重复邀请或绕过已有名单判断。
         if (HasNpcInvited(statusTracker, candidate.CanonicalGuestId))
         {
             result.ExistingControlledCount++;
@@ -550,6 +565,7 @@ internal static class RuntimeRareGuestInvitationService
             true,
             $"可邀请（羁绊 {candidate.KizunaLevel}）",
             candidate.KizunaLevel);
+        // 只读候选在此结束；不能用一次试写来证明原生登记入口是否可用。
         if (!writeInvitation)
         {
             result.Candidates.Add(availableEntry);
@@ -557,6 +573,7 @@ internal static class RuntimeRareGuestInvitationService
             return;
         }
 
+        // 重新检查排队请求所绑定的日间代次与地图，收窄到每次原生登记之前，而非只在批处理开始时检查。
         if (!TryValidateWriteExpectation(writeExpectation, out var waitReason))
         {
             throw new InvalidOperationException(waitReason);
@@ -584,6 +601,8 @@ internal static class RuntimeRareGuestInvitationService
         result.Invited.Add(invitedEntry);
     }
 
+    /// <summary>从完整运行时映射目录逐键读取日间 NPC，交叉核对规范角色和基础角色，再合并同角色的运行时别名。</summary>
+    /// <remarks>键确实不存在可跳过；字典不可读、身份冲突或基础角色缺失属于错误，不按普通候选缺席处理。</remarks>
     private static IReadOnlyList<RuntimeRareGuestInvitationCandidate> ReadInviteCandidates(
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot,
         IReadOnlyDictionary<int, object> baseGuestsById,
@@ -752,6 +771,7 @@ internal static class RuntimeRareGuestInvitationService
                 }
             }
 
+            // 羁绊存储按规范角色 ID 索引；缺少记录保留“未初始化”，不得用默认等级替代未知状态。
             var kizunaStateKnown = TryGetRequiredDictionaryValue(
                 recordedSpecialNpcs,
                 invitationIdentity.CanonicalGuestId,
@@ -799,6 +819,7 @@ internal static class RuntimeRareGuestInvitationService
             });
         }
 
+        // 个别可见性读取失败保留为不可用候选；全部失败则升级为整体读取失败，避免呈现可信的空可邀请列表。
         if (scope == RareGuestInvitationScope.CurrentScene
             && candidates.Count > 0
             && availabilityErrorCount == candidates.Count)
@@ -808,6 +829,7 @@ internal static class RuntimeRareGuestInvitationService
                 + $"Samples: {string.Join(" | ", availabilityErrorSamples)}");
         }
 
+        // 别名先各自完成精确读取，再按规范角色合并；合并后的条目才进入实际邀请循环。
         var canonicalCandidates = RuntimeRareGuestInvitationCandidates.Deduplicate(candidates);
         var mappedIdentitySamples = candidates
             .Where(candidate => candidate.RuntimeId != candidate.CanonicalGuestId)
@@ -840,6 +862,7 @@ internal static class RuntimeRareGuestInvitationService
         return canonicalCandidates;
     }
 
+    /// <summary>确认全部范围候选至少具有一个日间目的地；缺省或空数组表示不纳入候选，损坏数组抛出读取错误。</summary>
     private static bool HasNpcDayDestination(
         object npc,
         string runtimeStringId,
@@ -875,6 +898,7 @@ internal static class RuntimeRareGuestInvitationService
         return destinations.Count > 0;
     }
 
+    /// <summary>读取当前地图可见性所需的精确字段；覆盖位置直接可见，其余状态交由纯托管规则判断。</summary>
     private static bool ReadTrackedNpcAvailability(
         object trackedNpc,
         object npc,
@@ -912,6 +936,7 @@ internal static class RuntimeRareGuestInvitationService
             RemainActions: remainActions));
     }
 
+    /// <summary>完整读取基础稀客数组并拒绝重复数值 ID 或忽略大小写后重复的字符串 ID，不取任意首项消解冲突。</summary>
     private static IReadOnlyDictionary<int, object> ReadBaseSpecialGuests(Type dataBaseCharacterType)
     {
         var method = RequireExactStaticMethod(
@@ -949,6 +974,7 @@ internal static class RuntimeRareGuestInvitationService
         return result;
     }
 
+    /// <summary>区分键不存在与无法执行精确键查询：仅前者返回 false，后者抛出异常阻止不完整候选继续处理。</summary>
     private static bool TryGetRequiredDictionaryValue(
         object dictionary,
         object key,
@@ -1298,6 +1324,7 @@ internal static class RuntimeRareGuestInvitationService
         return label.Trim();
     }
 
+    /// <summary>通过精确签名读取当前羁绊等级的邀请对话包；这里只判断包是否非空，不执行对话或登记邀请。</summary>
     private static bool HasInviteDialog(object guest, int level, bool succeed)
     {
         var method = RequireExactInstanceMethod(
@@ -1385,6 +1412,7 @@ internal static class RuntimeRareGuestInvitationService
         }
     }
 
+    /// <summary>在日间仍就绪的前提下复核请求绑定的场景代次与地图；此检查不替代设备写入权限和候选资格校验。</summary>
     internal static bool TryValidateWriteExpectation(
         RareGuestInvitationWriteExpectation expectation,
         out string reason)

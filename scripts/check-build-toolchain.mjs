@@ -27,6 +27,8 @@ if (!supportedProfiles.has(profile)) {
   failUsage();
 }
 
+// 先无条件核对各工程声明与根锁的一致性，再按 profile 检查实际工具。
+// policy-only 仅跳过工具执行，不能被当作已验证当前机器具备编译环境。
 const failures = [];
 const toolchain = await readJson('toolchain.lock.json');
 const packageJson = await readJson('package.json');
@@ -236,6 +238,7 @@ function failUsage() {
   process.exit(2);
 }
 
+/** 各用途只要求对应的工具集合；声明校验仍覆盖全仓锁，平台构建入口另验证其专用 SDK。 */
 function profileTools(selectedProfile) {
   switch (selectedProfile) {
     case 'frontend':

@@ -9,6 +9,8 @@ using Il2CppInterop.Runtime.InteropTypes;
 
 namespace MystiaStewardCompanion.Save;
 
+/// <summary>在加载、初始化和任务生命周期 Hook 中采集任务事实，并将原生对象映射为受代次保护的托管状态。</summary>
+/// <remarks>原生包装器只在同步 Hook 调用帧中使用；跨阶段保留解析后的种子、标识和摘要，不保存完整存档 JSON。</remarks>
 internal static class RuntimeMissionDiagnosticCapture
 {
     private const string SaveManagementTypeName = "GameData.Utils.SaveManagement";
@@ -76,6 +78,8 @@ internal static class RuntimeMissionDiagnosticCapture
         return State.TryGetServeInWorkDefinitions(generation, out definitions);
     }
 
+    /// <summary>在日间目录完整时按角色合并展示读取，再按任务标签分别回写；展示失败不修改任务完成事实。</summary>
+    /// <remarks>调用方须位于游戏主线程。任务代次、日间代次及目录采集时间共同限定本次结果的适用范围。</remarks>
     public static void RefreshPresentations(
         long daySceneGeneration,
         RuntimeMappedGuestCatalogSnapshot mappedGuestSnapshot)
@@ -107,6 +111,7 @@ internal static class RuntimeMissionDiagnosticCapture
                 mappedGuestSnapshot,
                 before.Generation,
                 daySceneGeneration);
+            // 同一角色可对应多个任务；读取可以复用，回写身份仍须保留各自任务标签。
             var results = new RuntimeMissionPresentationApply[requests.Count];
             for (var index = 0; index < requests.Count; index++)
             {
@@ -157,6 +162,8 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>解析完整反射形状并安装所需 Hook；仅全部安装成功后开放任务采集。</summary>
+    /// <remarks>失败会关闭发布入口，但此处不撤销已安装的部分 Hook，不能将失败路径理解为补丁事务回滚。</remarks>
     public static void Attach(ManualLogSource log)
     {
         ArgumentNullException.ThrowIfNull(log);
@@ -571,6 +578,7 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>从游戏刚完成升级的存档对象生成加载种子，不自行读取磁盘存档；解析成功后仅保存任务相关投影。</summary>
     private static void OnTryUpgradePostfixUnsafe(
         object? __result,
         LoadHookFrame? __state)
@@ -664,6 +672,8 @@ internal static class RuntimeMissionDiagnosticCapture
         return __exception;
     }
 
+    /// <summary>一次性消费升级阶段的加载种子，并与当前线程、有效期限及实际选中的 DLC 分区核对。</summary>
+    /// <remarks>先清空待用种子再校验，拒绝重复初始化沿用旧种子；原生字典只用于确认本次选择范围。</remarks>
     private static void OnInitializePrefixUnsafe(
         object? __1,
         int __2,
@@ -747,6 +757,7 @@ internal static class RuntimeMissionDiagnosticCapture
                 }
             }
 
+            // 仅确认已知分区存在还不足以证明覆盖完整；数量必须相等，才能排除未识别的运行时分区。
             if (selectedDlcLabels.Count != runtimeDlcCount)
             {
                 State.FailLoadCapture(
@@ -845,6 +856,8 @@ internal static class RuntimeMissionDiagnosticCapture
         return __exception;
     }
 
+    /// <summary>将加载种子逐桶、逐位置绑定到初始化后的原生任务，显式刷新条件后再发布托管任务集合。</summary>
+    /// <remarks>刷新前后均验证集合数量、完成列表和对象身份；这些检查保证本次观测一致性，不提供原生集合锁。</remarks>
     private static void CaptureInitializedState(InitializeHookFrame frame)
     {
         var shape = _shape
@@ -984,6 +997,7 @@ internal static class RuntimeMissionDiagnosticCapture
             return;
         }
 
+        // 先验证所有任务定义，再调用会触发游戏逻辑的条件刷新，避免定义缺失时仍继续刷新后续对象。
         var definitionTimer = Stopwatch.StartNew();
         var definitionsByLabel =
             new Dictionary<string, RuntimeMissionDefinitionDiagnosticReadResult>(
@@ -1017,6 +1031,7 @@ internal static class RuntimeMissionDiagnosticCapture
 
         foreach (var boundMission in boundMissions)
         {
+            // 保存的完成位仅作加载诊断；当前完成事实取自本次原生条件刷新后的读回结果。
             InvokeTrackedStateRefresh(boundMission.Instance);
         }
 
@@ -1195,6 +1210,7 @@ internal static class RuntimeMissionDiagnosticCapture
             AppendSnapshotDiagnostic("initialize-commit-rejected");
             return;
         }
+        // 来源读取依赖任务身份已建立；初始化提交成功之前不得开放调度来源与可触发任务采集。
         RuntimeScheduledEventDiagnosticCapture.ArmMissionGeneration(
             committedSnapshot.Generation,
             committedSnapshot.OwnerThreadId,
@@ -1298,6 +1314,7 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>将生成结果关联到当前任务启动帧，拒绝缺帧、重复结果或标签不匹配，避免嵌套启动串单。</summary>
     private static void OnGenerateTrackingDataPostfixUnsafe(object? __result)
     {
         if (!_hooksReady) return;
@@ -1348,6 +1365,8 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>结束单个任务启动帧，配对生成与刷新身份，并向来源捕获报告已启动、已退役或不确定。</summary>
+    /// <remarks>未生成任务且未发生故障才可记为退役；异常或证据缺失保持不确定，不能推断启动没有副作用。</remarks>
     private static void OnStartMissionPostfixUnsafe(StartHookFrame? __state)
     {
         if (!_hooksReady || __state == null || __state.Completed) return;
@@ -1417,6 +1436,7 @@ internal static class RuntimeMissionDiagnosticCapture
                 return;
             }
 
+            // 生成与刷新必须同时缺席或指向同一任务；只有单侧回调不足以建立新的任务事实。
             if ((__state.GeneratedSeed == null) != (__state.RefreshedSeed == null))
             {
                 FailStartFrame(__state, "start-generated-refresh-pair-mismatch");
@@ -1482,6 +1502,7 @@ internal static class RuntimeMissionDiagnosticCapture
         }
         finally
         {
+            // 即使提交被拒绝，也必须结束来源关联并清理调用栈；栈顺序异常时不保留可能串单的剩余帧。
             if (!framePopped)
             {
                 if (!TryPopStartFrame(__state))
@@ -1496,6 +1517,7 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>为未正常完成的启动调用补做失效与栈清理，并原样返回游戏异常，不吞掉原始失败。</summary>
     private static Exception? OnStartMissionFinalizerUnsafe(
         Exception? __exception,
         StartHookFrame? __state)
@@ -1659,6 +1681,7 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>只接受完成列表在原有前缀之后追加的标签；删除、重排或覆盖均使本次任务观测失效。</summary>
     private static void OnFinishNodePostfixUnsafe(FinishNodeHookFrame? __state)
     {
         if (!_hooksReady || __state == null || __state.Completed) return;
@@ -1746,6 +1769,8 @@ internal static class RuntimeMissionDiagnosticCapture
         return __exception;
     }
 
+    /// <summary>将刷新结果交给唯一匹配的未完成启动帧；不属于启动帧时才直接更新已登记任务。</summary>
+    /// <remarks>解析、帧匹配或状态更新失败时撤销送餐任务信号，避免旧优先级依据继续参与业务决策。</remarks>
     private static void OnUpdateFinishStatesPostfixUnsafe(object? __instance)
     {
         if (!_hooksReady) return;
@@ -1862,6 +1887,8 @@ internal static class RuntimeMissionDiagnosticCapture
         }
     }
 
+    /// <summary>按照加载选择保留的桶与序号绑定任务，要求数量、标签、非零原生身份及全局唯一性同时成立。</summary>
+    /// <remarks>任一位置不符即返回空结果；不得通过标签搜索或去重来修补错位的原生列表。</remarks>
     private static bool TryReadInitializedTrackedMissions(
         object trackingMissions,
         RuntimeMissionLoadSelection selection,
@@ -2079,6 +2106,7 @@ internal static class RuntimeMissionDiagnosticCapture
         return true;
     }
 
+    // 初始化允许完成标签的排列不同，但重复次数必须一致；普通集合相等会掩盖重复项丢失。
     private static bool HaveSameLabelMultiset(
         IReadOnlyList<string> left,
         IReadOnlyList<string> right)
@@ -2113,6 +2141,7 @@ internal static class RuntimeMissionDiagnosticCapture
         return counts.Count == 0;
     }
 
+    // 生命周期增量比加载核对更严格：原前缀逐项保持，输出仅复制新增尾部，允许没有新增标签。
     private static bool TryGetAppendedFinishedLabels(
         IReadOnlyList<string> before,
         IReadOnlyList<string> after,
@@ -2221,6 +2250,7 @@ internal static class RuntimeMissionDiagnosticCapture
             && threadId == frame.ThreadId;
     }
 
+    /// <summary>同时以原生身份和精确标签匹配嵌套启动帧；零个匹配表示普通刷新，多个匹配属于歧义失败。</summary>
     private static bool TryResolveStartFrameForRefresh(
         RuntimeMissionDiagnosticTrackedSeed seed,
         out StartHookFrame? match,
@@ -2257,6 +2287,7 @@ internal static class RuntimeMissionDiagnosticCapture
         return true;
     }
 
+    // 只允许弹出栈顶同一帧，不能为完成较早的外层回调跨过仍在执行的内层调用。
     private static bool TryPopStartFrame(StartHookFrame frame)
     {
         var frames = _startFrames;

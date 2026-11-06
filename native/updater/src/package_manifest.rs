@@ -27,6 +27,7 @@ pub struct Entry { pub path: String, pub size: u64, pub sha256: String }
 
 fn check(value: bool, reason: &str) -> Result<(), String> { if value { Ok(()) } else { Err(reason.into()) } }
 fn hex(value: &str, length: usize) -> bool { value.len() == length && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) }
+/// 检查跨 Node、C# 与 Windows 文件系统使用的规范相对路径；拒绝设备名、路径穿越及尾部别名。
 pub fn relative(value: &str) -> Result<(), String> {
     // 路径长度采用 UTF-16 单元，与 Windows/.NET 和 JavaScript 的字符串边界完全一致。
     check(!value.is_empty() && value.encode_utf16().count() <= 240 && !value.starts_with('/')

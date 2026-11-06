@@ -2,6 +2,8 @@ namespace MystiaStewardCompanion.Save;
 
 internal static partial class RuntimeOrderPreparationService
 {
+    /// <summary>从实际成品读取 Modifier，并在拒绝负值和重复值后按无序集合核对加料，防止计划与成品不一致。</summary>
+    /// <remarks>读取失败不会当作“没有加料”；输出仅在完整校验通过后赋为实际材料集合。</remarks>
     private static bool TryValidateServedFoodExtraIngredients(
         IReadOnlyList<int> expectedExtraIngredientIds,
         object servedFood,
