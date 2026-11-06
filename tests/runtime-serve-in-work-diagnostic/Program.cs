@@ -3,6 +3,7 @@ using MystiaStewardCompanion.Save;
 
 try
 {
+    AssertDarkCuisineSignalIsExplicitAndStable();
     AssertSnapshotIsManagedAndSerializable();
     AssertSignalsRequireCurrentActiveGenerations();
     AssertResultValidationFailsClosed();
@@ -20,6 +21,21 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+/// <summary>Food -1 只在原生 true、精确任务匹配与当前代际同时成立时有效，缺失/旧代际不能冒充。</summary>
+static void AssertDarkCuisineSignalIsExplicitAndStable()
+{
+    var state = CreateActiveState();
+    AssertTrue(ObserveMatched(state, 1, 1, 28, 28, -1), "合法黑暗料理任务信号丢失。");
+    AssertEqual(-1, state.Snapshot().Signals.Single().FoodId, "黑暗料理被改成普通料理。");
+    AssertFalse(state.ObserveResult(1, 1, 28, 28, -1, true,
+        RuntimeServeInWorkMissionDefinitionStatus.Pending, null, Utc(4)), "未确认定义被当成黑暗料理。");
+    AssertEqual(0, state.Snapshot().Signals.Count, "未确认任务遗留可执行信号。");
+    AssertTrue(RuntimeServeInWorkMissionSignalReconciler.TryBuildActiveSignalKeys(
+        new[] { new RuntimeServeInWorkMissionReconcileDefinition("guest", new[] { -1, 37 }, false) },
+        _ => 28, out var keys), "普通与黑暗料理任务不能共存。");
+    AssertEqual(2, keys.Count, "任务信号未完整保留。");
 }
 
 static void AssertSnapshotIsManagedAndSerializable()
@@ -142,10 +158,10 @@ static void AssertResultValidationFailsClosed()
             1,
             rawGuestId: 28,
             canonicalGuestId: 28,
-            foodId: -1,
+            foodId: -2,
             result: true,
             RuntimeServeInWorkMissionDefinitionStatus.Matched,
-            expectedFoodId: -1,
+            expectedFoodId: -2,
             Utc(4)),
         "A negative food ID established a signal.");
     AssertEqual(1L, state.Snapshot().InvalidFoodCount, "Invalid food ID was not counted.");
@@ -375,7 +391,7 @@ static void AssertActiveSignalKeyConstructionFailsClosed()
             {
                 new RuntimeServeInWorkMissionReconcileDefinition(
                     "Meirin",
-                    new[] { -1 },
+                    new[] { -2 },
                     Fulfilled: false),
             },
             Resolve,

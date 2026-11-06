@@ -17,6 +17,8 @@ public sealed class RuntimeNormalOrderSnapshotService
     private readonly IReadOnlyDictionary<int, string> _rareGuestImageNames;
     private readonly Dictionary<string, double> _performanceMs = new(StringComparer.Ordinal);
     private readonly RuntimeSnapshotReadCache _readCache = new();
+    // 仅属于本次主线程采集；不会由可见 HUD 列表或旧缓存推断完整性。
+    private bool _runtimeOrdersReadComplete;
 
     public RuntimeNormalOrderSnapshotService(DataRepository repository)
     {
@@ -35,6 +37,7 @@ public sealed class RuntimeNormalOrderSnapshotService
     {
         _performanceMs.Clear();
         _readCache.Clear();
+        _runtimeOrdersReadComplete = false;
         var errors = new List<string>();
         var source = new List<string>();
         var runtimeCapturedOrders = new List<NormalBusinessOrder>();
@@ -50,11 +53,13 @@ public sealed class RuntimeNormalOrderSnapshotService
             // ToList 失败时本次捕获结果不会提交；同步丢弃部分成功键，避免后续可视
             // 来源被错误当成“已经保留”而跳过。其它读取失败仍由各来源独立报告。
             _readCache.Clear();
+            _runtimeOrdersReadComplete = false;
             source.Add("RuntimeCapture=err");
             errors.Add($"RuntimeCapture: {ex.Message}");
         }
         var runtimeCaptureReady = NormalOrderRuntimeCapture.IsBusinessReady;
         _readCache.NormalCaptureIsAuthoritative = runtimeCaptureReady;
+        _runtimeOrdersReadComplete &= runtimeCaptureReady;
         source.Add($"RuntimeCaptureReady={runtimeCaptureReady}");
 
         var visibleOrders = new List<NormalBusinessOrder>();
@@ -114,6 +119,7 @@ public sealed class RuntimeNormalOrderSnapshotService
 
         return new NormalBusinessContext
         {
+            OrdersReadComplete = _runtimeOrdersReadComplete,
             Orders = deduplicated,
             Source = string.Join("; ", source),
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
@@ -193,6 +199,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             .Take(2)
             .ToArray();
         var orderLifecycleSequence = lifecycleSequences.Length == 1 ? lifecycleSequences[0] : -1;
+        var patienceValues = orders.Select(order => order.PatienceRemainingRatio).Where(value => value.HasValue).Distinct().Take(2).ToArray();
         var guestImage = RuntimeGuestImageIdentityReader.Merge(orders.Select(order =>
             new RuntimeGuestImageIdentity(order.GuestImageKind, order.GuestImageId, order.GuestName)));
         return new NormalBusinessOrder
@@ -232,6 +239,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             HasServedBeverage = orders.Any(order => order.HasServedBeverage),
             ReadyToEvaluate = orders.Any(order => order.ReadyToEvaluate),
             HasEvaluated = orders.Any(order => order.HasEvaluated),
+            // 多来源同一精确生命周期仅接受唯一已读数值；冲突不取最小值，避免误触发低耐心策略。
+            PatienceRemainingRatio = orderLifecycleSequence > 0 && patienceValues.Length == 1 ? patienceValues[0] : null,
             ControllerAvailable = orders.Any(order => order.ControllerAvailable),
             CanAutomate = orderLifecycleSequence > 0 && orders.Any(order => order.CanAutomate),
             ActionBlockReason = orderLifecycleSequence > 0
@@ -288,6 +297,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             BeverageId = order.BeverageId,
             BeverageName = order.BeverageName,
             FirstSeenAtUtc = firstSeenAtUtc,
+            PatienceRemainingRatio = order.PatienceRemainingRatio,
         };
 
         return new NormalBusinessOrder
@@ -321,6 +331,7 @@ public sealed class RuntimeNormalOrderSnapshotService
             HasServedBeverage = order.HasServedBeverage,
             ReadyToEvaluate = order.ReadyToEvaluate,
             HasEvaluated = order.HasEvaluated,
+            PatienceRemainingRatio = order.PatienceRemainingRatio,
             ControllerAvailable = order.ControllerAvailable,
             CanAutomate = order.CanAutomate,
             ActionBlockReason = order.ActionBlockReason,
@@ -390,6 +401,8 @@ public sealed class RuntimeNormalOrderSnapshotService
 
     private IEnumerable<NormalBusinessOrder> ReadRuntimeCapturedOrders()
     {
+        // 完整枚举成功后此位才可提交；Load 捕获异常时会再次清除。
+        _runtimeOrdersReadComplete = true;
         foreach (var captured in NormalOrderRuntimeCapture.Snapshot(RuntimeCapturedOrderMaxAge))
         {
             var parsed = ReadNormalOrder(
@@ -397,7 +410,11 @@ public sealed class RuntimeNormalOrderSnapshotService
                 captured.ControllerObject,
                 $"RuntimeCapture:{captured.CaptureSource}",
                 captured.OrderLifecycleSequence);
-            if (parsed == null) continue;
+            if (parsed == null)
+            {
+                _runtimeOrdersReadComplete = false;
+                continue;
+            }
             if (RuntimeReflectionUtility.TryReadNativeObjectPointer(captured.OrderObject, out var pointer))
             {
                 _readCache.RememberCapturedNormal(pointer);
@@ -482,6 +499,8 @@ public sealed class RuntimeNormalOrderSnapshotService
             HasServedBeverage = SafeGet(readableOrder, "ServBeverage") != null || SafeGet(readableOrder, "ServedBeverageInAir") != null,
             ReadyToEvaluate = RuntimeReflectionUtility.ToBool(SafeGet(readableOrder, "IsFullfilled")),
             HasEvaluated = RuntimeReflectionUtility.ToBool(SafeGet(controller, "HasEvaluated") ?? SafeInvoke(controller, "get_HasEvaluated")),
+            PatienceRemainingRatio = lifecycleAvailable
+                ? RuntimeOrderPatienceReader.Read(readableOrder, controller, RuntimeOrderKind.Normal, orderLifecycleSequence) : null,
             ControllerAvailable = controller != null,
             CanAutomate = controller != null && classification.AutomationAllowed && lifecycleAvailable,
             ActionBlockReason = !classification.AutomationAllowed

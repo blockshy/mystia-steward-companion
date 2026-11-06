@@ -14,8 +14,10 @@ import 'service_plan_placeholder.dart';
 import 'service_order_highlight.dart';
 import 'service_plan_activity.dart';
 import 'service_favorites.dart';
+import 'game_focus_overlay_controls.dart';
 
-/// 专注页的开关全部是本机显示偏好，不进入共享 profile，不影响推荐、执行或租约。
+/// 此列表保存客户端的专注显示偏好，不进入推荐 profile，不影响执行或租约。
+/// 当前主设备耐久保存后，由模型将相同内容投影至游戏内只读显示；查看设备仍只改自己。
 /// 顶层布尔字段通过既有 updateLocal 逐字段合并及持久化，避免保存整份旧偏好覆盖他项。
 const serviceFocusPreferences = <String, String>{
   'serviceFocusShowRare': '显示稀客',
@@ -97,12 +99,16 @@ class _ServiceFocusPageState extends State<ServiceFocusPage> {
         for (final item in records(liveOrders['normalOrderDetailPlans']))
           if (object(item['order']).isNotEmpty) (rare: false, item: item),
     ];
-    // 混合视图只消费服务端已计算的全局点单顺位；不在 Dart 重写时间排序或特殊客人规则。
+    // 暂停订单统一留在所有可参与订单之后；该分组优先于“稀客优先”，避免暂停卡片
+    // 抢占仍需制作的普客订单。组内只消费服务端顺位，不在 Dart 计算业务调度优先级。
     // 缺失/非法顺位的行保留输入相对次序放在末尾，保证旧离线夹具也不会猜测订单时间。
     final rareFirst =
         model.localPreferences[serviceFocusRareFirstPreference] == true;
     final indexed = selected.indexed.toList()
       ..sort((a, b) {
+        final leftPaused = a.$2.item['presentationSchedulingPaused'] == true;
+        final rightPaused = b.$2.item['presentationSchedulingPaused'] == true;
+        if (leftPaused != rightPaused) return leftPaused ? 1 : -1;
         if (rareFirst && a.$2.rare != b.$2.rare) return a.$2.rare ? -1 : 1;
         final left = object(a.$2.item['order'])['serviceOrderPosition'];
         final right = object(b.$2.item['order'])['serviceOrderPosition'];
@@ -172,8 +178,8 @@ class _ServiceFocusPageState extends State<ServiceFocusPage> {
         key: const ValueKey('service-focus-scroll'),
         controller: _scroll,
         children: [
-          CollapsibleSection('专注显示 · 本机', [
-            const Text('只调整本机显示，桌号和客人始终保留；不会改变方案或自动化。'),
+          CollapsibleSection('专注显示', [
+            const Text('桌号和客人始终保留；主设备的内容选择同步用于游戏内显示。'),
             SettingToggle(
               '显示窗口 UI',
               serviceFocusShowsWindowUi(model),
@@ -189,7 +195,7 @@ class _ServiceFocusPageState extends State<ServiceFocusPage> {
                   ? (value) => _save(serviceFocusRareFirstPreference, value)
                   : null,
               key: const ValueKey(serviceFocusRareFirstPreference),
-              description: '仅本机将稀客列在普客之前，各类内部保持点单顺序。',
+              description: '稀客列在普客之前，各类内部保持点单顺序。',
             ),
             SettingToggle(
               '显示收藏按钮',
@@ -206,7 +212,9 @@ class _ServiceFocusPageState extends State<ServiceFocusPage> {
                 _saving == null ? (value) => _save(entry.key, value) : null,
                 key: ValueKey(entry.key),
               ),
-          ]),
+            const MenuItemDivider(),
+            GameFocusOverlayControls(model, active: widget.active),
+          ], key: const ValueKey('service-focus-preferences')),
           if (model.connected) ...[
             for (var index = 0; index < displayed.length; index++)
               _FocusOrder(
@@ -265,7 +273,7 @@ class _FocusOrder extends StatelessWidget {
         decoration: BoxDecoration(
           // 专注列表与普通列表共用订单通道色，背景只受背景透明度影响。
           color: context.stewardPaint.surface(
-            serviceOrderHighlight(model, rare: rare),
+            serviceOrderHighlight(model, rare: rare, order: order),
             alpha: .11,
           ),
           borderRadius: BorderRadius.circular(6),
@@ -339,17 +347,22 @@ class _FocusOrder extends StatelessWidget {
                           ),
                         ),
                       ]),
-                    if (show('serviceFocusShowIngredients'))
+                    if (foodView != null && show('serviceFocusShowFood'))
+                      MenuProductionInfo(foodView),
+                    if (foodView?.preparedSupply != true &&
+                        show('serviceFocusShowIngredients'))
                       MenuInfoGroup(
                         '配方',
                         _ingredients(foodView?.ingredients, extra: false),
                       ),
-                    if (show('serviceFocusShowExtras'))
+                    if (foodView?.preparedSupply != true &&
+                        show('serviceFocusShowExtras'))
                       MenuInfoGroup(
                         '加料',
                         _ingredients(foodView?.extras, extra: true),
                       ),
-                    if (show('serviceFocusShowCooker'))
+                    if (foodView?.preparedSupply != true &&
+                        show('serviceFocusShowCooker'))
                       MenuInfoGroup('厨具', [
                         OrderTag(
                           foodView?.cooker ?? '厨具未知',

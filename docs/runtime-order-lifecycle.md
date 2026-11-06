@@ -1,6 +1,6 @@
 # 运行时订单生命周期
 
-更新日期：2026-10-23
+更新日期：2026-11-06
 
 本文档只定义普客与稀客订单从原生创建绑定到终态退休的权威身份、Hook 和业务投影。运行时目录与场景读取见 [运行时 Provider](runtime-provider.md)，订单后续副作用见 [自动化运行时](automation-runtime.md)，特殊经营的命名例外见[特殊经营实现](special-business-implementation.md)。
 
@@ -25,7 +25,7 @@
 
 ## 完整 Hook 集
 
-普客与稀客捕获各自必须完整安装同一组七个生命周期 Hook：
+普客与稀客捕获各自必须完整安装同一组八个生命周期 Hook：
 
 1. `GuestGroupController.PushToOrder`
 2. `GuestsManager.SetManualControllerOrderInternal`
@@ -34,8 +34,9 @@
 5. `GuestsManager.EvaulateManualOrder`
 6. `GuestsManager.CleanOrderInfo`
 7. `GuestsManager.RepellInternal`
+8. `GuestsManager.LeaveFromDesk`
 
-只有七个 Hook 全部就绪，并且当前经营 generation 从开始时已被完整覆盖，`IsBusinessReady` 才为真。若 Hook 在经营中途补齐，本场继续 fail-closed，下一场才允许业务消费。
+只有八个 Hook 全部就绪，并且当前经营 generation 从开始时已被完整覆盖，`IsBusinessReady` 才为真。若 Hook 在经营中途补齐，本场继续 fail-closed，下一场才允许业务消费。
 
 状态观察 Hook 可以更新已存在的绑定，但不能创建订单所有权。`SpecialOrderRuntimeCapture` 的 Partner observer 同样只能按既有 native key 更新。
 
@@ -63,6 +64,14 @@ Tag ID 是 signed 原生身份，`0`、`-1` 等合法值必须原样保留；读
 客户端桌号显示为 `DeskCode + 1`；显示值不写回订单身份。头像的 `guestImageKind` / `guestImageId` 是独立展示字段，按已验证的真实客人类型选择图片：稀客复制体可以产生 `NormalOrder`，不能因此强制使用普客头像或改成稀客执行通道。图片身份如何解析见[游戏图像资源](game-media.md)。
 
 展示文本只能由完整运行时 signed Tag map 查询。映射缺失时有界记录并拒绝业务投影；禁止调用 `GetOrderFoodText`、`GetOrderBevText`、override 委托、`SpecialGuest.Get*TagText`、`ToString()`，也不生成 `#id` 文本。
+
+## 订单等待条
+
+普客与稀客订单均发布可空的 `patienceRemainingRatio`，表示原生 `CurrentPatient / MaxPatient` 的剩余比例，不估算秒数。`RuntimeOrderPatienceReader` 只从已有精确捕获解析当前订单和控制器，并在读取前后复核同一经营代次、原生指针和活动生命周期，不创建捕获或根据桌位补造绑定。
+
+只有 `IsOrdering == true`、订单 `IsFullfilled == false` 且 `OnPatientUpdatedCallback` 非空时才接受数值；当前值和最大值必须为实际整数、最大值大于零且当前值位于0到最大值之间。读取失败、倒计时已退出、订单已送齐或生命周期变化返回 `null`，不沿用旧低值、不把异常夹到0或1。
+
+等待条通过周期快照及750毫秒的窄采样更新，不增加全场景扫描或每帧读取。更新复制托管订单数据，不修改捕获版本、订单身份或原生耐心；比例参与显示快照变化，但被排除在料理需求指纹和推荐输入之外。调度规则只使用本次已确认采样，执行边界见[稀客调度](rare-order-participation.md)。
 
 ## 身份漂移隔离
 
@@ -113,8 +122,11 @@ Tag ID 是 signed 原生身份，`0`、`-1` 等合法值必须原样保留；读
 | `RemoveFromOrder` | order 必须唯一命中活动 lifecycle | `Removed` |
 | `CleanOrderInfo` | exact order/controller/lifecycle | `Removed` |
 | `RepellInternal` | exact order/controller/lifecycle | `Removed`，不区分 `haveSeated` |
+| `LeaveFromDesk` | 进入原方法前按 generation/kind/controller 冻结全部已绑定标量 token，成功返回且原方法确实执行 | 各旧 lifecycle 的 `Removed` |
 
 原生异常不发布成功回执。`EndDlc4SpecialManualOrder` 只移除 arrival event，不是订单终态。
+
+`PatientDepletedLeave`（RVA `0x4D3B30`）会内联清理并移除HUD，不经过已有 `CleanOrderInfo` 方法Hook；随后调用 `LeaveFromDesk`（`0x4D2810`）。极差评价可能继续点单，因此不把其入口视为终态，而监听真正离开分支共用的精确 `LeaveFromDesk(GuestGroupController, LeaveType, Il2CppSystem.Action, bool)`。离店前不重新 `PeekOrders`，不按桌号或HUD缺失推断；成功后仅撤回冻结的旧生命周期，同桌新客及重入中新建、复用指针的订单保留。该回执同时解除陈旧业务候选和各高亮表面的来源，避免旧稀客占色却没有HUD卡片。
 
 回执存储有界为 128 项，只保存 generation、kind、两项原生指针、lifecycle、单调 receipt sequence、disposition 和 source。对同一 lifecycle，`Evaluated` 强于嵌套回调产生的 `Removed`；同 disposition 选择更新的 receipt。旧 postfix 不得退休同 tuple 上更晚的新 lifecycle。
 
@@ -144,3 +156,5 @@ dotnet run --project tests/night-business-lifecycle/NightBusinessLifecycleSmoke.
 ```
 
 涉及具体游戏成员或 Hook 形态时，按 [IL2CPP / IDA 分析流程](il2cpp-analysis-workflow.md) 重新验证，不增加旧路径或宽泛反射兼容层。
+
+修改等待条采集时，构建 `tests/flutter-contracts/host` 后运行其 `--order-patience` 模式，覆盖真实成员契约、空值、同桌/指针复用、跨代读取与快照/推荐缓存分离；调度自动启用另运行 `--rare-patience-auto-resume`。托管与源码边界检查不等同真实游戏读数验证。

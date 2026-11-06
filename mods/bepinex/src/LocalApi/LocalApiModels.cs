@@ -30,6 +30,8 @@ internal sealed class LocalApiSnapshot
     public NightBusinessContext? NightBusiness { get; init; }
     public SpecialBusinessContext? SpecialBusiness { get; init; }
     public NormalBusinessContext? NormalBusiness { get; init; }
+    /// <summary>完整采集与参与状态分离；暂停订单仍可在调度页查看其原始点单。</summary>
+    public LocalApiRareGuestParticipationSnapshot RareGuestParticipation { get; init; } = new();
     public List<AutomationRuntimeEvent> AutomationEvents { get; init; } = new();
     public List<AutomationCookingJobSnapshot> AutomationCookingJobs { get; init; } = new();
     public bool RuntimeDataComplete { get; init; }
@@ -145,6 +147,7 @@ internal sealed class RecommendationStateSnapshot
     public List<int> AvailableRecipeIds { get; init; } = new();
     public List<int> AvailableBeverageIds { get; init; } = new();
     public List<int> AvailableIngredientIds { get; init; } = new();
+    public int? StoredDarkCuisineCount { get; init; }
     public Dictionary<int, int> OwnedIngredientQty { get; init; } = new();
     public Dictionary<int, int> OwnedBeverageQty { get; init; } = new();
     public List<int> PlacedCookerTypeIds { get; init; } = new();
@@ -171,6 +174,7 @@ internal sealed class RecommendationStateSnapshot
             AvailableRecipeIds = state.AvailableRecipeIds.OrderBy(id => id).ToList(),
             AvailableBeverageIds = state.AvailableBeverageIds.OrderBy(id => id).ToList(),
             AvailableIngredientIds = state.AvailableIngredientIds.OrderBy(id => id).ToList(),
+            StoredDarkCuisineCount = inventoryReadReady ? state.StoredDarkCuisineCount : null,
             OwnedIngredientQty = state.OwnedIngredientQty
                 .OrderBy(item => item.Key)
                 .ToDictionary(item => item.Key, item => item.Value),

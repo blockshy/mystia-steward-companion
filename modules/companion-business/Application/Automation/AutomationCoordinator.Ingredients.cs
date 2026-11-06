@@ -12,8 +12,31 @@ public sealed partial class AutomationCoordinator
     /// 返回空串仅表示当前快照足够；主线程仍须在真正扣料前重新验证库存和全部原生身份。
     /// </summary>
     private string NormalIngredientDeferral(JsonObject order, JsonObject? target)
+        => IngredientDeferral(target is null ? order["foodId"] : target["foodId"], target);
+
+    /// <summary>
+    /// 稀客使用当前唯一主方案的精确配方，而非最初等待厨具时保存的候选。保温箱成品不再次扣料；
+    /// 黑暗料理的成品 ID 不是基础配方 ID，实际开锅必须用其明确生产基底检查材料。
+    /// </summary>
+    private string RareIngredientDeferral(JsonObject? target)
     {
-        if (!TryIngredientInteger(target is null ? order["foodId"] : target["foodId"], 0, out var foodId))
+        if (target is null) return "当前没有可执行的料理目标。";
+        if (J.Str(target["foodProductionKind"]) == "dark-cuisine")
+        {
+            if (J.Str(target["foodSupplySource"]) == "stored") return "";
+            if (J.Str(target["foodSupplySource"]) != "cook") return "特殊料理的供给方式尚未确认，等待有效目标。";
+            return IngredientDeferral(target["productionFoodId"], target);
+        }
+        return IngredientDeferral(target["foodId"], target);
+    }
+
+    /// <summary>
+    /// 普客和稀客共用逐份扣料规则。基础配方与加料按 ID 计数，不能以展示名称、材料集合去重、
+    /// 另一份宽松推荐或库存刷新时间推断可执行性；检查失败只等待，不占厨具、不消耗重试预算。
+    /// </summary>
+    private string IngredientDeferral(JsonNode? foodIdentity, JsonObject? target)
+    {
+        if (!TryIngredientInteger(foodIdentity, 0, out var foodId))
             return "料理目标身份不完整，等待目录与订单状态更新。";
         int? targetRecipeId = null;
         if (target is not null)
@@ -53,7 +76,7 @@ public sealed partial class AutomationCoordinator
         var runtime = _input.Snapshot["recommendationState"] as JsonObject;
         foreach (var (id, count) in required)
         {
-            if (!TryNormalIngredientQuantity(runtime, id, out var quantity))
+            if (!TryIngredientQuantity(runtime, id, out var quantity))
                 return $"材料库存尚未确认：{IngredientDisplayName(id)}，等待库存更新后再开锅。";
             if (quantity != -1 && quantity < count)
                 return $"材料不足：{IngredientDisplayName(id)}需要 {count} 份，库存 {quantity} 份；等待补充材料，其他可行订单继续调度。";
@@ -67,7 +90,7 @@ public sealed partial class AutomationCoordinator
     /// 存在、可用集合为合法完整 ID 数组且确实不含该 ID，缺少字典项才可解释为零。
     /// 集合缺失、类型错误、声称可用但数量缺失或显式 null 均为未知，不能制造零库存。
     /// </summary>
-    private bool TryNormalIngredientQuantity(JsonObject? runtime, int id, out int quantity)
+    private bool TryIngredientQuantity(JsonObject? runtime, int id, out int quantity)
     {
         quantity = 0;
         if (runtime?["ownedIngredientQty"] is not JsonObject quantities) return false;

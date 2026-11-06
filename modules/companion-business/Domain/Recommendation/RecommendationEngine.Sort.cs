@@ -5,22 +5,22 @@ namespace MystiaStewardCompanion.Business.Domain.Recommendation;
 
 public static partial class RecommendationEngine
 {
-    private static readonly string[] ObjectiveKeys = { "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure", "totalCost", "profit", "beverageStock", "cookerAvailable" };
-    private static readonly string[] ObjectiveDirections = { "desc", "desc", "asc", "asc", "asc", "asc", "desc", "desc", "desc" };
+    private static readonly string[] ObjectiveKeys = { "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure", "totalCost", "profit", "beverageStock" };
+    private static readonly string[] ObjectiveDirections = { "desc", "desc", "asc", "asc", "asc", "asc", "desc", "desc" };
     private static readonly Dictionary<string, int[]> PresetWeights = new()
     {
-        ["balanced"] = new[] { 70, 60, 90, 45, 55, 30, 35, 35, 60 },
-        ["resources"] = new[] { 55, 45, 90, 65, 100, 70, 20, 80, 60 },
-        ["profit"] = new[] { 60, 50, 85, 25, 35, 25, 100, 25, 50 },
-        ["simple"] = new[] { 50, 45, 90, 100, 45, 45, 25, 40, 70 }
+        ["balanced"] = new[] { 70, 60, 90, 45, 55, 30, 35, 35 },
+        ["resources"] = new[] { 55, 45, 90, 65, 100, 70, 20, 80 },
+        ["profit"] = new[] { 60, 50, 85, 25, 35, 25, 100, 25 },
+        ["simple"] = new[] { 50, 45, 90, 100, 45, 45, 25, 40 }
     };
 
-    /// <summary>归一化 main 基线的九项目标；未知字段丢弃，相同 key 的最后一项覆盖前项。</summary>
+    /// <summary>归一化 main 基线的八项目标；未知字段丢弃，相同 key 的最后一项覆盖前项。</summary>
     public static JsonObject NormalizeSortProfile(JsonObject? value)
     {
         value ??= new JsonObject(); var preset = Str(value["preset"], "balanced");
         // 自定义是明确的持久模式，不是第五套权重。缺省目标仍沿用原均衡补值规则；
-        // 已验证的共享配置包含完整九项，因此这里不改评分、方向或候选排序算法。
+        // 已验证的共享配置包含完整八项，因此这里不改评分、方向或候选排序算法。
         if (!PresetWeights.ContainsKey(preset) && preset != "custom") preset = "balanced";
         var defaultWeights = PresetWeights[preset == "custom" ? "balanced" : preset];
         var overrides = Objects(value["objectives"]).Where(x => x["key"] is JsonValue).GroupBy(x => Str(x["key"])).ToDictionary(x => x.Key, x => x.Last());
@@ -54,7 +54,7 @@ public static partial class RecommendationEngine
         var normalized = NormalizeSortProfile(profile); var context = sortContext ?? new JsonObject();
         var ranges = ObjectiveKeys.ToDictionary(key => key, key => values.Length == 0 ? (Min: 0d, Max: 0d) : (Min: values.Min(x => ObjectiveValue(x, key)), Max: values.Max(x => ObjectiveValue(x, key))));
         // 比较器会反复访问同一方案。把与另一方案无关的纯值每项只算一次，避免排序期间
-        // 重复构造配方键、标签数组和九项权重分数；字典仅存活于本次调用，不缓存游戏状态。
+        // 重复构造配方键、标签数组和八项权重分数；字典仅存活于本次调用，不缓存游戏状态。
         var metrics = new Dictionary<JsonObject, (int Pin, int Special, double Score)>();
         foreach (var value in values)
             metrics[value] = (PinRank(value, context), SpecialRank(value, context), PlanScore(value, normalized, ranges));
@@ -87,7 +87,6 @@ public static partial class RecommendationEngine
             "totalCost" => Num(food["baseCost"]) + Num(food["extraCost"]),
             "profit" => Num(Obj(food["recipe"])["price"]) - Num(food["baseCost"]) - Num(food["extraCost"]) + Num(Obj(drink["beverage"])["price"]),
             "beverageStock" => plan["beverage"] is null ? 0 : InventoryRank(Num(drink["ownedQuantity"])),
-            "cookerAvailable" => Bool(food["cookerAvailable"]) ? 1 : 0,
             _ => 0
         };
     }

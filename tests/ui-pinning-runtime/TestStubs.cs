@@ -162,6 +162,12 @@ namespace MystiaStewardCompanion.Save
 
     internal static class RuntimeReflectionUtility
     {
+        public static IEnumerable<object> EnumerateObjects(object values) => ((System.Collections.IEnumerable)values).Cast<object>();
+        public static object? TryCastRuntimeObject(object? instance, string typeName)
+        {
+            var type = typeof(RuntimeReflectionUtility).Assembly.GetType(typeName);
+            return type?.IsInstanceOfType(instance) == true ? instance : null;
+        }
         public static Type? FindType(string fullName)
         {
             return fullName switch
@@ -169,7 +175,7 @@ namespace MystiaStewardCompanion.Save
                 "NightScene.UI.CookingUtility.WorkSceneCookingSelectionPannel" => typeof(CookingSelectionPanelProbe),
                 "NightScene.UI.CookingUtility.WorkSceneStoragePannel" => typeof(StoragePanelProbe),
                 "GameData.RunTime.Common.RunTimePlayerData" => typeof(RunTimePlayerDataProbe),
-                _ => null,
+                _ => typeof(RuntimeReflectionUtility).Assembly.GetType(fullName),
             };
         }
 
@@ -349,6 +355,16 @@ namespace MystiaStewardCompanion.Save
         long TargetGeneration,
         string PlanIdentity);
 
+    /// <summary>
+    /// 本项目验证既有目标作用域及高亮；排序桥本体由runtime-ui-list-order独立链接验证。
+    /// 此处仅隔离启动注册与状态输出，不能据此声明原生排序或Harmony安装通过。
+    /// </summary>
+    internal static class RuntimeUiListOrderService
+    {
+        internal static string Status => "isolated; see runtime-ui-list-order checks";
+        internal static void Attach(BepInEx.Logging.ManualLogSource log) { }
+    }
+
     internal static class RuntimeTargetRecipeVariantService
     {
         internal const string HarmonyId =
@@ -357,6 +373,8 @@ namespace MystiaStewardCompanion.Save
         private static readonly object SyncRoot = new();
         private static readonly Dictionary<nint, long> PanelEpochs = new();
         private static readonly Dictionary<nint, RowBinding> RowsByButton = new();
+        // 精确租约的可控异常边界；仅测试使用，生产 Service 必须自行处理复核抛错。
+        internal static Action? BeforeRowValidation;
 
         public static int ShutdownRetireCount { get; private set; }
 
@@ -465,6 +483,7 @@ namespace MystiaStewardCompanion.Save
             TargetRecipeVariantRowLease lease,
             out RuntimeUiTargetKinds claims)
         {
+            BeforeRowValidation?.Invoke();
             claims = RuntimeUiTargetKinds.None;
             lock (SyncRoot)
             {
@@ -696,6 +715,7 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelOpen()
         {
+            ListColorBlockProbe.Invoke("BeforePanelOpen");
             UpdateAllVisual();
             OpenAction?.Invoke();
         }
@@ -703,18 +723,25 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnRecipeElementEnabled(RecipeProbe recipe, object cluster, UIButtonSimpleProbe uiButtonSimple)
         {
+            ListColorBlockProbe.Invoke("BeforeItemEnabled", uiButtonSimple);
             uiButtonSimple.image.set_color(RecipeBoundColor);
+            ((UiClusterProbe)cluster).Bind(recipe);
+            ListColorBlockProbe.Invoke("AfterRecipeItemEnabled", this, recipe, cluster, uiButtonSimple);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnIngElementEnabled(KeyValuePair<IngredientProbe, int> objectBase, object cluster, UIButtonSimpleProbe uiButtonSimple)
         {
+            ListColorBlockProbe.Invoke("BeforeItemEnabled", uiButtonSimple);
             if (ApplyIngredientBoundColor) uiButtonSimple.image.set_color(IngredientBoundColor);
+            ((UiClusterProbe)cluster).Bind(objectBase.Key);
+            ListColorBlockProbe.Invoke("AfterIngredientItemEnabled", objectBase, cluster, uiButtonSimple);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelClose()
         {
+            ListColorBlockProbe.Invoke("BeforeCookingPanelTeardown");
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -810,6 +837,7 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelOpen()
         {
+            ListColorBlockProbe.Invoke("BeforePanelOpen");
             if (openType == SellableTypeProbe.Beverage)
             {
                 UpdateBevField();
@@ -837,12 +865,16 @@ namespace MystiaStewardCompanion.Save
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnElementEnabled(KeyValuePair<SellableProbe, int> objectBase, object cluster, UIButtonSimpleProbe uiButtonSimple)
         {
+            ListColorBlockProbe.Invoke("BeforeItemEnabled", uiButtonSimple);
             uiButtonSimple.image.set_color(BoundColor);
+            ((UiClusterProbe)cluster).Bind(objectBase.Key);
+            ListColorBlockProbe.Invoke("AfterStorageItemEnabled", objectBase, cluster, uiButtonSimple);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         public void OnPanelClose()
         {
+            ListColorBlockProbe.Invoke("BeforeStoragePanelTeardown", typeof(StoragePanelProbe).GetMethod(nameof(OnPanelClose))!);
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
@@ -884,6 +916,7 @@ namespace MystiaStewardCompanion.Save
 
     internal sealed class RecipeProbe
     {
+        public VisualTextProbe Text { get; } = new();
         private readonly int _id;
 
         public RecipeProbe(int id, bool throwOnIdRead = false)
@@ -901,6 +934,7 @@ namespace MystiaStewardCompanion.Save
 
     internal sealed class IngredientProbe
     {
+        public VisualTextProbe Text { get; } = new();
         public IngredientProbe(int id)
         {
             this.id = id;
@@ -911,6 +945,7 @@ namespace MystiaStewardCompanion.Save
 
     internal sealed class SellableProbe
     {
+        public VisualTextProbe Text { get; } = new();
         public SellableProbe(int id, SellableTypeProbe type)
         {
             this.id = id;
@@ -928,14 +963,19 @@ namespace MystiaStewardCompanion.Save
         Beverage,
     }
 
-    internal abstract class SelectableProbeBase
+    internal abstract class SelectableProbeBase : UnityEngine.UI.Selectable
     {
         protected SelectableProbeBase(UnityEngine.Color color)
         {
-            image = new UiImageProbe(color);
+            var buttonObject = new UnityEngine.GameObject("NativeButton");
+            buttonObject.Add(this);
+            image = buttonObject.Add(new UiImageProbe(color));
+            base.image = image;
+            Cluster = new UiClusterProbe(buttonObject);
         }
 
-        public UiImageProbe image { get; }
+        public new UiImageProbe image { get; }
+        public UiClusterProbe Cluster { get; }
     }
 
     internal sealed class UIButtonSimpleProbe : SelectableProbeBase
@@ -946,9 +986,8 @@ namespace MystiaStewardCompanion.Save
         }
     }
 
-    internal abstract class GraphicProbeBase
+    internal abstract class GraphicProbeBase : UnityEngine.UI.Image
     {
-        private static long _nextPointer;
         private UnityEngine.Color _color;
         private readonly List<int> _setterThreadIds = new();
         private ManualResetEventSlim? _setterEntered;
@@ -957,10 +996,10 @@ namespace MystiaStewardCompanion.Save
         protected GraphicProbeBase(UnityEngine.Color color)
         {
             _color = color;
-            m_CachedPtr = new IntPtr(Interlocked.Increment(ref _nextPointer));
         }
 
-        public IntPtr m_CachedPtr { get; }
+        protected override UnityEngine.Color ReadColor() => get_color();
+        protected override void WriteColor(UnityEngine.Color value) => set_color(value);
 
         public bool ThrowOnRead { get; set; }
 
@@ -1005,6 +1044,7 @@ namespace MystiaStewardCompanion.Save
         public void set_color(UnityEngine.Color color)
         {
             _color = color;
+            SetVerticesDirty();
             lock (_setterThreadIds)
             {
                 _setterThreadIds.Add(Environment.CurrentManagedThreadId);

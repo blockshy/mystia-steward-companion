@@ -2,6 +2,8 @@
 
 本项目直接链接生产 `LocalApiServer.Business.cs`、`LocalApiServer.PageQueries.cs`、设备权威存储、收藏/自定义配方存储、HTTP 正文解析、夜间生命周期状态机、UI 发布会话门禁和业务类库。游戏适配委托与最终 UI 提交替换为受控纯托管边界，不启动游戏或 TCP 服务，也不读取真实配置。它验证的是业务宿主线程与值协议；实际 Unity 反射、游戏行为和网络监听仍需各自验证。
 
+游戏内专注显示在本项目中保持默认关闭。`FocusOverlayDisabledBoundary.cs` 仅承载生产发布结构新增的关闭态桥接，准备结果固定为 `null`，意外提交非空计划立即失败；不移除或替代既有业务断言。正式专注投影、来源作用域和发布隔离由 `tests/flutter-contracts/host` 验证，UGUI与图片缓存由 `tests/runtime-game-focus-overlay` 验证。
+
 从仓库根目录运行：
 
 ```powershell

@@ -21,7 +21,7 @@ namespace MystiaStewardCompanion.Ui;
 /// 本地 API 的 HTTP 处理运行在后台线程，但 IL2CPP/Unity 对象只能安全地在 Unity 主线程访问。
 /// 因此涉及库存、订单、稀客邀请和自动化的请求都会先进入队列，再由 <see cref="Update"/> 消费执行。
 /// </remarks>
-internal sealed class StewardOverlayController
+internal sealed partial class StewardOverlayController
 {
     // 稀客订单 Hook 可能在同一帧连续触发多次，短暂防抖可减少重复读取夜间经营对象。
     private const float SpecialOrderRefreshDebounceSeconds = 0.2f;
@@ -303,7 +303,14 @@ internal sealed class StewardOverlayController
                 RuntimeNightBusinessLifecycle.Snapshot.Generation, _runtimeLoaded && Time.timeScale > 0f,
                 GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
         }
-        try { UpdateCore(); }
+        try
+        {
+            UpdateCore();
+            // 独立只读显示层复用托管快照与后台已选主方案，不在 Unity 帧内查询推荐。
+            var focusStarted = BeginDiagnosticStage();
+            try { UpdateGameFocusOverlay(); }
+            finally { EndDiagnosticStage("ui.focusOverlay", focusStarted); }
+        }
         finally
         {
             EndDiagnosticStage("main.update", started);
@@ -320,7 +327,7 @@ internal sealed class StewardOverlayController
             {
                 EndDiagnosticStage("diagnostics.flush", diagnosticStarted);
                 // 保留原 main.update 核心阶段便于与历史窗口比较；逐帧关联另记录包含
-                // 诊断格式化及同步写盘的完整入口，避免日志本身的停顿落在计时之外。
+                // 诊断格式化及后台队列提交的完整入口，避免诊断本身的成本落在计时之外。
                 if (_performanceDiagnosticsEnabled)
                     _frameStallDiagnostics.RecordUpdate(
                         (Stopwatch.GetTimestamp() - started) * 1000d / Stopwatch.Frequency,
@@ -334,6 +341,7 @@ internal sealed class StewardOverlayController
         if (_disposed || _config == null) return;
         var phaseStarted = BeginDiagnosticStage();
         ProcessNightBusinessLifecycleChange();
+        ProcessRareGuestParticipationStateChange();
         RefreshOnSceneChange();
         EndDiagnosticStage("main.lifecycle", phaseStarted);
         phaseStarted = BeginDiagnosticStage();
@@ -761,6 +769,7 @@ internal sealed class StewardOverlayController
         if (_disposed) return;
 
         _disposed = true;
+        DisposeGameFocusOverlay();
         RuntimePerformanceDiagnostics.ClearStageRecorder(this);
         _gameMediaService?.Dispose();
         CompanionProcessLauncher.TryNotifyExit(_log);
@@ -1057,6 +1066,10 @@ internal sealed class StewardOverlayController
                 _runtimeMappedGuestSnapshot,
                 _runtimeStaticDataSnapshot);
             _businessContext = Measure("business.rare.total", provider.LoadContext);
+            // 完成上一单会立即刷新此集合，而HTTP快照有独立发布节流。调度身份必须在
+            // 同一读取边界对齐，避免下一帧拿“新订单集合 + 旧参与队列”误拒绝后续订单。
+            // 只对刚读取的托管数据做幂等对账，不增加Unity读取、不放宽完整性或人工暂停规则。
+            ReconcileRareGuestParticipation(RuntimeNightBusinessLifecycle.Snapshot, _businessContext);
             _businessContextSpecialOrderVersion = specialOrderVersion;
             _businessContextSceneName = _activeSceneName;
             _nextStableBusinessContextRescanAt = Time.realtimeSinceStartup + StableBusinessContextRescanSeconds;
@@ -1123,6 +1136,9 @@ internal sealed class StewardOverlayController
             var deviceAuthorityStore = new CompanionDeviceAuthorityStore(
                 CompanionDeviceAuthorityStore.ResolvePath(),
                 _log);
+            _gameFocusOverlayStore = new GameFocusOverlayStore(
+                Path.Combine(Path.GetDirectoryName(FavoriteStore.ResolvePath())!, "game-focus-overlay.json"),
+                message => _log.LogWarning(message));
 
             _localApiServer = new LocalApiServer(
                 _config.LocalApiLanEnabled.Value,
@@ -1154,7 +1170,8 @@ internal sealed class StewardOverlayController
                 customRecipeStore,
                 deviceAuthorityStore,
                 _log,
-                _gameMediaService);
+                _gameMediaService,
+                focusOverlayStore: _gameFocusOverlayStore);
             _localApiServer.Start();
         }
         catch (Exception ex)
@@ -1226,6 +1243,17 @@ internal sealed class StewardOverlayController
                             mission.Phase == RuntimeMissionDiagnosticPhase.Ready),
                         RuntimeServeInWorkMissionDiagnosticCapture.Snapshot(),
                         specialBusiness));
+            // 经营上下文为减少主线程开销会跨秒复用，耐心条必须在本次发布点重新窄采样。
+            // 读取器只按已捕获的精确活动生命周期关联；未知会撤销旧比例，不保留过时低值。
+            // 仅在既有快照发布节奏采样，不增加逐帧扫描，也不把耐心变化作为料理需求。
+            publishedNightBusiness = Measure("snapshot.rarePatience",
+                () => RuntimeOrderPatienceReader.Refresh(publishedNightBusiness));
+            var publishedNormalBusiness = nightRuntimeGated ? null
+                : Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot);
+            publishedNormalBusiness = Measure("snapshot.normalPatience",
+                () => RuntimeOrderPatienceReader.Refresh(publishedNormalBusiness));
+            var participation = ReconcileRareGuestParticipation(lifecycle, publishedNightBusiness);
+            participation = TryAutoResumeRareGuestParticipationFromFreshSnapshot(lifecycle, publishedNightBusiness, participation);
             var snapshot = new LocalApiSnapshot
             {
                 PluginVersion = MystiaStewardCompanionPlugin.PluginVersion,
@@ -1260,10 +1288,10 @@ internal sealed class StewardOverlayController
                             && _lastRuntimeReadUtc != DateTime.MinValue
                             && string.IsNullOrEmpty(_lastRuntimeErrorMessage))),
                 NightBusiness = publishedNightBusiness,
+                RareGuestParticipation = LocalApiRareGuestParticipationSnapshot.From(participation,
+                    IsParticipationProjectionComplete(lifecycle, publishedNightBusiness, participation)),
                 SpecialBusiness = specialBusiness,
-                NormalBusiness = nightRuntimeGated
-                    ? null
-                    : Measure("snapshot.normalBusiness", ReadNormalBusinessForSnapshot),
+                NormalBusiness = publishedNormalBusiness,
                 AutomationEvents = RuntimeOrderPreparationService.SnapshotAutomationRuntimeEvents().ToList(),
                 AutomationCookingJobs = RuntimeOrderPreparationService.SnapshotAutomationCookingJobs().ToList(),
                 RuntimeDataComplete = runtimeDataInfo.IsComplete,
@@ -1283,6 +1311,7 @@ internal sealed class StewardOverlayController
             }
 
             snapshot.SnapshotSignature = contentSignature;
+            _gameFocusLiveSnapshot = snapshot;
             _localApiServer.SetSnapshotJson(
                 Measure("snapshot.serialize", () => JsonSerializer.Serialize(snapshot, LocalApiJsonOptions)),
                 contentSignature);
@@ -1420,8 +1449,16 @@ internal sealed class StewardOverlayController
     private void MarkActiveBusinessSnapshotDirtyIfDue()
     {
         if (ShouldGateNightBusinessRuntime()) return;
-        if (_localApiServer == null || _config == null || !_config.AutoRefreshRuntime.Value) return;
+        if (_localApiServer == null || _config == null) return;
         var now = Time.realtimeSinceStartup;
+        if (now < _nextActiveBusinessSnapshotRefreshAt) return;
+        // 即便关闭一般自动刷新，明确启用的耐心调度规则仍需要新鲜比例。沿用750ms
+        // 采样节奏，不增加逐帧读取；两者都关闭时也延后配置复查，避免逐帧获取策略锁。
+        if (!_config.AutoRefreshRuntime.Value && !RuntimeAutomationControlState.SnapshotRareGuestAutoResumeSettings().Enabled)
+        {
+            _nextActiveBusinessSnapshotRefreshAt = now + ActiveBusinessSnapshotRefreshSeconds;
+            return;
+        }
         // 这里仅标记既有周期快照为脏，不承担订单身份、场景撤销或写权限核验。未到原有
         // 750ms 截止时间时，不能先执行内部含主菜单查找的可读性探针。Hook 版本检查仍在
         // 上面的 RefreshBusinessContextOnOrderCaptureChange 每帧运行，事件刷新不经此门禁。
@@ -1530,6 +1567,7 @@ internal sealed class StewardOverlayController
         AppendValue(builder, snapshot.RuntimeUiPinningStatus);
         AppendRecommendationSnapshot(builder, snapshot.RecommendationState);
         AppendNightBusiness(builder, snapshot.NightBusiness);
+        AppendRareGuestParticipation(builder, snapshot.RareGuestParticipation);
         AppendSpecialBusiness(builder, snapshot.SpecialBusiness);
         AppendNormalBusiness(builder, snapshot.NormalBusiness);
         AppendAutomationRuntimeEvents(builder, snapshot.AutomationEvents);
@@ -1629,6 +1667,7 @@ internal sealed class StewardOverlayController
         AppendInts(builder, snapshot.AvailableRecipeIds);
         AppendInts(builder, snapshot.AvailableBeverageIds);
         AppendInts(builder, snapshot.AvailableIngredientIds);
+        AppendValue(builder, snapshot.StoredDarkCuisineCount);
         AppendIntDictionary(builder, snapshot.OwnedIngredientQty);
         AppendIntDictionary(builder, snapshot.OwnedBeverageQty);
         AppendInts(builder, snapshot.PlacedCookerTypeIds);
@@ -1673,6 +1712,8 @@ internal sealed class StewardOverlayController
         AppendValue(builder, context.PlaceLabel);
         AppendValue(builder, context.Source);
         AppendValue(builder, context.Error);
+        // 订单集合的完整性影响颜色槽回收和调度许可，不能仅依赖来源文案间接变化。
+        AppendValue(builder, context.OrdersReadComplete);
         // 完整性变化同样属于可见状态；即使名单未变，也必须让客户端收到“未知/完整”的切换。
         AppendValue(builder, context.ActiveRareGuestsReadComplete);
         foreach (var guest in context.ActiveRareGuests
@@ -1708,6 +1749,7 @@ internal sealed class StewardOverlayController
             AppendValue(builder, order.SpecialBusinessRoleLabel);
             AppendValue(builder, order.AutomationAllowed);
             AppendValue(builder, order.AutomationBlockReason);
+            AppendValue(builder, order.PatienceRemainingRatio?.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
             AppendValue(builder, order.FoodTagId);
             AppendValue(builder, order.FoodTag);
             AppendValue(builder, order.BeverageTagId);
@@ -1789,6 +1831,8 @@ internal sealed class StewardOverlayController
 
         AppendValue(builder, context.Source);
         AppendValue(builder, context.Error);
+        // 订单集合的完整性影响颜色槽回收和调度许可，不能仅依赖来源文案间接变化。
+        AppendValue(builder, context.OrdersReadComplete);
         foreach (var order in context.Orders
                      .OrderBy(order => order.OrderKey, StringComparer.Ordinal)
                      .ThenBy(order => order.DeskCode)
@@ -1796,6 +1840,7 @@ internal sealed class StewardOverlayController
         {
             AppendValue(builder, order.TraceId);
             AppendValue(builder, order.OrderKey);
+            AppendValue(builder, order.PatienceRemainingRatio?.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
             AppendValue(builder, order.OrderLifecycleSequence);
             AppendValue(builder, order.DeskCode);
             AppendValue(builder, order.GuestId);
@@ -1983,7 +2028,7 @@ internal sealed class StewardOverlayController
                 // 只读取已有托管快照补上下文，禁止为性能日志再遍历 IL2CPP 订单或查找场景对象。
                 // 阶段存在嵌套（例如 snapshot.publish 包含 serialize），不可相加当作帧总耗时。
                 var gate = RuntimeNightBusinessAutomationGate.Snapshot;
-                AggregateModLogService.AppendSection("performance", "Main-thread performance window",
+                AggregateModLogService.AppendDeferredSection("performance", "Main-thread performance window",
                     string.Join(Environment.NewLine, report,
                         $"scene: {_activeSceneName}",
                         $"normalOrders: {_normalBusinessContext?.Orders.Count ?? -1}",
@@ -1995,7 +2040,7 @@ internal sealed class StewardOverlayController
             // 与阶段窗口独立使用 Stopwatch 时基；保留八条最慢入口间隔及前一帧数据，
             // 避免把五秒窗口内不同帧、不同阶段的最大值错误地拼成同一次卡顿。
             if (_frameStallDiagnostics.TryDrain(Stopwatch.GetTimestamp(), Stopwatch.Frequency, out var frameReport))
-                AggregateModLogService.AppendSection("performance", "Correlated frame stalls", frameReport);
+                AggregateModLogService.AppendDeferredSection("performance", "Correlated frame stalls", frameReport);
         }
         catch
         {
@@ -3081,6 +3126,8 @@ internal sealed class StewardOverlayController
         OrderPreparationResult result;
         // 记录完整运行时服务调用，包含其内部 GetExecutionGuard、反射与原生动作；
         // 此数值不能解释为纯原生函数耗时。异常仍按原路径传播，只在 finally 保留耗时。
+        using var participationPermit = AcquireRareOrderParticipationAdmission(request, sessionGeneration, _businessContext, out var participationBlocked);
+        if (participationBlocked != null) return participationBlocked;
         try { result = RuntimeOrderPreparationService.Prepare(request); }
         finally { EndDiagnosticStage("action.rare.prepare", started); }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;
@@ -3208,6 +3255,8 @@ internal sealed class StewardOverlayController
         var sessionGeneration = RuntimeNightBusinessLifecycle.Generation;
         var started = BeginDiagnosticStage();
         OrderPreparationResult result;
+        using var participationPermit = AcquireRareOrderParticipationAdmission(request, sessionGeneration, _businessContext, out var participationBlocked);
+        if (participationBlocked != null) return participationBlocked;
         try { result = RuntimeOrderPreparationService.CompleteFirst(request); }
         finally { EndDiagnosticStage("action.rare.complete", started); }
         if (!IsNightBusinessSessionCurrent(sessionGeneration)) return result;

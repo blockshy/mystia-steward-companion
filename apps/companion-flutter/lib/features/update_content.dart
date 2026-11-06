@@ -15,7 +15,6 @@ String updateStateLabel(DataMap state) {
     'preparing': '正在准备安装',
     'closing-companion': '正在关闭客户端',
     'waiting-game': '等待游戏退出',
-    'terminating-game': '正在关闭游戏',
     'game-closed': '游戏已退出',
     'backing-up': '正在备份',
     'installing': '正在安装',
@@ -117,7 +116,7 @@ class SettingsUpdatesSection extends StatelessWidget {
                           context,
                           model,
                           '安装更新',
-                          '保存游戏进度并正常退出。独立更新程序会确认客户端退出、校验整包并在失败时恢复备份。',
+                          '独立更新程序会等待你保存并退出游戏，准备与等待期间可取消安装；开始替换后会校验整包并在失败时恢复备份。',
                         )) {
                           await model.mutate(
                             '/updates/install-on-exit',

@@ -50,8 +50,10 @@ class InventoryItem extends StatelessWidget {
     final selectionHeight = math.max(44.0, stewardControlHeight(context));
     final checkboxSize = context.theme.checkboxStyle.size;
 
-    Widget adjustments() => Row(
+    Widget adjustments({required bool vertical}) => Flex(
+      direction: vertical ? Axis.vertical : Axis.horizontal,
       mainAxisSize: MainAxisSize.min,
+      spacing: StewardDensity.toolbarGap,
       children: [
         for (final (text, action, callback) in [
           ('−10', '减少10；库存至少10时可用', onDecrease),
@@ -65,7 +67,9 @@ class InventoryItem extends StatelessWidget {
               key: ValueKey(
                 'inventory-adjust-${text == '−10' ? 'decrease' : 'increase'}',
               ),
-              variant: FButtonVariant.ghost,
+              // 数量增减是实际写操作，始终使用与其它业务操作一致的描边外壳，
+              // 不能只显示近似正文的裸文字；禁用、焦点和透明度继续由主题负责。
+              variant: FButtonVariant.outline,
               style: stewardButtonStyle(context),
               mainAxisSize: MainAxisSize.min,
               semanticsLabel: '$name${text == '−10' ? '减少' : '增加'}10',
@@ -85,62 +89,23 @@ class InventoryItem extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final stockStyle = DefaultTextStyle.of(context).style
-                  .merge(StewardText.value);
-              double widthOf(String value) {
-                final painter = TextPainter(
-                  text: TextSpan(text: value, style: stockStyle),
-                  textDirection: Directionality.of(context),
-                  textScaler: MediaQuery.textScalerOf(context),
-                  locale: Localizations.maybeLocaleOf(context),
-                )..layout();
-                try {
-                  return painter.width.ceilToDouble();
-                } finally {
-                  painter.dispose();
-                }
-              }
-
-              // 库存保持右对齐，长名称自然换行；不缩小中文字号或截掉真实数量。
-              final stockWidth = math.min(
-                math.max(widthOf('库存 9999'), widthOf('库存 $stockText')),
-                constraints.maxWidth * .4,
-              );
-              return StewardBaselineRow(
-                children: [
-                  StewardFirstLineCenter(
-                    textStyle: nameStyle,
-                    referenceText: name,
-                    child: EntityImage(
-                      kind: kind,
-                      id: entityId,
-                      fallback: kind == EntityImageKind.ingredient
-                          ? FLucideIcons.leaf
-                          : FLucideIcons.glassWater,
-                      size: StewardImageSize.name,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text(name, style: nameStyle)),
-                  const SizedBox(width: 8),
-                  SizedBox(
-                    width: stockWidth,
-                    child: Text.rich(
-                      TextSpan(
-                        children: [
-                          TextSpan(text: '库存 ', style: captionStyle),
-                          TextSpan(text: stockText, style: nameStyle),
-                        ],
-                      ),
-                      textAlign: TextAlign.end,
-                      style: StewardText.body,
-                    ),
-                  ),
-                ],
-              );
-            },
+          StewardBaselineRow(
+            children: [
+              StewardFirstLineCenter(
+                textStyle: nameStyle,
+                referenceText: name,
+                child: EntityImage(
+                  kind: kind,
+                  id: entityId,
+                  fallback: kind == EntityImageKind.ingredient
+                      ? FLucideIcons.leaf
+                      : FLucideIcons.glassWater,
+                  size: StewardImageSize.name,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(child: Text(name, style: nameStyle)),
+            ],
           ),
           if (tags.isNotEmpty || readOnlyReason != null)
             Padding(
@@ -215,29 +180,93 @@ class InventoryItem extends StatelessWidget {
                 padding: const EdgeInsets.only(top: 8, right: 10, bottom: 8),
                 child: LayoutBuilder(
                   builder: (context, constraints) {
-                    final inline =
+                    final scaler = MediaQuery.textScalerOf(context);
+                    final stockStyle = DefaultTextStyle.of(context).style
+                        .merge(StewardText.value);
+                    double widthOf(String value) {
+                      final painter = TextPainter(
+                        text: TextSpan(text: value, style: stockStyle),
+                        textDirection: Directionality.of(context),
+                        textScaler: scaler,
+                        locale: Localizations.maybeLocaleOf(context),
+                      )..layout();
+                      try {
+                        return painter.width.ceilToDouble();
+                      } finally {
+                        painter.dispose();
+                      }
+                    }
+
+                    // 数量是整条的独立列，按包含名称、标签和操作按钮的总高度居中，
+                    // 不再跟随名称首行。窄屏/大字号只把两个操作纵排，避免把库存
+                    // 推到名称下面，或为了维持横排而压缩文字与触屏命中区域。
+                    final compact = constraints.maxWidth < scaler.scale(440);
+                    // 极窄父容器（例如嵌入预览或较大系统字号）已不足以保留三列时，
+                    // 操作改为资料区右下方纵排。库存仍留在独立居中列，图像与名称
+                    // 不会被压到零宽；正常手机与最窄正式桌面不需要此兜底。
+                    final insetActions =
                         showAdjustments &&
-                        constraints.maxWidth >=
-                            MediaQuery.textScalerOf(context).scale(440);
-                    return inline
-                        ? Row(
-                            children: [
-                              Expanded(child: information()),
-                              const SizedBox(width: 8),
-                              adjustments(),
-                            ],
-                          )
-                        : Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              information(),
-                              if (showAdjustments)
-                                Align(
-                                  alignment: Alignment.centerRight,
-                                  child: adjustments(),
-                                ),
-                            ],
-                          );
+                        constraints.maxWidth < scaler.scale(180);
+                    final stockWidth = math.min(
+                      compact
+                          ? math.max(
+                              widthOf('库存'),
+                              math.max(widthOf('9999'), widthOf(stockText)),
+                            )
+                          : math.max(
+                              widthOf('库存 9999'),
+                              widthOf('库存 $stockText'),
+                            ),
+                      constraints.maxWidth * .35,
+                    );
+                    return Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: insetActions
+                              ? Column(
+                                  crossAxisAlignment:
+                                      CrossAxisAlignment.stretch,
+                                  children: [
+                                    information(),
+                                    const SizedBox(
+                                      height: StewardDensity.toolbarGap,
+                                    ),
+                                    Align(
+                                      alignment: Alignment.centerRight,
+                                      child: adjustments(vertical: true),
+                                    ),
+                                  ],
+                                )
+                              : information(),
+                        ),
+                        const SizedBox(width: StewardDensity.toolbarGap),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          excludeFromSemantics: true,
+                          onTap: enabled && onChanged != null
+                              ? () => onChanged!(!selected)
+                              : null,
+                          child: SizedBox(
+                            width: stockWidth,
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(text: '库存 ', style: captionStyle),
+                                  TextSpan(text: stockText, style: nameStyle),
+                                ],
+                              ),
+                              textAlign: TextAlign.end,
+                              style: StewardText.body,
+                            ),
+                          ),
+                        ),
+                        if (showAdjustments && !insetActions) ...[
+                          const SizedBox(width: StewardDensity.toolbarGap),
+                          adjustments(vertical: compact),
+                        ],
+                      ],
+                    );
                   },
                 ),
               ),

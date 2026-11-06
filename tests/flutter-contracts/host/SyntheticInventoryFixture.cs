@@ -26,6 +26,39 @@ internal static class SyntheticInventoryFixture
         })!;
         if (Signature(false) == Signature(true))
             throw new InvalidOperationException("库存来源改变未使正式snapshot签名失效。");
+        // 直接调用生产完整快照签名；固定来源、错误、订单和调度DTO，分别只翻转一种客人的
+        // 采集完整位。不能用稀客 ready 或 Source 改变替这两个独立字段提供偶然的覆盖。
+        string OrderSignature(bool rare, bool complete) => (string)method.Invoke(null, new object[]
+        {
+            new MystiaStewardCompanion.LocalApi.LocalApiSnapshot
+            {
+                NightBusiness = new MystiaStewardCompanion.Core.NightBusinessContext
+                {
+                    OrdersReadComplete = rare && complete,
+                    Source = "synthetic-unchanged",
+                    Orders = new List<MystiaStewardCompanion.Core.NightBusinessOrder>
+                    {
+                        new() { TraceId = "R-0010", OrderLifecycleSequence = 3, GuestId = 4 },
+                    },
+                },
+                NormalBusiness = new MystiaStewardCompanion.Core.NormalBusinessContext
+                {
+                    OrdersReadComplete = !rare && complete,
+                    Source = "synthetic-unchanged",
+                    Orders = new List<MystiaStewardCompanion.Core.NormalBusinessOrder>
+                    {
+                        new() { TraceId = "N-0011", OrderLifecycleSequence = 7, OrderKey = "ptr:11" },
+                    },
+                },
+            },
+        })!;
+        foreach (var rare in new[] { true, false })
+        {
+            if (OrderSignature(rare, false) == OrderSignature(rare, true))
+                throw new InvalidOperationException($"{(rare ? "稀客" : "普客")}订单完整性单独改变未使正式snapshot签名失效。");
+            if (OrderSignature(rare, true) != OrderSignature(rare, true))
+                throw new InvalidOperationException("相同订单完整性输入生成了不稳定快照签名。");
+        }
     }
 
     internal static bool Contains(int id) => id is 9902 or 9903 or 9904;

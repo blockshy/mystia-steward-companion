@@ -88,7 +88,7 @@ void main() {
     });
   }
 
-  testWidgets('桌面主方案拥有较宽详情区，备选与诊断默认折叠', (tester) async {
+  testWidgets('桌面主方案拥有较宽详情区，备选默认折叠且不再暴露清捕获入口', (tester) async {
     final model = RichPreviewWorkbenchModel();
     addTearDown(model.dispose);
     await open(tester, model, const Size(1280, 860));
@@ -126,11 +126,7 @@ void main() {
     );
     expect(find.text('清除此捕获缓存'), findsNothing);
     // 配方与匹配详情补齐后，诊断入口可能位于详情首屏以下；按真实滚动路径到达它。
-    await tester.ensureVisible(find.text('高级诊断 · 订单捕获'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('高级诊断 · 订单捕获'));
-    await tester.pumpAndSettle();
-    expect(find.text('清除此捕获缓存'), findsOneWidget);
+    expect(find.text('高级诊断 · 订单捕获'), findsNothing);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });

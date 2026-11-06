@@ -27,6 +27,79 @@ String words(Object? value) =>
         .map((item) => item is Map ? label(item['name']) : label(item))
         .join(' · ');
 
+/// 游戏内显示配置只有完整且合法的资源才能用于下一次修订写入。不能将缺失字段
+/// 的默认显示值误当成游戏电脑已保存的事实；布局写入必须携带完整归一化坐标。
+/// 内容映射由应用层维护，显示字段与当前客户端专注页共用默认值。
+/// 外框和收藏按钮属于客户端交互，不复制到永久鼠标穿透的游戏内只读界面。
+const gameFocusContentPreferences = <String, String>{
+  'showRare': 'serviceFocusShowRare',
+  'showNormal': 'serviceFocusShowNormal',
+  'rareFirst': 'serviceFocusRareFirst',
+  'showOrderTags': 'serviceFocusShowOrderTags',
+  'showFood': 'serviceFocusShowFood',
+  'showIngredients': 'serviceFocusShowIngredients',
+  'showExtras': 'serviceFocusShowExtras',
+  'showCooker': 'serviceFocusShowCooker',
+  'showBeverage': 'serviceFocusShowBeverage',
+};
+
+DataMap gameFocusContentFromPreferences(DataMap preferences) => {
+  for (final entry in gameFocusContentPreferences.entries)
+    entry.key: preferences[entry.value] is bool
+        ? preferences[entry.value]
+        : entry.key != 'rareFirst',
+};
+
+/// 主题发送实际亮暗值，不能将“跟随系统”交给游戏猜测；数据读取不写入用户偏好。
+String gameFocusTheme(DataMap preferences, Brightness brightness) =>
+    workbenchDark(preferences, brightness) ? 'dark' : 'light';
+
+bool gameFocusOverlayReadable(DataMap state) {
+  final settings = object(state['settings']);
+  final content = object(settings['content']);
+  final layout = object(settings['layout']);
+  bool integer(String key, int min, int max) =>
+      settings[key] is int &&
+      (settings[key]! as int) >= min &&
+      (settings[key]! as int) <= max;
+  bool normalized(String key, double min, double max) =>
+      layout[key] is num &&
+      (layout[key]! as num).isFinite &&
+      (layout[key]! as num) >= min &&
+      (layout[key]! as num) <= max;
+  return (state['ready'] == true ||
+          state['ready'] == false && state['canReset'] == true) &&
+      state['revision'] is int &&
+      (state['revision']! as int) > 0 &&
+      settings['enabled'] is bool &&
+      {'light', 'dark'}.contains(settings['theme']) &&
+      gameFocusContentPreferences.keys.every((key) => content[key] is bool) &&
+      integer('backgroundOpacity', 0, 100) &&
+      integer('contentOpacity', 20, 100) &&
+      integer('borderWidth', 0, 6) &&
+      integer('fontSize', 12, 24) &&
+      integer('scrollPercent', 0, 100) &&
+      normalized('x', 0, 1) &&
+      normalized('y', 0, 1) &&
+      normalized('width', 0, 1) &&
+      normalized('height', 0, 1) &&
+      (layout['width']! as num) > 0 &&
+      (layout['height']! as num) > 0 &&
+      (layout['x']! as num) + (layout['width']! as num) <= 1.000001 &&
+      (layout['y']! as num) + (layout['height']! as num) <= 1.000001;
+}
+
+/// 正常读取成功才可编辑；磁盘损坏的完整响应仅允许用户显式恢复默认设置。
+bool gameFocusOverlayConfirmed(DataMap state) =>
+    state['ready'] == true && gameFocusOverlayReadable(state);
+
+/// 此标记只能来自完整且成功的 GET。网络错误、旧回复和写入等待会同时撤销它，
+/// 防止将“暂时无法确认服务端状态”误报为“可以重置损坏配置”。
+bool gameFocusOverlayCanReset(DataMap state) =>
+    state['ready'] == false &&
+    state['canReset'] == true &&
+    gameFocusOverlayReadable(state);
+
 /// 旧客户端只保存深色布尔值；三态设置存在后以明确选择为准，避免系统模式被旧键覆盖。
 String workbenchThemeMode(DataMap preferences) {
   final mode = preferences['themeMode'];
@@ -89,7 +162,8 @@ String workbenchOperationName(String path) =>
       '/rare-guests/invite-all': '批量邀请稀客',
       '/inventory/set': '修改库存',
       '/inventory/bulk-set': '批量修改库存',
-      '/orders/rare/dismiss': '清除失效订单缓存',
+      '/orders/rare/participation': '调整稀客调度',
+      '/ui/focus-overlay': '设置游戏内专注显示',
       '/updates/check': '检查更新',
       '/updates/download': '下载更新',
       '/updates/install-on-exit': '安排退出后更新',
@@ -117,6 +191,13 @@ abstract class WorkbenchModel extends ChangeNotifier {
   String get recommendationError => '';
   DataMap get localPreferences;
   Map<String, DataMap> get resources;
+
+  /// 收藏已读取的空集合与尚未确认的状态不同。生产实现另外绑定连接/写入代次；
+  /// 离线模型可用完整的两类列表显式提供已确认事实。
+  bool get favoritesConfirmed =>
+      resources['/favorites']?['recipes'] is List &&
+      resources['/favorites']?['beverages'] is List;
+  bool get canEditFavorites => canEdit && favoritesConfirmed;
 
   /// 图像资源是当前连接的只读事实；内存预览不连接宿主，可显式覆盖这些端口。
   /// 产品初始 verifying 与等待/提取共用独立门禁面板；完整验证清单后才挂载业务内容。

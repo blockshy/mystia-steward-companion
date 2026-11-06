@@ -1,4 +1,5 @@
 using System.Text;
+using System.Collections.Concurrent;
 using BepInEx;
 using BepInEx.Logging;
 
@@ -39,6 +40,21 @@ internal static class AggregateModLogService
     private static int _lastAutomationReportedCount;
     private static DateTime _lastAutomationFirstAt = DateTime.MinValue;
     private static string _pendingWriterRecoveryReason = "";
+
+    // 性能窗口已经在主线程冻结为不可变字符串；它们无需阻塞当前帧等待磁盘、
+    // 轮换或其它日志的写入锁。普通事件和自动化日志仍保留原即时写入合同。
+    // 同时限制条数与字符串预算，磁盘异常不能使诊断队列无限占用内存。
+    internal const int MaximumDeferredSections = 128;
+    internal const long MaximumDeferredBytes = 2L * 1024L * 1024L;
+    private static readonly ConcurrentQueue<DeferredSection> DeferredSections = new();
+    private static int _deferredCount;
+    private static long _deferredBytes;
+    private static long _deferredDroppedSections;
+    private static int _deferredWorkerScheduled;
+    private static long _writerGeneration;
+
+    private sealed record DeferredSection(long Generation, DateTimeOffset CapturedAt,
+        string Channel, string Title, string Content, long ReservedBytes);
 
     /// <summary>
     /// 高频诊断只读取已发布的开关快照，不等待后台日志持有的写盘/轮换锁。
@@ -144,35 +160,123 @@ internal static class AggregateModLogService
             lock (SyncRoot)
             {
                 if (!_enabled) return;
-                // 保留段落的原有逐行文本及即时可读语义，但只提交一次写入。写入器开启
-                // AutoFlush，逐行 Write 会让一次主线程快照产生数十次同步刷新和文件检查。
-                // 整段仍在同一锁内组装、轮换与写入，避免与 HTTP/后台日志相互穿插。
-                var section = new StringBuilder();
-                var header = $"==== {FormatTimestamp()} [{NormalizeChannel(channel)}] {title} ====";
-                section.AppendLine(header);
-                foreach (var line in SplitLines(content))
-                {
-                    section.AppendLine(line);
-                }
-                section.AppendLine();
-                var text = section.ToString();
-                if (Utf8NoBom.GetByteCount(text) <= MaxFileBytes)
-                {
-                    WriteTextLocked(text);
-                }
-                else
-                {
-                    // 异常大的完整诊断仍沿用原先的逐行轮换规则，不能因合并写入而
-                    // 把多行记录变成一个超出文件上限的记录。常规快照只走上面的单次写入。
-                    WriteLineLocked(header);
-                    foreach (var line in SplitLines(content)) WriteLineLocked(line);
-                    WriteLineLocked("");
-                }
+                AppendSectionLocked(channel, title, content, DateTimeOffset.Now);
             }
         }
         catch
         {
             // Logging diagnostics must never affect the game process.
+        }
+    }
+
+    /// <summary>
+    /// 将已经冻结的性能诊断窗口交给单个后台消费者。入口只操作有界托管队列，
+    /// 不取得写入锁、不检查文件、不等待Flush，也不捕获Unity对象或委托。
+    /// 时间戳使用采样提交时刻；后台延迟不能把旧帧窗口伪装成后来的游戏状态。
+    /// </summary>
+    public static void AppendDeferredSection(string channel, string title, string content)
+    {
+        try
+        {
+            var generation = Volatile.Read(ref _writerGeneration);
+            // 先读代次再读开关：重配恰好发生在二者之间时，最坏丢弃旧诊断，
+            // 不能把旧会话内容绑定到后来开启的新文件。
+            if (!Enabled) return;
+            var bytes = 2L * channel.Length + 2L * title.Length + 2L * content.Length + 128L;
+            if (Interlocked.Increment(ref _deferredCount) > MaximumDeferredSections)
+            {
+                Interlocked.Decrement(ref _deferredCount);
+                Interlocked.Increment(ref _deferredDroppedSections);
+                ScheduleDeferredWriter();
+                return;
+            }
+            if (Interlocked.Add(ref _deferredBytes, bytes) > MaximumDeferredBytes)
+            {
+                Interlocked.Add(ref _deferredBytes, -bytes);
+                Interlocked.Decrement(ref _deferredCount);
+                Interlocked.Increment(ref _deferredDroppedSections);
+                ScheduleDeferredWriter();
+                return;
+            }
+            DeferredSections.Enqueue(new DeferredSection(generation, DateTimeOffset.Now,
+                channel, title, content, bytes));
+            ScheduleDeferredWriter();
+        }
+        catch
+        {
+            // 诊断提交失败不能改变调用方的帧、自动化许可或异常结果。
+        }
+    }
+
+    private static void ScheduleDeferredWriter()
+    {
+        if (Interlocked.CompareExchange(ref _deferredWorkerScheduled, 1, 0) != 0) return;
+        try { _ = Task.Run(WriteDeferredSectionsInBackground); }
+        catch
+        {
+            // 运行时正在关闭而无法创建任务时释放调度标记；记录仍留在有界队列，
+            // 下一次提交或显式Shutdown可以排空，不能卡成永久“已有消费者”。
+            Volatile.Write(ref _deferredWorkerScheduled, 0);
+        }
+    }
+
+    private static void WriteDeferredSectionsInBackground()
+    {
+        try
+        {
+            // 只在消费者取得锁后出队，因此Shutdown/Configure可以在同一锁内
+            // 排空旧会话，避免已出队的记录跨文件重配丢失或写入新配置路径。
+            lock (SyncRoot) DrainDeferredSectionsLocked();
+        }
+        catch { /* 写入故障留给下一条记录恢复，未知提交不自动重放。 */ }
+        finally
+        {
+            Volatile.Write(ref _deferredWorkerScheduled, 0);
+            // 处理“消费者看见空队列”和“生产者入队”之间的边界，不留孤立记录。
+            if (!DeferredSections.IsEmpty || Interlocked.Read(ref _deferredDroppedSections) > 0)
+                ScheduleDeferredWriter();
+        }
+    }
+
+    /// <summary>关闭或重配允许显式等待落盘；它不在每帧性能诊断的调用路径上。</summary>
+    private static void DrainDeferredSectionsLocked()
+    {
+        while (DeferredSections.TryDequeue(out var section))
+        {
+            Interlocked.Decrement(ref _deferredCount);
+            Interlocked.Add(ref _deferredBytes, -section.ReservedBytes);
+            if (!_enabled || section.Generation != _writerGeneration) continue;
+            try { AppendSectionLocked(section.Channel, section.Title, section.Content, section.CapturedAt); }
+            catch { /* 不重放结果未知的记录；后续记录继续触发写入器恢复。 */ }
+        }
+        var dropped = Interlocked.Exchange(ref _deferredDroppedSections, 0);
+        if (dropped > 0 && _enabled)
+        {
+            try
+            {
+                WriteServiceLineLocked($"deferred diagnostic capacity exceeded; droppedSections={dropped}; "
+                    + $"maximumSections={MaximumDeferredSections}; maximumBytes={MaximumDeferredBytes}");
+            }
+            catch { /* 容量告警也不能进入游戏控制流。 */ }
+        }
+    }
+
+    private static void AppendSectionLocked(string channel, string title, string content, DateTimeOffset capturedAt)
+    {
+        // 同步与后台入口共用完整段落写入、轮换和恢复合同。常规段落只刷新一次，
+        // 不能因为移出主线程而改变内容格式，或把一份多行帧证据拆成相互穿插的日志。
+        var section = new StringBuilder();
+        var header = $"==== {capturedAt:yyyy-MM-dd HH:mm:ss.fff zzz} [{NormalizeChannel(channel)}] {title} ====";
+        section.AppendLine(header);
+        foreach (var line in SplitLines(content)) section.AppendLine(line);
+        section.AppendLine();
+        var text = section.ToString();
+        if (Utf8NoBom.GetByteCount(text) <= MaxFileBytes) WriteTextLocked(text);
+        else
+        {
+            WriteLineLocked(header);
+            foreach (var line in SplitLines(content)) WriteLineLocked(line);
+            WriteLineLocked("");
         }
     }
 
@@ -242,6 +346,7 @@ internal static class AggregateModLogService
     {
         try
         {
+            DrainDeferredSectionsLocked();
             if (_listener != null)
             {
                 Logger.Listeners.Remove(_listener);
@@ -261,6 +366,8 @@ internal static class AggregateModLogService
         finally
         {
             Volatile.Write(ref _enabled, false);
+            // 在关闭旧writer后推进会话边界；关闭期间迟到的旧记录绝不写入新路径。
+            Interlocked.Increment(ref _writerGeneration);
             CloseWriterLocked();
             _pendingWriterRecoveryReason = "";
             ResetDiagnosticStateLocked();

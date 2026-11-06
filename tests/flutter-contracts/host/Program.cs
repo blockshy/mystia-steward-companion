@@ -9,6 +9,24 @@ using MystiaStewardCompanion.Updates;
 // 跨语言宿主的控制输出固定 UTF-8，避免 Windows 控制台代码页破坏中文诊断。
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 if (Environment.Version.Major != 6) throw new InvalidOperationException("契约宿主必须使用真实 .NET 6 运行时。");
+// 开锅前缺料只验证生产结果分类与托管重试策略，不创建 Unity 对象或扣减游戏库存。
+if (args.Length == 1 && args[0] == "--cooking-ingredient-wait") return CookingIngredientWaitTests.Run();
+// 纯生产快照签名回归独立运行，不打开端口、媒体服务或真实游戏。
+if (args.Length == 1 && args[0] == "--participation-admission") return ParticipationAdmissionTests.Run();
+if (args.Length == 1 && args[0] == "--rare-patience-auto-resume") return RarePatienceAutoResumeTests.Run();
+// 专注显示使用真实存储与投影源码；该入口只处理合成托管值及独占临时文件，不连接游戏。
+if (args.Length == 1 && args[0] == "--game-focus-overlay") return GameFocusOverlayContractTests.Run();
+if (args.Length == 1 && args[0] == "--game-focus-overlay-store") return GameFocusOverlayStoreContractTests.Run();
+// 本轮真实日志的去敏订单回放：只调用托管状态机、展示DTO和业务算法，不连接游戏。
+if (args.Length == 1 && args[0] == "--rare-order-display") return RareOrderDisplayReplayTests.Run();
+// 等待条只验证托管采集边界、身份、不可变投影和正式签名/推荐缓存；不加载任何游戏对象。
+if (args.Length == 1 && args[0] == "--order-patience") return OrderPatienceTests.Run();
+if (args.Length == 1 && args[0] == "--snapshot-signature")
+{
+    SyntheticInventoryFixture.VerifySnapshotSignature();
+    Console.WriteLine("PASS: inventory and rare/normal order completeness invalidate production snapshot signatures.");
+    return 0;
+}
 if (args.Length == 2 && args[0] == "--management")
 {
     using var managementProfile = JsonDocument.Parse(File.ReadAllText(args[1]));

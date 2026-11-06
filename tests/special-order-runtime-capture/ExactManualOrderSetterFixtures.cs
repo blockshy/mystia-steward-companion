@@ -16,9 +16,12 @@ internal class GuestGroupController
 
     public GuestsManager.OrderBase? CurrentOrder { get; set; }
     public bool HasEvaluated { get; set; }
+    public bool RejectOrderPeek { get; set; }
     public IntPtr Pointer { get; } = (IntPtr)Interlocked.Increment(ref _nextPointer);
 
-    public GuestsManager.OrderBase? PeekOrders() => CurrentOrder;
+    public GuestsManager.OrderBase? PeekOrders() => RejectOrderPeek
+        ? throw new InvalidOperationException("离桌测试禁止通过历史订单栈补猜身份。")
+        : CurrentOrder;
 
     public void PushToOrder(GuestsManager.OrderBase order)
     {
@@ -27,6 +30,20 @@ internal class GuestGroupController
 
 internal sealed class GuestsManager
 {
+    public bool ThrowDuringLeave { get; set; }
+
+    /// <summary>
+    /// 只模拟离桌正常返回/抛异常边界，签名按 #783；不声称这里执行了 IL2CPP 或 Harmony。
+    /// </summary>
+    public void LeaveFromDesk(
+        GuestGroupController controller,
+        GuestGroupController.LeaveType leaveType,
+        Il2CppSystem.Action? leaveAction,
+        bool triggerLeaveBuff)
+    {
+        if (ThrowDuringLeave) throw new InvalidOperationException("模拟原生离桌失败。");
+    }
+
     internal class OrderBase
     {
         private static long _nextPointer;
@@ -132,6 +149,17 @@ internal sealed class SpecialGuest
 
 internal sealed class InvalidGuestsManager
 {
+    /// <summary>
+    /// 参数个数相同，但 CLR 委托不是原生 Il2CppSystem.Action，必须拒绝安装。
+    /// </summary>
+    public void LeaveFromDesk(
+        GuestGroupController controller,
+        GuestGroupController.LeaveType leaveType,
+        System.Action? leaveAction,
+        bool skipAnimation)
+    {
+    }
+
     private void SetManualControllerOrderInternal(
         GuestGroupController controller,
         Il2CppSystem.Action onEvaluate,

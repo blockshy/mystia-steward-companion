@@ -173,21 +173,26 @@ public static partial class RecommendationEngine
     public static JsonObject? GetVerifiedMissionRecipeSortContext(JsonObject order)
     {
         if (order["missionRecipePriority"] is not JsonObject priority
-            || !Integer(priority["foodId"]) || Num(priority["foodId"]) < 0
-            || !Integer(priority["recipeId"]) || Num(priority["recipeId"]) < 0
+            || !Integer(priority["foodId"]) || Num(priority["foodId"]) < -1
+            || (Num(priority["foodId"]) == -1
+                ? Str(priority["productKind"]) != "dark-cuisine" || priority["recipeId"] is not null
+                : !Integer(priority["recipeId"]) || Num(priority["recipeId"]) < 0)
             || !SafeInteger(priority["missionGeneration"]) || Num(priority["missionGeneration"]) < 1
             || !SafeInteger(priority["businessGeneration"]) || Num(priority["businessGeneration"]) < 1
             || Str(order["traceId"]).Length == 0 || Str(priority["traceId"]) != Str(order["traceId"])) return null;
         foreach (var key in new[] { "deskCode", "guestId", "runtimeGuestId" })
             if (NullableNumber(priority[key]) != NullableNumber(order[key])) return null;
-        return Object(("missionRecipeFoodId", priority["foodId"]), ("missionRecipeId", priority["recipeId"]));
+        return Object(("missionRecipeFoodId", priority["foodId"]), ("missionRecipeId", priority["recipeId"]), ("missionProductKind", priority["productKind"]));
     }
 
     /// <summary>使用食物 ID 与配方 ID 双重标识匹配任务料理。</summary>
     public static bool IsMissionRecipeFoodCandidate(JsonObject food, JsonObject sortContext) =>
-        sortContext["missionRecipeFoodId"] is not null && sortContext["missionRecipeId"] is not null
+        sortContext["missionRecipeFoodId"] is not null
         && Num(Obj(food["recipe"])["id"]) == Num(sortContext["missionRecipeFoodId"])
-        && Num(Obj(food["recipe"])["recipeId"]) == Num(sortContext["missionRecipeId"]);
+        && (Str(sortContext["missionProductKind"]) == "dark-cuisine"
+            ? Str(food["productKind"]) == "dark-cuisine" && (food["productionRecipe"] is JsonObject || Str(food["supplySource"]) == "stored")
+            : sortContext["missionRecipeId"] is not null
+                && Num(Obj(food["recipe"])["recipeId"]) == Num(sortContext["missionRecipeId"]));
 
     /// <summary>任务优先不绕过任意硬失败，并继续要求酒水满足点单。</summary>
     public static bool IsMissionRecipeExecutionPlan(JsonObject plan, JsonObject sortContext) =>

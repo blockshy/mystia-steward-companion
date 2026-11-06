@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -64,14 +65,72 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   int _profileWriteGeneration = 0;
   Future<void> _localTail = Future<void>.value();
   final Map<String, int> _localFieldVersions = {};
+  // 内容镜像属于显示设置，独立于推荐 profile。一个明确意图最多写一次；
+  // 轮询/重绘不能反复重放未知结果，切换连接或主设备后旧异步任务立即失效。
+  Future<void> _focusMirrorTail = Future<void>.value();
+  Object? _focusMirrorAttempt;
+  int _focusMirrorExplicitIntent = 0;
+  int _focusMirrorIdentityGeneration = 0;
+
   DataMap _savedLocal = {'alwaysOnTop': true, 'gamepadNavigation': true};
   DataMap _local = {'alwaysOnTop': true, 'gamepadNavigation': true};
   final Map<String, DataMap> _resources = {};
+  bool _favoritesConfirmed = false, _favoriteWriting = false;
+  int _favoritesGeneration = 0;
+
+  /// 失去确认时保留只读内容供用户辨认，但所有收藏操作均立即停用。
+  /// 独立代次使写前 GET、断线前 GET 无法把不确定状态重新变为可写。
+  void _invalidateFavorites() {
+    _favoritesConfirmed = false;
+    _favoritesGeneration++;
+  }
+
+  void _acceptFavorites(DataMap value) {
+    if (value['recipes'] is! List || value['beverages'] is! List) {
+      throw StateError('收藏列表不完整，请重新读取确认。');
+    }
+    _resources['/favorites'] = value;
+    _favoritesConfirmed = true;
+    _resourceResultQueries['/favorites'] = const {};
+  }
+
+  /// 游戏内显示所有读取与写入回执共用同一单调入口。页面资源代次只负责
+  /// 生命周期，不能代替业务修订：镜像队列与手动布局写入可能交叉完成。
+  /// 相同连接/游戏上下文由各调用方先核对；在该上下文中旧修订永远不能回填。
+  bool _acceptGameFocusOverlay(DataMap incoming) {
+    const path = '/ui/focus-overlay';
+    final revision = incoming['revision'];
+    final current = _resources[path]?['revision'];
+    if (revision is! int || current is int && current > revision) return false;
+    _resources[path] = incoming;
+    _resourceResultQueries[path] = const {};
+    return true;
+  }
+
+  int get _gameFocusRevision =>
+      _resources['/ui/focus-overlay']?['revision'] as int? ?? 0;
+
+  /// 失败只撤销该请求开始时可见的修订；更晚已确认的设置不属于旧请求，
+  /// 不能被旧错误重新标为未知，也不能重新开放已经撤销的损坏配置恢复入口。
+  bool _invalidateGameFocusOverlay(int upToRevision) {
+    const path = '/ui/focus-overlay';
+    if (_gameFocusRevision > upToRevision) return false;
+    _resources[path] = {
+      ...?_resources[path],
+      'ready': false,
+      'canReset': false,
+    };
+    return true;
+  }
+
+  @override
+  bool get favoritesConfirmed => connected && _favoritesConfirmed;
+
   final Map<String, Map<String, String>> _resourceQueries = {};
   final Map<String, Map<String, String>> _resourceResultQueries = {};
   // 单飞属于一次连接、订阅和经营上下文，不能让已经撤销的旧 GET 挡住新页面读取。
   // 旧请求只允许自行结束；finally 按同一身份释放，绝不能清掉后来请求的占位。
-  final Map<String, (int, int, String)> _reading = {};
+  final Map<String, (int, int, String, int)> _reading = {};
   int _recommendationGeneration = 0;
   bool _recommendationActive = false, _recommendationPending = false;
   String _recommendationError = '';
@@ -468,6 +527,7 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     if (_disposed) throw StateError('客户端已关闭。');
     _state = const CompanionState();
     _resources.clear();
+    _invalidateFavorites();
     _resourceResultQueries.clear();
     _resourceQueries.clear();
     _endpoint = connection.endpoint.toString();
@@ -532,7 +592,10 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         nextAuthority['currentDeviceId'],
         nextAuthority['primaryDeviceId'],
       );
-      if (oldIdentity != newIdentity) _profileWriteGeneration++;
+      if (oldIdentity != newIdentity) {
+        _profileWriteGeneration++;
+        _focusMirrorIdentityGeneration++;
+      }
       final oldBoundary =
           '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
       final oldSessionId = snapshot['automationSessionId'];
@@ -555,13 +618,18 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       final newBoundary =
           '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
       if (oldBoundary != newBoundary) _resources.clear();
+      if (oldBoundary != newBoundary || oldIdentity != newIdentity) {
+        _invalidateFavorites();
+      }
       _changed();
+      unawaited(_synchronizeGameFocusMirror());
     });
     await session.connect();
     // 首次快照读取也可能失败；只有会话已确认可读时才显示成功提示。
     if (session.state.connected) _notice = '已连接，自动化按已保存配置运行。';
     if (session.state.connected) {
       unawaited(_refreshUpdateStatus());
+      await _synchronizeGameFocusMirror();
     }
   }
 
@@ -751,9 +819,13 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       '/logs/settings',
       '/logs/packages',
       '/local-api/config',
+      '/ui/focus-overlay',
       '/updates/status',
     };
     if (!allowed.contains(path) || !connected) return;
+    // 收藏写入及其确认读取由同一条操作持有，轮询不能在结果未定时发布旧收藏。
+    if (path == '/favorites' && _favoriteWriting) return;
+    final favoritesGeneration = _favoritesGeneration;
     if (!mapEquals(query, _resourceResultQueries[path]))
       _resources.remove(path);
     // 诊断设置与包列表同属一个可见页面；仅这两个已声明的只读端点共享订阅。
@@ -762,6 +834,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       {'/logs/settings', '/logs/packages'},
       // 全部任务由两个不同来源组成；仅在同一任务页共同订阅，离页整组撤销。
       {'/missions/tracked', '/missions/available'},
+      // 专注仍显示收藏操作；宿主显示配置与收藏可共存，但离开经营页一起撤销。
+      {'/favorites', '/ui/focus-overlay'},
     ];
     final sameResourceGroup = groups.any(
       (group) =>
@@ -772,11 +846,17 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
             !mapEquals(query, _resourceQueries[path]))
       clearResourceSubscription();
     _resourceQueries[path] = Map.of(query);
+    final overlayReadRevision = _gameFocusRevision;
     final epoch = _epoch;
     final generation = _resourceGeneration;
     final boundary =
         '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
-    final flight = (epoch, generation, boundary);
+    final flight = (
+      epoch,
+      generation,
+      boundary,
+      path == '/favorites' ? favoritesGeneration : 0,
+    );
     if (_reading[path] == flight) return;
     _reading[path] = flight;
     // 成功和失败必须接受相同的上下文校验。只校验连接/订阅代次还不足以识别同一
@@ -786,6 +866,7 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         connected &&
         epoch == _epoch &&
         generation == _resourceGeneration &&
+        (path != '/favorites' || favoritesGeneration == _favoritesGeneration) &&
         mapEquals(query, _resourceQueries[path]) &&
         boundary ==
             '${snapshot['automationSessionId']}/${snapshot['runtimeDaySceneGeneration']}/${snapshot['nightBusinessGeneration']}';
@@ -804,13 +885,33 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       if (path != '/updates/status' && availableMissionState == null) {
         requireOperationSuccess(result);
       }
+      if (path == '/favorites') {
+        // 收藏端点无 unchanged 短响应协议，必须完整返回两类列表才能恢复写入。
+        _acceptFavorites(result);
+      }
+      if (path == '/ui/focus-overlay' && !gameFocusOverlayReadable(result)) {
+        throw StateError('游戏内显示设置尚未完整确认。');
+      }
       if (result['unchanged'] != true) {
-        _resources[path] = result;
-        _resourceResultQueries[path] = Map.of(query);
+        if (path == '/ui/focus-overlay') {
+          _acceptGameFocusOverlay(result);
+          await _synchronizeGameFocusMirror();
+        } else {
+          _resources[path] = result;
+          _resourceResultQueries[path] = Map.of(query);
+        }
       }
     } catch (cause) {
       if (isCurrentRead()) {
+        if (path == '/ui/focus-overlay' &&
+            !_invalidateGameFocusOverlay(overlayReadRevision))
+          return;
         _error = _safeError(cause);
+        if (path == '/favorites') _invalidateFavorites();
+        if (path == '/ui/focus-overlay') {
+          // 读取失败不能保留一份仍可写的旧修订；用户可手动刷新，写入不自动重放。
+          _resourceResultQueries[path] = Map.of(query);
+        }
         if (path == '/logs/packages') {
           // 包列表失败有独立只读状态，不能保留旧条目供删除，也不能用空集合
           // 冒充“确实没有诊断包”。不复制服务端异常路径或响应正文到此投影。
@@ -898,11 +999,13 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       () async {
         final session = _requiredSession();
         final epoch = _epoch;
+        final focusWriteInitialRevision = _gameFocusRevision;
         if (localOnly && (!desktop || !session.api.connection.isLoopback))
           throw StateError('该操作只能在游戏电脑本机执行。');
         switch (path) {
           case '/devices/primary':
             await session.setPrimary(label(body?['deviceId'], ''));
+            await _synchronizeGameFocusMirror();
             break;
           case '/devices/sync':
             await session.syncFromPrimary(
@@ -930,7 +1033,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
               '/rare-guests/invite-all',
               '/inventory/set',
               '/inventory/bulk-set',
-              '/orders/rare/dismiss',
+              '/orders/rare/participation',
+              '/ui/focus-overlay',
               '/updates/status',
               '/updates/check',
               '/updates/download',
@@ -946,6 +1050,30 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
                 path != '/updates/status' &&
                 path != '/updates/check')
               throw StateError('请在主设备进行此操作。');
+            if (path.startsWith('/favorites/')) {
+              confirmed = await _writeFavorite(
+                session,
+                path,
+                query: query,
+                body: body,
+              );
+              if (!confirmed) return;
+              break;
+            }
+            if (path == '/ui/focus-overlay') {
+              final state = _resources[path] ?? const <String, Object?>{};
+              final changes = object(body?['changes']);
+              final explicitRecovery =
+                  gameFocusOverlayCanReset(state) &&
+                  changes.length == 1 &&
+                  changes['resetLayout'] == true;
+              if (!gameFocusOverlayConfirmed(state) && !explicitRecovery) {
+                throw StateError('游戏内显示设置尚未确认，请重新读取。');
+              }
+              // 写入开始即撤销旧GET及可写缓存，未知结果不得允许继续拿旧修订写入。
+              _resourceGeneration++;
+              _invalidateGameFocusOverlay(focusWriteInitialRevision);
+            }
             final resourceGeneration = _resourceGeneration;
             final identityGeneration = _profileWriteGeneration;
             final updateGeneration = _updateGeneration;
@@ -1004,6 +1132,39 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
             } catch (_) {
               if (path.startsWith('/updates/') && !currentUpdateContext())
                 return;
+              if (path == '/orders/rare/participation') {
+                // 修订冲突或回执丢失只重新读取，不自动重发暂停/优先指令。
+                if (currentCustomContext()) {
+                  try {
+                    await session.refresh();
+                  } catch (_) {
+                    /* 保留原操作错误。 */
+                  }
+                }
+                rethrow;
+              }
+              if (path == '/ui/focus-overlay') {
+                if (!currentCustomContext()) return;
+                if (!_invalidateGameFocusOverlay(focusWriteInitialRevision))
+                  return;
+                if (resourceGeneration == _resourceGeneration) {
+                  final recoveryGeneration = ++_resourceGeneration;
+                  try {
+                    // 修订冲突、网络回执丢失均只补读一次，不恢复隐藏页面订阅，
+                    // 不把“启用显示”或“重置布局”等原请求自动发送第二次。
+                    final latest = await session.api.read(path);
+                    if (currentCustomContext() &&
+                        recoveryGeneration == _resourceGeneration &&
+                        gameFocusOverlayReadable(latest)) {
+                      _acceptGameFocusOverlay(latest);
+                    }
+                  } catch (_) {
+                    /* 保留原写入错误与不可写状态。 */
+                  }
+                }
+                if (!currentCustomContext()) return;
+                rethrow;
+              }
               if (!path.startsWith('/custom-recipes/')) rethrow;
               if (!currentCustomContext()) return;
               if (resourceGeneration == _resourceGeneration) {
@@ -1027,6 +1188,16 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
             }
             if (_disposed || epoch != _epoch) return;
             if (path.startsWith('/updates/') && !currentUpdateContext()) return;
+            if (path == '/ui/focus-overlay') {
+              if (!currentCustomContext()) return;
+              final overlay = object(result['overlay']);
+              if (!gameFocusOverlayConfirmed(overlay)) {
+                if (!_invalidateGameFocusOverlay(focusWriteInitialRevision))
+                  return;
+                throw StateError('游戏内显示设置回执尚未确认，请重新读取。');
+              }
+              _acceptGameFocusOverlay(overlay);
+            }
             confirmed = true;
             // 写入成功后的缓存比任何更早启动的 GET 新；拒绝旧读取把已确认结果覆盖回去。
             _resourceGeneration++;
@@ -1034,8 +1205,6 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
               _updateGeneration++;
               _updateStatus = result;
             }
-            if (path.startsWith('/favorites/'))
-              _resources['/favorites'] = object(result['favorites']);
             if (path.startsWith('/custom-recipes/'))
               _resources['/custom-recipes'] = object(result['customRecipes']);
             if (path.startsWith('/rare-guests/'))
@@ -1044,8 +1213,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
                 (_resourceQueries.containsKey('/logs/settings') ||
                     _resourceQueries.containsKey('/logs/packages')))
               await refreshDiagnostics();
-            if (path == '/orders/rare/dismiss')
-              _notice = label(result['status'], '订单缓存操作已确认。');
+            if (path == '/orders/rare/participation')
+              _notice = label(result['status'], '稀客调度已更新。');
             if (path == '/inventory/set') {
               _notice = result['changed'] == true
                   ? '库存修改已确认，当前数量 ${result['quantity']}。'
@@ -1059,7 +1228,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
         }
         if (_disposed || epoch != _epoch) return;
         confirmed = true;
-        if (path != '/orders/rare/dismiss' && !path.startsWith('/inventory/'))
+        if (path != '/orders/rare/participation' &&
+            !path.startsWith('/inventory/'))
           _notice = '${workbenchOperationName(path)}已完成。';
         await session.refresh();
       },
@@ -1068,6 +1238,61 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
           : workbenchOperationName(path),
       wasConfirmed: () => confirmed,
     );
+  }
+
+  /// 收藏写入可能已在服务端完成而回执丢失。先撤销旧确认，失败后只补读一次，
+  /// 不重发写入，也不把用户的“收藏”改成“取消收藏”。补读不改变当前页面订阅。
+  Future<bool> _writeFavorite(
+    CompanionSession session,
+    String path, {
+    required Map<String, String> query,
+    DataMap? body,
+  }) async {
+    if (!favoritesConfirmed || _favoriteWriting) {
+      throw StateError('收藏状态尚未确认，请刷新后再操作。');
+    }
+    final epoch = _epoch;
+    final identity = _profileWriteGeneration;
+    final gameSession = snapshot['automationSessionId'];
+    final generation = ++_favoritesGeneration;
+    _favoritesConfirmed = false;
+    _favoriteWriting = true;
+    _changed();
+    bool current() =>
+        !_disposed &&
+        connected &&
+        epoch == _epoch &&
+        identical(session, _session) &&
+        identity == _profileWriteGeneration &&
+        gameSession == snapshot['automationSessionId'] &&
+        generation == _favoritesGeneration;
+    try {
+      final result = await session.api.write(
+        path,
+        query: query,
+        body: body,
+        authorityRevision: session.state.authority?.authorityRevision,
+      );
+      if (!current()) return false;
+      _acceptFavorites(object(result['favorites']));
+      return true;
+    } catch (_) {
+      if (!current()) return false;
+      try {
+        final latest = await session.api.read('/favorites');
+        if (current()) {
+          requireOperationSuccess(latest);
+          _acceptFavorites(latest);
+        }
+      } catch (_) {
+        // 继续保持未知；保留最初写入错误，不用补读失败掩盖可能已执行的写入。
+      }
+      if (!current()) return false;
+      rethrow;
+    } finally {
+      _favoriteWriting = false;
+      _changed();
+    }
   }
 
   @override
@@ -1335,6 +1560,154 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       ),
     );
     _localTail = next;
+    return next.then((_) async {
+      if (patch.keys.any(
+            (key) =>
+                gameFocusContentPreferences.containsValue(key) ||
+                key == 'themeMode' ||
+                key == 'darkMode',
+          ) &&
+          patch.entries.every(
+            (entry) => _savedLocal[entry.key] == entry.value,
+          )) {
+        await _synchronizeGameFocusMirror(explicit: true);
+      }
+    });
+  }
+
+  /// 只同步耐久保存成功的内容与实际主题；外观、坐标和总开关由用户独立控制。
+  /// 先读取最新修订，确认有差异后再写。冲突/未知回执只补读一次，不自动补发；
+  /// 下一次明确内容修改、系统主题变化或新连接身份会形成新的可执行意图。
+  Future<void> _synchronizeGameFocusMirror({bool explicit = false}) {
+    if (explicit) _focusMirrorExplicitIntent++;
+    final session = _session;
+    if (_disposed || !connected || !primary || session == null) {
+      return Future<void>.value();
+    }
+    final desired = <String, Object?>{
+      'content': gameFocusContentFromPreferences(_savedLocal),
+      'theme': gameFocusTheme(
+        _savedLocal,
+        WidgetsBinding.instance.platformDispatcher.platformBrightness,
+      ),
+    };
+    final scope = (
+      _epoch,
+      _focusMirrorIdentityGeneration,
+      authority['registryId'],
+      authority['currentDeviceId'],
+      authority['primaryDeviceId'],
+      snapshot['automationSessionId'],
+    );
+    final intent = (scope, jsonEncode(desired), _focusMirrorExplicitIntent);
+    if (_focusMirrorAttempt == intent) return _focusMirrorTail;
+    _focusMirrorAttempt = intent;
+    bool current() =>
+        !_disposed &&
+        connected &&
+        primary &&
+        identical(session, _session) &&
+        _focusMirrorAttempt == intent &&
+        scope ==
+            (
+              _epoch,
+              _focusMirrorIdentityGeneration,
+              authority['registryId'],
+              authority['currentDeviceId'],
+              authority['primaryDeviceId'],
+              snapshot['automationSessionId'],
+            );
+    const path = '/ui/focus-overlay';
+    final next = _focusMirrorTail.then((_) async {
+      if (!current()) return;
+      await _guard(() async {
+        var sent = false;
+        var attemptedRevision = _gameFocusRevision;
+        ++_resourceGeneration;
+        void accept(DataMap state) {
+          if (current()) {
+            _acceptGameFocusOverlay(state);
+          }
+        }
+
+        try {
+          final latest = await session.api.read(path);
+          if (!current()) return;
+          requireOperationSuccess(latest);
+          if (!gameFocusOverlayReadable(latest)) {
+            throw StateError('游戏内显示设置尚未完整确认。');
+          }
+          accept(latest);
+          // 期间手动POST可能已确认更高修订。使用最新缓存，若较新状态尚未确认
+          // 则停止本意图，不猜测布局、不拿旧修订强行发送一次必然冲突的POST。
+          final decision = _resources[path] ?? const <String, Object?>{};
+          if (!gameFocusOverlayConfirmed(decision)) return;
+          final settings = object(decision['settings']);
+          if (mapEquals(
+                object(settings['content']),
+                object(desired['content']),
+              ) &&
+              settings['theme'] == desired['theme'])
+            return;
+          attemptedRevision = decision['revision']! as int;
+          _invalidateGameFocusOverlay(attemptedRevision);
+          _changed();
+          sent = true;
+          final response = await session.api.write(
+            path,
+            authorityRevision: session.state.authority?.authorityRevision,
+            body: {'expectedRevision': attemptedRevision, 'changes': desired},
+          );
+          if (!current()) return;
+          requireOperationSuccess(response);
+          final overlay = object(response['overlay']);
+          if (!gameFocusOverlayConfirmed(overlay)) {
+            throw StateError('游戏内显示同步回执尚未确认。');
+          }
+          // 撤销同步期间启动的旧页面读取；切页本身不撤销当前主设备的显示意图。
+          _resourceGeneration++;
+          accept(overlay);
+        } catch (cause) {
+          if (!current()) return;
+          _invalidateGameFocusOverlay(attemptedRevision);
+          final newer = _resources[path] ?? const <String, Object?>{};
+          final newerSettings = object(newer['settings']);
+          if (_gameFocusRevision > attemptedRevision &&
+              gameFocusOverlayConfirmed(newer) &&
+              mapEquals(
+                object(newerSettings['content']),
+                object(desired['content']),
+              ) &&
+              newerSettings['theme'] == desired['theme'])
+            return;
+          if (sent) {
+            try {
+              final latest = await session.api.read(path);
+              if (current() && gameFocusOverlayReadable(latest)) {
+                _resourceGeneration++;
+                accept(latest);
+                // 回执虽丢失，只读核对若已证明目标内容/主题一致，显示同步已完成；
+                // 不能一边展示确认后的值，一边再报“尚未同步”诱导用户重复操作。
+                final confirmed = _resources[path] ?? const <String, Object?>{};
+                final actual = object(confirmed['settings']);
+                if (gameFocusOverlayConfirmed(confirmed) &&
+                    mapEquals(
+                      object(actual['content']),
+                      object(desired['content']),
+                    ) &&
+                    actual['theme'] == desired['theme'])
+                  return;
+              }
+            } catch (_) {
+              /* 保留未知状态，不重复发送任何设置写入。 */
+            }
+          }
+          if (!current()) return;
+          throw StateError('本机显示偏好已保存，游戏内显示尚未确认同步：${_safeError(cause)}');
+        }
+      });
+    });
+    _focusMirrorTail = next.catchError((Object _) {});
     return next;
   }
 
@@ -1444,6 +1817,7 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   void didChangePlatformBrightness() {
     if (themeMode != 'system' || _disposed) return;
     _changed();
+    unawaited(_synchronizeGameFocusMirror());
     unawaited(
       _applyWindow().catchError((Object cause) {
         if (!_disposed) {

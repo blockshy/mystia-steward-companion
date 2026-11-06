@@ -78,7 +78,7 @@ void main() {
         matching: find.byType(Scrollable),
       );
       final state = tester.state<ScrollableState>(scrollFinder);
-      await tester.tap(find.text('专注显示 · 本机'));
+      await tester.tap(find.text('专注显示'));
       await tester.pumpAndSettle();
       await tester.ensureVisible(uiSwitch());
       await tester.tap(uiSwitch());
@@ -146,7 +146,7 @@ void main() {
     await tester.tap(tab('专注'));
     await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('workbench-page-title')), findsNothing);
-    await tester.tap(find.text('专注显示 · 本机'));
+    await tester.tap(find.text('专注显示'));
     await tester.pumpAndSettle();
     await tester.tap(uiSwitch());
     await tester.pumpAndSettle();
@@ -161,7 +161,7 @@ void main() {
     await open(tester, model, 627);
     await tester.tap(tab('专注'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('专注显示 · 本机'));
+    await tester.tap(find.text('专注显示'));
     await tester.pumpAndSettle();
     model.failSave = true;
     await tester.tap(uiSwitch());

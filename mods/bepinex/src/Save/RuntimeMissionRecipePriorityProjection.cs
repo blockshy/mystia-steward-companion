@@ -25,6 +25,7 @@ internal static class RuntimeMissionRecipePriorityProjection
         }
 
         if (!CanProject(
+                context,
                 catalog,
                 business,
                 mission,
@@ -72,13 +73,18 @@ internal static class RuntimeMissionRecipePriorityProjection
     }
 
     private static bool CanProject(
+        NightBusinessContext context,
         RuntimeDataCatalog catalog,
         NightBusinessLifecycleSnapshot business,
         RuntimeMissionRecipePriorityMissionBoundary mission,
         RuntimeServeInWorkMissionDiagnosticSnapshot serveInWork,
         SpecialBusinessContext? specialBusiness)
     {
-        return catalog.IsComplete
+        // 任务信号只说明某个客人要求某道料理，不包含具体订单身份。只有本轮订单集合
+        // 完整，才能以“恰有一笔未送餐订单”建立归属；漏读其他订单绝不能变成唯一性证据。
+        // 此检查独立于稀客调度模块，也不借名单完整性替代订单完整性；失败会清除旧优先级。
+        return context.OrdersReadComplete
+            && catalog.IsComplete
             && business.IsActive
             && business.Generation > 0
             && mission.Ready
@@ -113,7 +119,7 @@ internal static class RuntimeMissionRecipePriorityProjection
         if (signal.MissionGeneration != missionGeneration
             || signal.BusinessGeneration != businessGeneration
             || signal.CanonicalGuestId < 0
-            || signal.FoodId < 0)
+            || signal.FoodId < -1)
         {
             return false;
         }
@@ -160,7 +166,7 @@ internal static class RuntimeMissionRecipePriorityProjection
             matchedRecipe = recipe;
         }
 
-        if (matchedRecipe == null || matchedRecipe.RecipeId < 0)
+        if (signal.FoodId != -1 && (matchedRecipe == null || matchedRecipe.RecipeId < 0))
         {
             return false;
         }
@@ -174,7 +180,8 @@ internal static class RuntimeMissionRecipePriorityProjection
             GuestId = signal.CanonicalGuestId,
             RuntimeGuestId = signal.RawGuestId,
             FoodId = signal.FoodId,
-            RecipeId = matchedRecipe.RecipeId,
+            RecipeId = signal.FoodId == -1 ? null : matchedRecipe!.RecipeId,
+            ProductKind = signal.FoodId == -1 ? "dark-cuisine" : "recipe",
             MissionGeneration = missionGeneration,
             BusinessGeneration = businessGeneration,
         };
@@ -213,6 +220,7 @@ internal static class RuntimeMissionRecipePriorityProjection
             ActiveRareGuests = context.ActiveRareGuests.ToList(),
             // 任务优先级只投影订单，必须原样保留名单读取是否完整，不能把未知变成无人。
             ActiveRareGuestsReadComplete = context.ActiveRareGuestsReadComplete,
+            OrdersReadComplete = context.OrdersReadComplete,
             Orders = orders,
             Source = context.Source,
             Error = context.Error,
@@ -260,6 +268,7 @@ internal static class RuntimeMissionRecipePriorityProjection
             RemainingOrderCount = order.RemainingOrderCount,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
+            PatienceRemainingRatio = order.PatienceRemainingRatio,
             MissionRecipePriority = priority,
         };
     }
@@ -281,6 +290,7 @@ internal static class RuntimeMissionRecipePriorityProjection
             && left.RuntimeGuestId == right.RuntimeGuestId
             && left.FoodId == right.FoodId
             && left.RecipeId == right.RecipeId
+            && left.ProductKind == right.ProductKind
             && left.MissionGeneration == right.MissionGeneration
             && left.BusinessGeneration == right.BusinessGeneration;
     }

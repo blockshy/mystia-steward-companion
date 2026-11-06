@@ -113,10 +113,10 @@ receiver/presentation 等门禁才能发布。
 - 当前是普通经营且 generation 匹配。
 - 活动任务、canonical 稀客身份和静态 definition 一致。
 - 当前恰有一笔未送餐的匹配订单。
-- 料理的 `foodId + recipeId` 唯一且可验证。
+- 普通料理的 `foodId + recipeId` 唯一且可验证；黑暗料理要求显式特殊产物种类、`foodId=-1` 与空配方 ID，不把缺省负数当成有效身份。
 
 任务完成、移除、经营 Closing、身份歧义或信号失效时立即清除。推荐引擎仍需重新通过库存、预算、厨具等硬
-约束；完整优先级见 [推荐引擎](recommendation-engine.md)。
+约束；完整优先级见 [推荐引擎](recommendation-engine.md)。黑暗料理的目录、真实基底生产和保温箱供给见 [黑暗料理任务与供给](dark-cuisine-task-priority.md)。
 
 ## 维护规则
 

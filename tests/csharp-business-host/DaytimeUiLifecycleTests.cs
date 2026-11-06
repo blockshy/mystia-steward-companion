@@ -76,7 +76,7 @@ internal static class DaytimeUiLifecycleTests
                 Check(RuntimeUiPinningService.PublicationCount == beforePublications, label + "不应提交夜间目标，包括空集合。");
                 Check(RuntimeUiPinningService.WithdrawalCount == beforeWithdrawals, label + "不应循环创建权威撤销屏障。");
                 var slots = host.Status()["gameUiTargets"];
-                Check(slots?["rare"] == null && slots?["normal"] == null, label + "不应返回可用游戏目标。");
+                Check(J.Arr(slots?["rare"]).Count == 0 && J.Arr(slots?["normal"]).Count == 0, label + "不应返回可用游戏目标。");
                 Check(Volatile.Read(ref effects) == 0, label + "意外产生游戏副作用。");
             }
 
@@ -142,7 +142,7 @@ internal static class DaytimeUiLifecycleTests
             Publish("Active", 3, orders: true);
             await Until(() => RuntimeUiPinningService.RejectionCount > rejections, "没有覆盖发布时切场竞争。");
             await ReadOnlyReady("Active发布竞争后的恢复");
-            Check(host.Status()["gameUiTargets"]?["normal"] == null, "切场后不得保留游戏目标。");
+            Check(J.Arr(host.Status()["gameUiTargets"]?["normal"]).Count == 0, "切场后不得保留游戏目标。");
             Check(Volatile.Read(ref calls) == 0, "非Active、旧代或发布失败不应提交任何动作。");
 
             // 同代Active的真正发布失败保持明确错误，并撤销本轮未提交命令，不能被白天兼容吞掉。

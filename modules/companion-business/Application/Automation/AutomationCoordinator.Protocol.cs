@@ -19,6 +19,7 @@ public sealed partial class AutomationCoordinator
             ("foodTag", order["foodTag"]), ("foodTagId", order["foodTagId"]), ("beverageTag", order["beverageTag"]), ("beverageTagId", order["beverageTagId"]),
             ("foodId", recipe?["foodId"] ?? JsonValue.Create(-1)), ("recipeId", recipe?["recipeId"] ?? JsonValue.Create(-1)),
             ("recipeName", J.Str(recipe?["recipeName"])), ("extraIngredientIds", recipe?["extraIngredientIds"] ?? new JsonArray()),
+            ("foodProductionKind", J.Str(recipe?["foodProductionKind"])), ("foodSupplySource", J.Str(recipe?["foodSupplySource"])), ("missionGeneration", J.Obj(order["missionRecipePriority"])["missionGeneration"]),
             ("predictedFoodTags", recipe?["foodTags"] ?? new JsonArray()), ("expectedFoodModifierTags", new JsonArray()),
             ("beverageId", beverage?["beverageId"] ?? JsonValue.Create(-1)), ("beverageName", J.Str(beverage?["beverageName"])),
             ("autoTakeBeverage", takeBeverage), ("autoStartCooking", startCooking), ("autoCollectCooking", collect), ("autoDeliverFood", collect),
@@ -129,6 +130,9 @@ public sealed partial class AutomationCoordinator
             // 同一快照只扫描一次订单重置限制，避免诊断序列化重复遍历锅次和事件集合。
             var resetBlockReason = ResetBlockReason(key);
             var diagnostic = J.Object(("orderKey", state["orderKey"]), ("traceId", order["traceId"]),
+                // 诊断列表自己的 orderKey 是协调器键；颜色匹配另提供真实订单键与生命周期，禁止混用。
+                ("colorOrderIdentity", J.Object(("traceId", order["traceId"]),
+                    ("orderLifecycleSequence", order["orderLifecycleSequence"]), ("orderKey", order["orderKey"]))),
                 ("kind", kind), ("guestId", order["guestId"]), ("guestName", J.Str(order["guestName"])),
                 ("guestImageKind", guestImageKind), ("guestImageId", guestImageId),
                 ("specialBusinessRole", J.Str(order["specialBusinessRole"])),
@@ -254,8 +258,11 @@ public sealed partial class AutomationCoordinator
                 var state = _states[key];
                 if (J.Bool(state["prepared"]) || J.Bool(order["hasServedFood"]) || J.Bool(state["paused"])
                     || !byKey.TryGetValue(J.Str(state["orderKey"]), out var item)) continue;
-                var (recipe, _) = PickRareTargets(item, preferences);
-                if (recipe is null) continue;
+                var (recommended, _) = PickRareTargets(item, preferences);
+                // 已锁存目标以实际调度状态为准；回执不明时不能用另一份有料的新推荐
+                // 把仍在等待核对的旧目标显示成正在占用厨具。首轮尚未计划才使用主方案预估。
+                var recipe = state["recipeTarget"] as JsonObject ?? recommended;
+                if (recipe is null || RareIngredientDeferral(recipe).Length > 0) continue;
                 var label = $"稀客 {Nonempty(J.Str(order["guestName"]), "未知")} · 桌 {DisplayDesk(order["deskCode"])}";
                 if (ReserveOverview(J.Str(recipe["cookerName"]), "rare", label)
                     && ++count >= Math.Clamp((int)J.Num(preferences["autoRareConcurrency"], 2), 1, 6)) break;

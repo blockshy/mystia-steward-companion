@@ -5,6 +5,8 @@
     <LangVersion>10.0</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Unity 自有视觉的隔离探针以托管 Il2Cpp 创建替身遮蔽真实原生入口；Harmony 仍使用正式引用。 -->
+    <NoWarn>$(NoWarn);CS0436</NoWarn>
   </PropertyGroup>
 
   <PropertyGroup>
@@ -14,6 +16,10 @@
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Save/NightBusinessLifecycleTracker.cs" Link="NightBusinessLifecycleTracker.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListHighlightService.cs" Link="RuntimePinnedListHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListColorBlocks.cs" Link="RuntimePinnedListColorBlocks.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListUiAccess.cs" Link="RuntimePinnedListUiAccess.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListMeshAccess.cs" Link="RuntimePinnedListMeshAccess.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeBackgroundBandMesh.cs" Link="RuntimeBackgroundBandMesh.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeUiPinningService.cs" Link="RuntimeUiPinningService.cs" />

@@ -25,6 +25,10 @@ internal sealed class OrderPreparationRequest
     public int FoodId { get; init; } = -1;
     public int RecipeId { get; init; } = -1;
     public string RecipeName { get; init; } = "";
+    /// <summary>空值为普通配方；dark-cuisine 必须由当前代际的任务信号再次核验，不能把缺省 FoodId=-1 当成该产物。</summary>
+    public string FoodProductionKind { get; init; } = "";
+    public string FoodSupplySource { get; init; } = "";
+    public long MissionGeneration { get; init; }
     public IReadOnlyList<int> ExtraIngredientIds { get; init; } = Array.Empty<int>();
     public IReadOnlyList<string> PredictedFoodTags { get; init; } = Array.Empty<string>();
     public bool PredictedFoodTagsProvided { get; init; }

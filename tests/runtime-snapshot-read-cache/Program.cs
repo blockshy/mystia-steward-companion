@@ -191,7 +191,7 @@ NormalBusinessOrder Normal(string source) => new()
 void VerifyGuestImageIdentity()
 {
     // 两类目录故意复用数字7，模拟 GuestBase 包装；分类只能依据生产传入的精确原生转换。
-    var normals = new Dictionary<int, string> { [7] = "普通客群七" };
+    var normals = new Dictionary<int, string> { [7] = "普通客群七", [8] = "同桌客群八" };
     var rares = new Dictionary<int, string> { [7] = "复制稀客七", [8] = "稀客八" };
     object? Cast(object? value, string name) => value is ImageGuest guest
         && (guest.Kind == "both" || guest.Kind == name) ? guest : null;
@@ -210,11 +210,16 @@ void VerifyGuestImageIdentity()
         new ImageGuest(RuntimeGuestImageIdentityReader.RareType, -1),
         new ImageGuest(RuntimeGuestImageIdentityReader.RareType, "7"),
         new ImageGuest(RuntimeGuestImageIdentityReader.RareType, 99),
-        new ImageGuest(RuntimeGuestImageIdentityReader.NormalType, 8) })
+        new ImageGuest(RuntimeGuestImageIdentityReader.NormalType, 99) })
         Equal(RuntimeGuestImageIdentity.Unknown, Resolve(candidate), "未知/冲突/非整数/跨目录身份不应得到图片。");
-    Equal(RuntimeGuestImageIdentity.Unknown, Resolve(normal, rare), "订单和控制器种类冲突仍选择了一张图。");
-    Equal(RuntimeGuestImageIdentity.Unknown, Resolve(rare, new ImageGuest(RuntimeGuestImageIdentityReader.RareType, 8)),
-        "同种类不同客人ID冲突仍选择了一张图。");
+    Equal(Resolve(normal), Resolve(normal, rare), "控制器变化不能覆盖订单固有的客群身份。");
+    Equal(Resolve(rare), Resolve(rare, new ImageGuest(RuntimeGuestImageIdentityReader.RareType, 8)),
+        "复制稀客订单必须沿用自身身份，不能受控制器临时点单字段影响。");
+    // N-0069 同类回归：一桌两位客人依次生成订单，控制器已切到第二位，第一笔订单仍属第一位。
+    var tableMate = new ImageGuest(RuntimeGuestImageIdentityReader.NormalType, 8);
+    Equal(7, Resolve(normal, tableMate).Id, "多人同桌时第一笔订单头像丢失或错误改为另一位客人。");
+    Equal(8, Resolve(tableMate, normal).Id, "控制器变化后第二笔订单头像不稳定。");
+    Equal(Resolve(normal), Resolve(normal, new ImageGuest("unknown", 8)), "已确认订单头像不依赖控制器字段可读性。");
     Equal(RuntimeGuestImageIdentity.Unknown, Resolve(new ImageGuest("unknown", 7), rare),
         "订单对象存在但无法核验时不得用另一个控制器身份掩盖不确定性。");
     var failed = RuntimeGuestImageIdentityReader.Resolve(rare, null, normals, rares, Cast,

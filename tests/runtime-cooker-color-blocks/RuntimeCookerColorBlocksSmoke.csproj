@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <!-- 执行正式服务、视觉资源及布局实现；仅游戏对象/Unity 引擎边界替换为可观测替身。 -->
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerHighlightService.cs" Link="RuntimeCookerHighlightService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerColorBlocks.cs" Link="RuntimeCookerColorBlocks.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerAlphaMask.cs" Link="RuntimeCookerAlphaMask.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerColorBlockLayout.cs" Link="RuntimeCookerColorBlockLayout.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerBackgroundSurface.cs" Link="RuntimeCookerBackgroundSurface.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeBackgroundBandMesh.cs" Link="RuntimeBackgroundBandMesh.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
+  </ItemGroup>
+</Project>

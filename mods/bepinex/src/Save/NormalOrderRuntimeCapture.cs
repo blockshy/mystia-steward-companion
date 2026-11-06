@@ -38,6 +38,7 @@ public static class NormalOrderRuntimeCapture
         PatchKey(GuestsManagerTypeName, "EvaulateManualOrder", 2, false),
         PatchKey(GuestsManagerTypeName, "CleanOrderInfo", 1, false),
         PatchKey(GuestsManagerTypeName, "RepellInternal", 4, false),
+        PatchKey(GuestsManagerTypeName, "LeaveFromDesk", 4, false),
     };
     private static readonly TimeSpan RetryInterval = TimeSpan.FromSeconds(5);
     private static Harmony? _harmony;
@@ -253,6 +254,17 @@ public static class NormalOrderRuntimeCapture
                 patchedNow,
                 missing,
                 exactMethodPredicate: IsExactRepellInternal);
+            PatchMethod(
+                _harmony,
+                GuestsManagerTypeName,
+                "LeaveFromDesk",
+                4,
+                false,
+                nameof(CaptureControllerOrdersBeforeLeave),
+                nameof(OnControllerOrdersLeaveSucceeded),
+                patchedNow,
+                missing,
+                exactMethodPredicate: IsExactLeaveFromDesk);
 
             lock (SyncRoot)
             {
@@ -416,6 +428,18 @@ public static class NormalOrderRuntimeCapture
         return arguments.Length == 1
             && string.Equals(arguments[0].FullName, EvaluationResultTypeName, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 固定 #783 的真实离桌边界；拒绝参数数量相同但委托、枚举或返回类型不同的重载。
+    /// </summary>
+    private static bool IsExactLeaveFromDesk(MethodInfo method) =>
+        !method.IsStatic
+        && HasExactVoidSignature(
+            method,
+            GuestGroupControllerTypeName,
+            LeaveTypeName,
+            Il2CppActionTypeName,
+            typeof(bool).FullName!);
 
     private static bool IsExactRepellInternal(MethodInfo method)
     {
@@ -631,6 +655,54 @@ public static class NormalOrderRuntimeCapture
                 __state,
                 RuntimeOrderTerminalDisposition.Removed,
                 RuntimeOrderTerminalReceiptSource.RepellInternal);
+        });
+    }
+
+    /// <summary>
+    /// 在实际离桌入口冻结已有绑定。耐心耗尽会内联 CleanOrderInfo；极差评价也可能继续
+    /// 点单，因此不把 PatientDepletedLeave / ExBadLeave 的入口或 HUD 消失当作终态。
+    /// #783 LeaveFromDesk（RVA 0x4D2810）是这些真正离开分支共用的原生边界。
+    /// </summary>
+    private static void CaptureControllerOrdersBeforeLeave(
+        object __0,
+        out RuntimeOrderBindingToken[] __state)
+    {
+        var bindings = Array.Empty<RuntimeOrderBindingToken>();
+        RunCaptureCallback("LeaveFromDesk.Before", () =>
+        {
+            var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+            if (lifecycle.IsActive
+                && RuntimeReflectionUtility.TryReadNativeObjectPointer(__0, out var controllerPointer))
+            {
+                bindings = RuntimeOrderTerminalReceiptStore.CaptureActiveControllerLifecycles(
+                    lifecycle.Generation,
+                    RuntimeOrderKind.Normal,
+                    controllerPointer);
+            }
+        });
+        __state = bindings;
+    }
+
+    /// <summary>
+    /// 仅在原生方法正常返回且确实执行后提交。原生抛异常时 Harmony 不运行此 postfix；
+    /// 重入回调中的新单即使复用相同指针，也不会被旧生命周期回执撤销。
+    /// </summary>
+    private static void OnControllerOrdersLeaveSucceeded(
+        RuntimeOrderBindingToken[]? __state,
+        bool __runOriginal)
+    {
+        if (!__runOriginal || __state == null || __state.Length == 0) return;
+
+        RunTerminalPostfix("LeaveFromDesk.After", () =>
+        {
+            lock (SyncRoot) _removeCallbacks++;
+            foreach (var binding in __state)
+            {
+                PublishAndRemoveOrder(
+                    new TerminalOrderCaptureState(binding, IsFulfilled: false),
+                    RuntimeOrderTerminalDisposition.Removed,
+                    RuntimeOrderTerminalReceiptSource.LeaveFromDesk);
+            }
         });
     }
 

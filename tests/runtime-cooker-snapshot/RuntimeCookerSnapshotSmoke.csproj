@@ -11,6 +11,12 @@
     <Compile Include="../../mods/bepinex/src/Core/Models.cs" Link="Models.cs" />
     <Compile Include="../../mods/bepinex/src/Core/GameDisplayText.cs" Link="GameDisplayText.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiModels.cs" Link="LocalApiModels.cs" />
+    <!-- 快照 DTO 新增稀客参与投影；链接真实协议与纯托管状态，避免用空 DTO 替身隐藏契约变化。 -->
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiRareGuestParticipation.cs" Link="LocalApiRareGuestParticipation.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeRareGuestParticipationState.cs" Link="RuntimeRareGuestParticipationState.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeOrderTerminalReceiptStore.cs" Link="RuntimeOrderTerminalReceiptStore.cs" />
+    <!-- 订单种类仍复用已有独立 smoke 的封闭枚举边界，不引入 IL2CPP 类型解析或真实游戏。 -->
+    <Compile Include="../runtime-rare-guest-participation/RuntimeOrderKindTestType.cs" Link="RuntimeOrderKindTestType.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AutomationCookerStartPolicy.cs" Link="AutomationCookerStartPolicy.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerSnapshotContentSignature.cs" Link="RuntimeCookerSnapshotContentSignature.cs" />
     <Compile Include="../../mods/bepinex/src/Save/RuntimeCookerReservation.cs" Link="RuntimeCookerReservation.cs" />

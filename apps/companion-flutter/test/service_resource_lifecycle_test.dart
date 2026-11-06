@@ -163,6 +163,30 @@ void main() {
         await tester.pumpAndSettle();
         expect(model.resources['/favorites']!['beverages'], isEmpty);
 
+        // 专注设置仅在专注子页订阅，不能与收藏互相撤销；离开专注立即停止该读取。
+        Finder tab(String value) => find.descendant(
+          of: find.byType(WorkspaceTabs<String>),
+          matching: find.text(value),
+        );
+        await tester.tap(tab('专注'));
+        await tester.pumpAndSettle();
+        expect(
+          model.subscriptions.keys,
+          containsAll(['/favorites', '/ui/focus-overlay']),
+        );
+        await tester.tap(tab('稀客'));
+        await tester.pumpAndSettle();
+        expect(model.subscriptions.keys.toList(), ['/favorites']);
+        final beforeInactive = model.reads
+            .where((path) => path == '/ui/focus-overlay')
+            .length;
+        await model.pollSubscribedResources();
+        await tester.pumpAndSettle();
+        expect(
+          model.reads.where((path) => path == '/ui/focus-overlay').length,
+          beforeInactive,
+        );
+
         // 同一生命周期约定覆盖其它主页面；经营隐藏之后不能继续占用收藏轮询。
         await tester.tap(find.byKey(const ValueKey('nav-4')));
         await tester.pumpAndSettle();

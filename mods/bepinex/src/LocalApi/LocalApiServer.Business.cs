@@ -24,6 +24,7 @@ internal sealed partial class LocalApiServer
     private readonly AutomationCoordinator _businessCoordinator = new();
     // 只缓存完整值输入对应的候选；每帧的订单代次、权限和执行状态始终重新绑定。
     private readonly OrderCandidateCache _businessCandidateCache = new();
+    private OrderHighlightAssignmentService _orderHighlightAssignments = new();
     private readonly CancellationTokenSource _businessStop = new();
     // 无图片服务的隔离宿主保持既有行为；生产由 LocalApi 构造函数注入只读就绪判断。
     private Func<bool>? _gameMediaReady;
@@ -69,7 +70,8 @@ internal sealed partial class LocalApiServer
     /// 独立重绑并编码；HTTP 拼接这些已验证 JSON 片段，不在轮询时深复制整棵方案树。
     /// Prefix 是未闭合对象（结尾为逗号或左花括号），其余片段均由 JSON 序列化器产生。
     /// </summary>
-    private sealed record BusinessPublication(string Metadata, string RecommendationPrefix, string NormalTargets);
+    private sealed record BusinessPublication(string Metadata, string RecommendationPrefix, string NormalTargets,
+        Ui.GameFocusOverlayPlans? FocusOverlayPlans);
 
     private sealed record BusinessOrderInput(JsonObject Snapshot, JsonObject Data, JsonObject Preferences,
         JsonObject Favorites, JsonObject CustomRecipes, string[] RejectedRecipeKeys)
@@ -137,7 +139,7 @@ internal sealed partial class LocalApiServer
     }
     private static bool IsBusinessInputMutation(string path) => path.StartsWith("/devices/", StringComparison.Ordinal)
         || path.StartsWith("/favorites/", StringComparison.Ordinal) || path.StartsWith("/custom-recipes/", StringComparison.Ordinal)
-        || path.StartsWith("/inventory/", StringComparison.Ordinal) || path == "/orders/rare/dismiss";
+        || path.StartsWith("/inventory/", StringComparison.Ordinal) || path == "/orders/rare/participation";
 
     private void StartBusinessHost()
     {
@@ -213,6 +215,7 @@ internal sealed partial class LocalApiServer
                             _businessFrame = frame;
                             _businessResultFrame = frame;
                             _businessResult = publication;
+                            CommitFocusOverlayPlans(publication.FocusOverlayPlans);
                             _businessError = null;
                             _businessUiUnavailableGeneration = null;
                         }
@@ -481,6 +484,7 @@ internal sealed partial class LocalApiServer
     private BusinessPublication CreateBusinessPublication(BusinessFrame frame, JsonObject result,
         JsonArray normalTargets, JsonObject gameUiTargets, double calculationMs)
     {
+        var focusPlans = PrepareFocusOverlayPlans(frame, result, gameUiTargets);
         if (!ReferenceEquals(_businessSerializedOrderResult, result))
         {
             using var stream = new MemoryStream();
@@ -505,7 +509,7 @@ internal sealed partial class LocalApiServer
             ("authorityRevision", frame.Authority.AuthorityRevision),
             ("runtimeSets", Cookers.BuildRuntimeSets(frame.Snapshot["recommendationState"], frame.Data)),
             ("gameUiTargets", gameUiTargets), ("calculationMs", calculationMs));
-        return new(metadata.ToJsonString(), _businessSerializedOrderPrefix, normalTargets.ToJsonString());
+        return new(metadata.ToJsonString(), _businessSerializedOrderPrefix, normalTargets.ToJsonString(), focusPlans);
     }
 
     /// <summary>
@@ -518,14 +522,20 @@ internal sealed partial class LocalApiServer
     {
         if (_businessStop.IsCancellationRequested || _gameMediaReady?.Invoke() == false
             || !BusinessDisplayContext.Matches(frame.SourceContext, ReadBusinessSourceContext(frame.CatalogJson))) return false;
+        // 客户端背景属于只读显示；保留已知精确订单颜色，避免刷新时先闪回中性色。
+        // 游戏目标与执行目标仍为空，旧完成帧不得修改分配器或恢复原生副作用许可。
+        var knownColors = _orderHighlightAssignments.ReadKnown((long)J.Num(frame.Snapshot["nightBusinessGeneration"]),
+            frame.Snapshot["nightBusiness"]?["orders"], frame.Snapshot["normalBusiness"]?["orders"],
+            frame.Preferences);
         var publication = CreateBusinessPublication(frame, result, new JsonArray(),
-            J.Object(("rare", null), ("normal", null)), calculationMs);
+            J.Object(("rare", new JsonArray()), ("normal", new JsonArray()), ("orderColors", knownColors)), calculationMs);
         lock (_businessLock)
         {
             if (_businessStop.IsCancellationRequested || _gameMediaReady?.Invoke() == false
                 || _businessResultFrame != null && _businessResultFrame.Version > frame.Version) return false;
             _businessResultFrame = frame;
             _businessResult = publication;
+            CommitFocusOverlayPlans(publication.FocusOverlayPlans);
             // 只有唯一业务循环写入错误；本轮捕获和求解已成功，撤销其此前的输入错误。
             // 不设置 _businessFrame，也不允许先前的执行帧获得新版本。
             _businessError = null;
@@ -536,60 +546,87 @@ internal sealed partial class LocalApiServer
 
     private JsonObject PublishBusinessGameUi(BusinessFrame frame, JsonObject result, JsonArray normalTargets)
     {
-        var slots = J.Object(("rare", null), ("normal", null));
-        // Closing/Destroyed 会由既有生命周期边界撤销游戏目标；此处既不提交空集合，也不反复 Clear。
-        // 只读经营结果和稀客/普客页面不依赖夜间 UI 发布，白天保留上一营业代次也应正常计算。
+        var slots = J.Object(("rare", new JsonArray()), ("normal", new JsonArray()), ("orderColors", new JsonArray()));
         if (!IsBusinessNightRuntimeCurrent(frame)) return slots;
+        var preferences = frame.Preferences;
+        var candidates = new Dictionary<string, IReadOnlyList<JsonObject>>(StringComparer.Ordinal);
+        var featuresByKind = new Dictionary<string, JsonObject>(StringComparer.Ordinal);
+        foreach (var kind in new[] { "rare", "normal" })
+        {
+            var features = J.Object(("listPinningEnabled", preferences[kind + "GameUiPinningEnabled"]),
+                ("recipeVariantEnabled", preferences[kind + "RecipeVariantEnabled"]),
+                ("cookerHighlightEnabled", preferences[kind + "CookerHighlightEnabled"]),
+                ("seatHighlightEnabled", preferences[kind + "SeatHighlightEnabled"]),
+                ("orderHighlightEnabled", preferences[kind + "OrderHighlightEnabled"]));
+            featuresByKind.Add(kind, features);
+            var args = new FrozenGameUiTargetInput(kind, frame.Data,
+                Recommendations: result["recommendations"], Orders: frame.Snapshot["normalBusiness"]?["orders"],
+                ExecutionTargets: normalTargets, ExecutionTargetsCurrent: true,
+                Features: features, SpecialBusiness: frame.Snapshot["specialBusiness"],
+                BusinessGeneration: J.Num(frame.Snapshot["nightBusinessGeneration"]),
+                PrioritizeMissionRecipe: J.Bool(preferences["missionRecipePriorityEnabled"])
+                    && !J.Bool(frame.Snapshot["specialBusiness"]?["active"]),
+                Snapshot: frame.Snapshot, Preferences: preferences);
+            // 先得到同一套合法且有序的候选，再分配有限颜色；不能由原始订单抢占名额，
+            // 导致暂停、已送齐或无有效方案的订单挡住真正可以辅助的后续订单。
+            candidates.Add(kind, GameUiTargetService.EvaluateAll(args));
+        }
+        // 客户端颜色独立于主设备在线和游戏辅助开关。仅在当前经营帧分配槽位，过期只读结果
+        // 不推进分配器，防止旧订单重新占用刚刚释放给新订单的颜色。
+        // 捕获异常产生的空数组并不证明订单已结束；分配器只在各类订单明确完整时释放旧槽。
+        // 未知状态的旧槽仅保留身份，不生成可见目标，也不扩大游戏操作许可。
+        // 调度状态不完整与“确定全部暂停”不同：只隐藏目标，保留已提交颜色以供恢复。
+        var rareCandidatesComplete = RareOrderParticipationProjection.TryReadPositions(frame.Snapshot, preferences, out _);
+        var pendingAssignments = _orderHighlightAssignments.Fork();
+        var colors = pendingAssignments.ProjectSnapshot((long)J.Num(frame.Snapshot["nightBusinessGeneration"]),
+            frame.Snapshot["nightBusiness"], frame.Snapshot["normalBusiness"],
+            frame.Preferences, candidates["rare"], candidates["normal"], rareCandidatesComplete);
+        slots["orderColors"] = colors;
+        var assignments = J.Objects(colors).ToDictionary(color => OrderHighlightAssignmentService.ExactKey(J.Str(color["kind"]), color)!, StringComparer.Ordinal);
         var targets = new List<RuntimeUiTargetSnapshot>();
         var online = frame.Authority.Devices.Any(device => device.IsPrimary && device.Online && !device.SyncPending);
-        // 模块停用时仍发布空目标以撤销上一轮效果，不能提前返回留下旧高亮。
-        // 分项偏好保持不变，重新启用后按已保存的普客/稀客配置生成目标。
         if (online && J.Bool(frame.Preferences["gameUiEnabled"])
             && J.Bool(frame.Snapshot["nightBusinessAutomationAllowed"]))
         {
             foreach (var kind in new[] { "rare", "normal" })
             {
-                var preferences = frame.Preferences;
-                var features = J.Object(("listPinningEnabled", preferences[kind + "GameUiPinningEnabled"]),
-                    ("recipeVariantEnabled", preferences[kind + "RecipeVariantEnabled"]),
-                    ("cookerHighlightEnabled", preferences[kind + "CookerHighlightEnabled"]),
-                    ("seatHighlightEnabled", preferences[kind + "SeatHighlightEnabled"]),
-                    ("orderHighlightEnabled", preferences[kind + "OrderHighlightEnabled"]));
+                // 类别总开关只控制原生辅助目标，不覆盖该类五个分项或配色。
+                // 全部原生消费者共用此目标集合，因此关闭后置顶、变体、厨具、桌位和
+                // 订单高亮一起撤回；客户端订单颜色仍由上面的独立展示映射保持稳定。
+                // 配置修订参与当前帧校验，关闭前已计算的旧帧不能重新发布辅助目标。
+                if (!J.Bool(preferences[kind + "GameUiEnabled"])) continue;
+                var features = featuresByKind[kind];
                 if (!features.Any(item => J.Bool(item.Value))) continue;
-                // 两类目标同步只读同一批冻结组件；普客无需复制稀客整套方案，也无需把目录挂进新父节点。
-                var args = new FrozenGameUiTargetInput(kind, frame.Data,
-                    Recommendations: result["recommendations"], Orders: frame.Snapshot["normalBusiness"]?["orders"],
-                    ExecutionTargets: normalTargets, ExecutionTargetsCurrent: true,
-                    Color: J.Str(preferences[kind + "TargetHighlightColor"]),
-                    Features: features, SpecialBusiness: frame.Snapshot["specialBusiness"],
-                    BusinessGeneration: J.Num(frame.Snapshot["nightBusinessGeneration"]),
-                    PrioritizeMissionRecipe: J.Bool(preferences["missionRecipePriorityEnabled"])
-                        && !J.Bool(frame.Snapshot["specialBusiness"]?["active"]));
-                if (GameUiTargetService.Evaluate(args) is not JsonObject target) continue;
-                slots[kind] = J.Clone(target);
-                var wire = new JsonObject();
-                foreach (var field in new[] { "kind", "color", "traceId", "orderKey", "orderLifecycleSequence", "deskCode", "recipeId", "ingredientIds", "extraIngredientIds", "beverageId", "cookerTypeId" })
-                    wire["target0" + char.ToUpperInvariant(field[0]) + field[1..]] = J.Clone(target[field]);
-                // 偏好与业务投影沿用 main 的 CSS 颜色格式（#RRGGBB），游戏目标协议则只接收 RRGGBB。
-                // 仅在适配边界去掉一个明确的前缀；后续仍由真实协议解析器严格校验大写十六进制，
-                // 不改写业务返回值，也不以 TrimStart 或大小写转换掩盖损坏输入。
-                var color = J.Str(target["color"]);
-                if (color.Length != 7 || color[0] != '#')
-                    throw new FormatException("Business UI target color must use the #RRGGBB format.");
-                wire["target0Color"] = color[1..];
-                wire["target0Revision"] = J.Clone(target["targetRevision"]);
-                foreach (var field in features) wire["target0" + char.ToUpperInvariant(field.Key[0]) + field.Key[1..]] = J.Clone(field.Value);
-                targets.Add(ReadUiPinningTarget(ToBusinessQuery(wire), 0));
+                // 辅助上限只由该类实际颜色数决定；不能再读取独立数量或复用同类颜色。
+                var maximum = J.Arr(preferences[kind + "OrderHighlightPalette"]).Count;
+                var published = J.Arr(slots[kind]);
+                foreach (var target in candidates[kind])
+                {
+                    if (published.Count >= maximum || targets.Count >= OrderHighlightAssignmentService.Capacity) break;
+                    var key = OrderHighlightAssignmentService.ExactKey(kind, target);
+                    if (key == null || !assignments.TryGetValue(key, out var assignment)) continue;
+                    target["color"] = J.Clone(assignment["color"]);
+                    target["colorSlot"] = J.Clone(assignment["colorSlot"]);
+                    var wire = new JsonObject();
+                    foreach (var field in new[] { "kind", "colorSlot", "traceId", "orderKey", "orderLifecycleSequence", "deskCode", "recipeId", "ingredientIds", "extraIngredientIds", "beverageId", "cookerTypeId" })
+                        wire["target0" + char.ToUpperInvariant(field[0]) + field[1..]] = J.Clone(target[field]);
+                    var color = J.Str(target["color"]);
+                    if (color.Length != 7 || color[0] != '#') throw new FormatException("订单颜色必须使用 #RRGGBB 格式。");
+                    wire["target0Color"] = color[1..];
+                    wire["target0Revision"] = J.Clone(target["targetRevision"]);
+                    foreach (var field in features) wire["target0" + char.ToUpperInvariant(field.Key[0]) + field.Key[1..]] = J.Clone(field.Value);
+                    targets.Add(ReadUiPinningTarget(ToBusinessQuery(wire), 0));
+                    published.Add(target);
+                }
             }
         }
         lock (_authorityTransitionLock)
         {
-            // 构造目标期间可能切场；旧帧不得发布到下一代。真正发布内部仍保留更靠近提交的严格门禁，
-            // 若校验之后再切场，本轮按原错误路径失败关闭；下一轮跳过非 Active 发布后恢复只读结果。
             if (!IsBusinessFrameCurrent(frame) || !IsBusinessNightRuntimeCurrent(frame))
-                return J.Object(("rare", null), ("normal", null));
+                return J.Object(("rare", new JsonArray()), ("normal", new JsonArray()), ("orderColors", new JsonArray()));
+            // 分配与目标作为同一当前帧提交；中途失效时直接丢弃副本，旧只读展示仍读取原映射。
             RuntimeUiPinningService.UpdateTargets((long)J.Num(frame.Snapshot["nightBusinessGeneration"]), targets);
-            // 即使后续构造状态或提交命令失败，本轮已发布的目标也必须再次撤销。
+            _orderHighlightAssignments = pendingAssignments;
             _businessUiUnavailableGeneration = null;
         }
         return slots;

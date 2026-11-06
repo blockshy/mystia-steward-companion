@@ -930,12 +930,8 @@ static void VerifyLockedCookerSourceContracts()
         "public static void BeginTopologyMutation(");
     AssertContains(
         beginMutation,
-        "RendererBaselines[pointer] = new RendererBaseline(",
-        "Topology mutation does not retain a pure managed original-color baseline.");
-    AssertContains(
-        beginMutation,
-        "HighlightedRenderers.Clear();",
-        "Topology mutation retains renderer wrappers across native destruction.");
+        "ReleaseAllLocked();",
+        "Topology mutation does not remove Mod-owned color blocks before native destruction.");
     AssertDoesNotContain(
         beginMutation,
         "RestoreAllLocked",
@@ -954,7 +950,7 @@ static void VerifyLockedCookerSourceContracts()
         "public static void CompleteTopologyMutation(");
     AssertContains(
         completeMutation,
-        "DecrementTopologyMutationDepth()",
+        "_topologyMutationDepth--",
         "Topology mutation completion does not unwind nested mutation depth.");
     AssertContains(
         completeMutation,
@@ -969,35 +965,20 @@ static void VerifyLockedCookerSourceContracts()
         "catch",
         "Topology mutation postfix can escape into the native game method.");
 
-    var baselineDeclaration = ExtractDeclaration(
-        highlight,
-        "private readonly record struct RendererBaseline(");
-    AssertContains(
-        baselineDeclaration,
-        "Color OriginalColor",
-        "Renderer baseline does not retain the original color as a managed value.");
-    AssertContains(
-        baselineDeclaration,
-        "bool OriginalEnabled",
-        "Renderer baseline does not retain the original enabled state as a managed value.");
-    AssertDoesNotContain(
-        baselineDeclaration,
-        "SpriteRenderer",
-        "Renderer baseline retains a Unity wrapper across topology mutation.");
-    AssertDoesNotContain(
-        baselineDeclaration,
-        "object",
-        "Renderer baseline retains an opaque native wrapper across topology mutation.");
-
+    // 厨具改为 Mod 自有桌格色块，旧的原生颜色基线不再需要；不能恢复原 sprite 改色路径。
+    AssertDoesNotContain(highlight, ".color =", "Cooker highlight modifies a native renderer color.");
+    AssertDoesNotContain(highlight, ".enabled =", "Cooker highlight modifies native enabled state.");
+    AssertDoesNotContain(highlight, "GetComponentsInChildren", "Cooker highlight scans unrelated child visuals.");
+    AssertDoesNotContain(highlight, "FindUnityObjects", "Cooker highlight performs a scene-wide search.");
     var highlightTick = ExtractMethod(highlight, "public static void Tick(");
-    AssertDoesNotContain(
-        highlightTick,
-        "RendererBaselines.Clear()",
-        "A target change or disable can discard retained colors before fresh renderer reconciliation.");
     AssertContains(
         highlightTick,
-        "if (RendererBaselines.Count == 0) return;",
-        "A disabled target does not keep ticking until retained colors are reconciled.");
+        "Environment.CurrentManagedThreadId != lifecycle.ThreadId",
+        "Cooker highlight does not restrict Unity access to the observed main thread.");
+    AssertContains(
+        highlightTick,
+        "DrainDisposalsLocked();",
+        "Cooker highlight does not drain off-thread disposal on the main thread.");
 
     var highlightScan = ExtractMethod(highlight, "private static void ScanAndApply(");
     var highlightLockedRead = highlightScan.IndexOf(
@@ -1013,7 +994,7 @@ static void VerifyLockedCookerSourceContracts()
         "TryReadCookerControllerState(",
         StringComparison.Ordinal);
     var highlightRendererRead = highlightScan.IndexOf(
-        "ReadCookerRenderers(",
+        "ReadCookerAnchor(",
         StringComparison.Ordinal);
     AssertTrue(
         highlightLockedRead >= 0
@@ -1026,50 +1007,19 @@ static void VerifyLockedCookerSourceContracts()
         highlightScan[highlightLockedSkip..highlightStateRead],
         "continue;",
         "A locked highlight entry can fall through to state or renderer reads.");
-    var allOpenRendererRead = highlightScan.IndexOf(
-        "openRenderers.AddRange(controllerRenderers);",
-        StringComparison.Ordinal);
     var targetClaimMerge = highlightScan.IndexOf(
         "claims |= targetSet.GetCookerClaims(cookerTypeId);",
         StringComparison.Ordinal);
-    var retainedRestore = highlightScan.IndexOf(
-        "RestoreRetainedBaselinesLocked(openRenderers);",
-        StringComparison.Ordinal);
-    var disabledReturn = highlightScan.IndexOf(
-        "if (!HasCookerHighlightTargets(targetSet))",
-        retainedRestore,
-        StringComparison.Ordinal);
     var targetApply = highlightScan.IndexOf(
-        "foreach (var targetRenderer in targetRenderers.Values)",
-        disabledReturn,
+        "active.Blocks.Apply(",
         StringComparison.Ordinal);
     AssertTrue(
-        allOpenRendererRead > highlightRendererRead
-        && targetClaimMerge > allOpenRendererRead
-        && retainedRestore > targetClaimMerge
-        && disabledReturn > retainedRestore
-        && targetApply > disabledReturn,
-        "Topology recovery must scan every fresh unlocked renderer, merge both target claims, restore A, then disable or apply target set B.");
-
-    var retainedBaselineRestore = ExtractMethod(
-        highlight,
-        "private static void RestoreRetainedBaselinesLocked(");
+        targetClaimMerge > highlightStateRead && highlightRendererRead > targetClaimMerge && targetApply > highlightRendererRead,
+        "Only classified unlocked target cookers may resolve an anchor and update Mod-owned blocks.");
     AssertContains(
-        retainedBaselineRestore,
-        "freshRenderers.TryGetValue(pointer, out var renderer)",
-        "Retained colors are not matched to fresh renderer wrappers by native pointer.");
-    AssertContains(
-        retainedBaselineRestore,
-        "renderer.color = baseline.OriginalColor;",
-        "A surviving old target renderer is not restored to its original color.");
-    AssertContains(
-        retainedBaselineRestore,
-        "renderer.enabled = baseline.OriginalEnabled;",
-        "A surviving old target renderer is not restored to its original enabled state.");
-    AssertContains(
-        retainedBaselineRestore,
-        "RendererBaselines.Remove(pointer);",
-        "Destroyed or locked renderer baselines are retained after the fresh open-controller scan.");
+        highlightScan,
+        "active.AnchorPointer != candidate.AnchorPointer",
+        "Pooled cooker replacement is not detected by exact anchor identity.");
 
     foreach (var prefixName in new[]
              {
@@ -1299,23 +1249,6 @@ static string ExtractMethod(string source, string signature)
     }
 
     throw new InvalidOperationException($"Source method body is incomplete: {signature}");
-}
-
-static string ExtractDeclaration(string source, string signature)
-{
-    var signatureIndex = source.IndexOf(signature, StringComparison.Ordinal);
-    if (signatureIndex < 0)
-    {
-        throw new InvalidOperationException($"Source declaration not found: {signature}");
-    }
-
-    var terminator = source.IndexOf(");", signatureIndex, StringComparison.Ordinal);
-    if (terminator < 0)
-    {
-        throw new InvalidOperationException($"Source declaration is incomplete: {signature}");
-    }
-
-    return source[signatureIndex..(terminator + 2)];
 }
 
 static void AssertTrue(bool condition, string message)

@@ -928,46 +928,46 @@ class _ToolsPageState extends State<ToolsPage>
             selectedIds.clear();
           }),
         ),
-        // 批量编辑只在选择后出现，与只读浏览明确分开；输入与确认仍走原有权限边界。
-        if (selectedIds.isNotEmpty)
-          ToolRow([
-            StatusBadge('已选 ${selectedIds.length} 项', emphasis: true),
-            if (outsideCount > 0) StatusBadge('筛选外 $outsideCount 项'),
-            SizedBox(
-              width: 150,
-              child: StewardField(
-                '目标数量 0–9999',
-                showLabel: false,
-                hint: '目标数量 0–9999',
-                controller: quantity,
-                numeric: true,
-              ),
+        // 批量编辑区常驻，第一次勾选或清空选择不会推动下方列表。零选择时仅保留
+        // 数量草稿，提交/清选均禁用；实际写入仍经原有身份、数量和确认边界复核。
+        ToolRow([
+          StatusBadge('已选 ${selectedIds.length} 项', emphasis: true),
+          if (outsideCount > 0) StatusBadge('筛选外 $outsideCount 项'),
+          SizedBox(
+            width: 150,
+            child: StewardField(
+              '目标数量 0–9999',
+              showLabel: false,
+              hint: '目标数量 0–9999',
+              controller: quantity,
+              numeric: true,
             ),
-            StewardButton(
-              '设置已选 ${selectedIds.length} 项',
-              primary: true,
-              onPressed:
-                  model.canEdit && !_moduleSwitchBusy && selectedIds.isNotEmpty
-                  ? () {
-                      if (!selectionCurrent() ||
-                          !setEquals(renderedSelection, selectedIds))
-                        return;
-                      _runModuleOperation(
-                        'inventory',
-                        () => _setQuantity(context),
-                      );
-                    }
-                  : null,
-            ),
-            StewardButton(
-              '清除选择',
-              onPressed: _moduleSwitchBusy
-                  ? null
-                  : () {
-                      if (selectionCurrent()) setState(selectedIds.clear);
-                    },
-            ),
-          ], alignInputs: true),
+          ),
+          StewardButton(
+            '设置已选 ${selectedIds.length} 项',
+            primary: true,
+            onPressed:
+                model.canEdit && !_moduleSwitchBusy && selectedIds.isNotEmpty
+                ? () {
+                    if (!selectionCurrent() ||
+                        !setEquals(renderedSelection, selectedIds))
+                      return;
+                    _runModuleOperation(
+                      'inventory',
+                      () => _setQuantity(context),
+                    );
+                  }
+                : null,
+          ),
+          StewardButton(
+            '清除选择',
+            onPressed: _moduleSwitchBusy || selectedIds.isEmpty
+                ? null
+                : () {
+                    if (selectionCurrent()) setState(selectedIds.clear);
+                  },
+          ),
+        ], alignInputs: true),
       ],
       Column(
         children: [

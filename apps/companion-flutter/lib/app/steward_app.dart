@@ -567,19 +567,28 @@ class _WorkbenchShellState extends State<WorkbenchShell>
       child: Row(
         children: [
           Expanded(
+            flex: index == 1 ? 3 : 1,
             child: Offstage(
               offstage: hideTitle,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    names[index],
-                    key: const ValueKey('workbench-page-title'),
-                    style: TextStyle(
-                      fontSize: widget.model.desktop ? 23 : 18,
-                      fontWeight: FontWeight.w700,
-                    ),
+                  Row(
+                    children: [
+                      Text(
+                        names[index],
+                        key: const ValueKey('workbench-page-title'),
+                        style: TextStyle(
+                          fontSize: widget.model.desktop ? 23 : 18,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      if (index == 1) ...[
+                        const SizedBox(width: 8),
+                        Flexible(child: ServiceAutomationHeader(widget.model)),
+                      ],
+                    ],
                   ),
                   if (widget.model.desktop) ...[
                     const SizedBox(height: 4),

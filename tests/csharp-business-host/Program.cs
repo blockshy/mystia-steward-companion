@@ -202,13 +202,22 @@ finally
 
 static JsonElement Profile()
 {
-    var fields = new[] { "automationEnabled", "gameUiEnabled", "autoRareOrderEnabled", "autoNormalOrderEnabled", "autoNormalTakeBeverage", "autoNormalStartCooking", "autoNormalDeliverFood", "autoNormalCompleteOrder", "autoNormalStopOnError", "autoPrepCompleteOrder", "autoPrepTakeBeverage", "autoPrepStartCooking", "autoPrepCollectCooking", "autoPrepRecipeFavoritesOnly", "autoPrepBeverageFavoritesOnly", "autoPrepStopOnError", "filterMissingCookers", "missionRecipePriorityEnabled", "pinFavoriteRecipeEnabled", "pinFavoriteBeverageEnabled", "rareGameUiPinningEnabled", "normalGameUiPinningEnabled", "rareRecipeVariantEnabled", "normalRecipeVariantEnabled", "rareCookerHighlightEnabled", "normalCookerHighlightEnabled", "rareSeatHighlightEnabled", "normalSeatHighlightEnabled", "rareOrderHighlightEnabled", "normalOrderHighlightEnabled" };
+    var fields = new[] { "automationEnabled", "gameUiEnabled", "rareGuestParticipationModuleEnabled", "autoRareOrderEnabled", "autoNormalOrderEnabled", "autoNormalTakeBeverage", "autoNormalStartCooking", "autoNormalDeliverFood", "autoNormalCompleteOrder", "autoNormalStopOnError", "autoPrepCompleteOrder", "autoPrepTakeBeverage", "autoPrepStartCooking", "autoPrepCollectCooking", "autoPrepRecipeFavoritesOnly", "autoPrepBeverageFavoritesOnly", "autoPrepStopOnError", "filterMissingCookers", "missionRecipePriorityEnabled", "pinFavoriteRecipeEnabled", "pinFavoriteBeverageEnabled", "rareGameUiPinningEnabled", "normalGameUiPinningEnabled", "rareRecipeVariantEnabled", "normalRecipeVariantEnabled", "rareCookerHighlightEnabled", "normalCookerHighlightEnabled", "rareSeatHighlightEnabled", "normalSeatHighlightEnabled", "rareOrderHighlightEnabled", "normalOrderHighlightEnabled" };
     var p = fields.ToDictionary(key => key, _ => (object)false, StringComparer.Ordinal);
+    // 类别总开关默认开启，仍由原有全局开关和分项决定是否发布游戏辅助。
+    p["rareGameUiEnabled"] = true; p["normalGameUiEnabled"] = true;
     foreach (var key in new[] { "automationEnabled", "autoNormalOrderEnabled", "autoNormalStartCooking", "filterMissingCookers" }) p[key] = true;
     p["autoRareConcurrency"] = 2; p["autoNormalConcurrency"] = 2; p["autoMaxStepRetries"] = 3; p["autoMaxRollbacks"] = 2;
-    p["rareTargetHighlightColor"] = "#FFDB2E"; p["normalTargetHighlightColor"] = "#5FACD3";
+    p["rareOrderHighlightPalette"] = CompanionDeviceAuthorityStore.DefaultRareHighlightPalette;
+    p["normalOrderHighlightPalette"] = CompanionDeviceAuthorityStore.DefaultNormalHighlightPalette;
+    p["managedRareGuestIds"] = Array.Empty<int>();
+    // 宿主注册必须提交完整的当前共享配置；即便本夹具不启用耐心规则，
+    // 也明确提供 schema 10 的默认值，不能通过放宽生产校验掩盖旧夹具缺字段。
+    p["rareGuestParticipationAutoResumeEnabled"] = false;
+    p["rareGuestParticipationAutoResumeThresholdPercent"] = 30;
+    p["rareGuestParticipationAutoResumePosition"] = "tail";
     p["recommendationBudgetPolicy"] = "block"; p["recipeVariantLimitPerBase"] = 1;
-    var keys = new[] { "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure", "totalCost", "profit", "beverageStock", "cookerAvailable" };
+    var keys = new[] { "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure", "totalCost", "profit", "beverageStock" };
     p["recommendationSortProfile"] = new { preset = "custom", objectives = keys.Select(key => new { key, enabled = true, weight = 50, direction = key is "negativeRisk" or "extraCount" or "resourcePressure" or "totalCost" ? "asc" : "desc" }).ToArray() };
     p["recommendationExclusions"] = new { excludedIngredientIds = Array.Empty<int>(), excludedBeverageIds = Array.Empty<int>() };
     return JsonSerializer.SerializeToElement(p);

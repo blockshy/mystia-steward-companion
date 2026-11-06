@@ -35,6 +35,8 @@ MenuItemView serviceFoodView(
   bool normal = false,
 }) {
   final entity = object(food['recipe']);
+  final specialProduct = food['productKind'] == 'dark-cuisine';
+  final production = specialProduct ? object(food['productionRecipe']) : entity;
   final recipe = normal ? food : entity;
   final names = recipe[normal ? 'baseIngredientNames' : 'ingredients'];
   // 普客FoodDetail的名称、厨具、基础材料在外层，但标价只在recipe实体中。
@@ -42,10 +44,15 @@ MenuItemView serviceFoodView(
   final ingredientsKnown = !(normal && entity.isEmpty && values(names).isEmpty);
   final extras = food['extraIngredients'];
   final recipeKey = !normal || entityImageId(food['foodId']) == entity['id']
-      ? menuRecipeMediaKey(model, entity)
+      ? menuRecipeMediaKey(model, production)
       : null;
   return MenuItemView(
     kind: MenuItemKind.food,
+    preparedSupply: specialProduct && food['supplySource'] == 'stored',
+    productionRecipeName: specialProduct && food['supplySource'] != 'stored'
+        ? label(production['name'], '待确认基底')
+        : null,
+    productionRecipeId: specialProduct ? entityImageId(production['id']) : null,
     entityId: entityImageId(normal ? food['foodId'] : entity['id']),
     cookerId: menuRecipeCookerImage(model, recipeKey),
     name: label(recipe['name'], '待确认料理'),

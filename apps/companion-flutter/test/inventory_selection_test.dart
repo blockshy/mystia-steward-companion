@@ -330,7 +330,15 @@ void main() {
       oldAll(true);
       oldRow(true);
       await tester.pumpAndSettle();
-      expect(find.textContaining('已选 '), findsNothing);
+      // 批量栏常驻后，零选择仍会显示计数；验证没有误选或重新开放旧提交入口。
+      expect(find.text('已选 1 项'), findsNothing);
+      expect(find.text('已选 2 项'), findsNothing);
+      expect(find.text('已选 3 项'), findsNothing);
+      for (final button in tester.widgetList<StewardButton>(
+        find.widgetWithText(StewardButton, '设置已选 0 项'),
+      )) {
+        expect(button.onPressed, isNull);
+      }
       expect(model.writes, isEmpty);
       expect(tester.takeException(), isNull);
     });

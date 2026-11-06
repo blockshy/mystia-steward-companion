@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <!-- 直接编译正式排序、目标声明与调色板；仅用可观测列表替换IL2CPP边界，不复制产品算法。 -->
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiListOrderMutation.cs" Link="RuntimeUiListOrderMutation.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiListOrderService.cs" Link="RuntimeUiListOrderService.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
+  </ItemGroup>
+</Project>

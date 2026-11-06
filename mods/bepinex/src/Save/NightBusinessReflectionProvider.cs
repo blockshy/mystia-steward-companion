@@ -74,10 +74,12 @@ internal sealed class NightBusinessReflectionProvider
             Measure("diagnostics.staticData", () => WriteRuntimeStaticDataDiagnostics(_mappedGuestSnapshot, _staticDataSnapshot));
         }
 
+        var runtimeCaptureReadSucceeded = false;
         IReadOnlyList<CapturedRuntimeSpecialOrder> runtimeOrders = Array.Empty<CapturedRuntimeSpecialOrder>();
         try
         {
             runtimeOrders = Measure("runtimeCapture.snapshot", () => SpecialOrderRuntimeCapture.Snapshot(RuntimeCapturedOrderMaxAge));
+            runtimeCaptureReadSucceeded = true;
             sourceStats.Add($"RuntimeCaptureCache={runtimeOrders.Count}");
         }
         catch (Exception ex)
@@ -218,6 +220,10 @@ internal sealed class NightBusinessReflectionProvider
             PlaceLabel = placeLabel,
             ActiveRareGuests = activeGuests,
             ActiveRareGuestsReadComplete = _guestReadFailures.Count == 0,
+            // 无法读取或存在被拒绝的捕获时保留已有颜色身份；仅本轮完整结果可证明订单消失。
+            // 名单/诊断辅助来源的失败不影响独立的订单完整性判断。
+            OrdersReadComplete = runtimeCaptureReady && runtimeCaptureReadSucceeded
+                && acceptedRuntimeOrders.Count == runtimeOrders.Count && activeOrders.Count == acceptedRuntimeOrders.Count,
             Orders = activeOrders,
             Source = $"Night scene live orders; {managerStatus}; {queueStatus}; {string.Join("; ", sourceStats)}; guests={activeGuests.Count}; orders={activeOrders.Count}",
             Error = errors.Count == 0 ? null : string.Join("; ", errors),
@@ -568,6 +574,8 @@ internal sealed class NightBusinessReflectionProvider
             RemainingOrderCount = ReadNullableIntMember(controller, "RemainOrderCount"),
             HasServedFood = ReadOrderServedState(readableOrder, "ServFood", "ServedFoodInAir"),
             HasServedBeverage = ReadOrderServedState(readableOrder, "ServBeverage", "ServedBeverageInAir"),
+            PatienceRemainingRatio = lifecycleAvailable
+                ? RuntimeOrderPatienceReader.Read(readableOrder, controller, RuntimeOrderKind.Special, orderLifecycleSequence) : null,
         };
         RecordCandidate("Order", source, accepted: true, "accepted special order", () => DescribeOrderCandidate(readableOrder, controller));
         return result;
@@ -698,6 +706,8 @@ internal sealed class NightBusinessReflectionProvider
                     || (captured.OrderObject != null && ReadOrderServedState(captured.OrderObject, "ServFood", "ServedFoodInAir")),
                 HasServedBeverage = captured.IsFulfilled
                     || (captured.OrderObject != null && ReadOrderServedState(captured.OrderObject, "ServBeverage", "ServedBeverageInAir")),
+                PatienceRemainingRatio = RuntimeOrderPatienceReader.Read(captured.OrderObject, captured.ControllerObject,
+                    RuntimeOrderKind.Special, captured.OrderLifecycleSequence),
             };
 
             yield return order;
@@ -874,6 +884,8 @@ internal sealed class NightBusinessReflectionProvider
             RemainingOrderCount = order.RemainingOrderCount ?? fallbackOrder?.RemainingOrderCount,
             HasServedFood = order.HasServedFood,
             HasServedBeverage = order.HasServedBeverage,
+            // 仅保留本次已核实来源；失败不从较旧候选或同桌客人回填耐心。
+            PatienceRemainingRatio = order.PatienceRemainingRatio,
         };
     }
 

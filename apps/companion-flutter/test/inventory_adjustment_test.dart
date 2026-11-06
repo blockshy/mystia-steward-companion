@@ -369,9 +369,19 @@ void main() {
           closeTo(tester.getRect(header).center.dx, .1),
         );
         expect(checkRect.center.dy, closeTo(bodyRect.center.dy, .1));
+        expect(
+          tester.getRect(find.text('库存 30')).center.dy,
+          closeTo(bodyRect.center.dy, .1),
+          reason: '库存不能因名称和标签增高而停留在首行',
+        );
         expect(checkRect.width, greaterThanOrEqualTo(44));
         expect(checkRect.height, greaterThanOrEqualTo(44));
         for (final increase in [false, true]) {
+          expect(
+            tester.widget<FButton>(button(increase)).variant,
+            FButtonVariant.outline,
+            reason: '快捷修改必须具有可辨识的按钮边界',
+          );
           final rect = tester.getRect(button(increase));
           expect(rect.left, greaterThanOrEqualTo(bodyRect.left + 44));
           expect(rect.right, lessThanOrEqualTo(bodyRect.right));
@@ -389,4 +399,39 @@ void main() {
       });
     }
   }
+
+  testWidgets('批量数量栏始终可见，空选择禁用操作且勾选清空不移动列表', (tester) async {
+    final model = _AdjustmentModel(desktop: false);
+    await open(tester, model, width: 390);
+    Finder bulk(String title) => find.byWidgetPredicate(
+      (widget) => widget is StewardButton && widget.text == title,
+    );
+    final field = find.byWidgetPredicate(
+      (widget) => widget is StewardField && widget.title == '目标数量 0–9999',
+    );
+    expect(field, findsOneWidget);
+    expect(find.text('已选 0 项'), findsOneWidget);
+    expect(tester.widget<StewardButton>(bulk('设置已选 0 项')).onPressed, isNull);
+    expect(tester.widget<StewardButton>(bulk('清除选择')).onPressed, isNull);
+    final initialHeader = tester.getRect(
+      find.byKey(const ValueKey('inventory-select-all')),
+    );
+    final initialField = tester.getRect(field);
+    await tap(tester, checkbox(1));
+    expect(tester.widget<StewardButton>(bulk('设置已选 1 项')).onPressed, isNotNull);
+    expect(tester.getRect(field), initialField);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('inventory-select-all'))),
+      initialHeader,
+    );
+    await tap(tester, bulk('清除选择'));
+    expect(find.text('已选 0 项'), findsOneWidget);
+    expect(tester.getRect(field), initialField);
+    expect(
+      tester.getRect(find.byKey(const ValueKey('inventory-select-all'))),
+      initialHeader,
+    );
+    expect(model.writes, isEmpty);
+    expect(tester.takeException(), isNull);
+  });
 }

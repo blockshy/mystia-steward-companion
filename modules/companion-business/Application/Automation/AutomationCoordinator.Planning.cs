@@ -97,7 +97,13 @@ public sealed partial class AutomationCoordinator
             // 与原候选处理一致：新开锅不能用另一份宽松候选补齐当前主方案缺少的必要部分。
             if (targets.Recipe is null && needsRecipe || targets.Beverage is null && needsBeverage)
             {
-                AutomationMachine.Waiting(state, "match-order", "当前唯一主方案没有满足推荐与收藏限定的完整执行目标。", nowMs);
+                // 沿用原客户端“任务优先不能绕过仅用收藏”的规则。特殊成品没有可收藏配方，
+                // 必须说明配置冲突，不能长期只显示缺少普通推荐而让用户猜测。
+                var darkFavoriteConflict = needsRecipe && J.Bool(preferences["autoPrepRecipeFavoritesOnly"])
+                    && J.Str(J.Obj(J.Objects(item["executionPlans"]).FirstOrDefault()?["food"])["productKind"]) == "dark-cuisine";
+                AutomationMachine.Waiting(state, "match-order", darkFavoriteConflict
+                    ? "黑暗料理无法收藏；请关闭“仅用收藏料理”或手动完成此任务订单。"
+                    : "当前唯一主方案没有满足推荐与收藏限定的完整执行目标。", nowMs);
                 continue;
             }
             state["recipeTarget"] ??= J.Clone(targets.Recipe);
@@ -124,6 +130,9 @@ public sealed partial class AutomationCoordinator
             var cooking = (J.Bool(preferences["autoPrepStartCooking"]) || force) && !J.Bool(state["prepared"]) && !J.Bool(order["hasServedFood"]);
             var beverage = (J.Bool(preferences["autoPrepTakeBeverage"]) || force) && !J.Bool(state["beverageHandled"]) && !J.Bool(order["hasServedBeverage"]);
             var cookingError = CookingDeferral(order, recipeTarget);
+            // 稀客与普客都在物理预约之前核对基础材料及逐份加料。上一单消耗库存后，即使
+            // 推荐尚未替换目标，也只能等待或独立送酒，不能占住锅位后反复提交必然缺料的开锅。
+            if (cooking && cookingError.Length == 0) cookingError = RareIngredientDeferral(recipeTarget);
             if (recipeTarget is null || cookingError.Length > 0) cooking = false;
             if (beverageTarget is null) beverage = false;
             var completion = J.Bool(preferences["autoPrepCompleteOrder"]) || force;
@@ -131,7 +140,8 @@ public sealed partial class AutomationCoordinator
             if ((beverage || collection) && !completion) { AutomationMachine.Waiting(state, "match-order", "自动送达必须同时启用自动完成订单。", nowMs); continue; }
             var preflight = completion && (J.Bool(state["prepared"]) || activeJob is not null || J.Bool(order["hasServedFood"]));
             JsonObject? slot = null;
-            if (cooking)
+            // 保温箱供给由主线程按精确成品事务提交，不占用物理厨具；普通生产仍须预约槽位。
+            if (cooking && J.Str(recipeTarget?["foodSupplySource"]) != "stored")
             {
                 slot = Reserve(pool, J.Str(recipeTarget?["cookerName"]), normalDemand);
                 if (slot is null) cooking = false;
@@ -194,13 +204,40 @@ public sealed partial class AutomationCoordinator
         {
             if (continuation.Scope != _scopeVersion || !_currentOrderKeys.Contains(continuation.StateKey) || !_states.TryGetValue(continuation.StateKey, out var state)
                 || !_orders.TryGetValue(continuation.StateKey, out var order) || !CanPlan(continuation.StateKey, state, nowMs)) continue;
+            // 预检回执只允许继续检查，不能把上一帧的参与许可带到当前帧。读取不完整不会
+            // 改变 automationEpoch，因此续接也必须重新校验完整投影以及同一精确订单身份。
+            // 暂不可参与时保留续接和既有阶段事实，不消耗失败/回退预算；while 的初始计数
+            // 保证重入队只会在后续 Advance 再检查，不在当前帧忙循环或重放请求。
+            if (J.Str(state["kind"]) == "rare"
+                && (!Domain.Orders.RareOrderParticipationProjection.TryReadPositions(_input.Snapshot, _input.Preferences, out var positions)
+                    || positions != null && (!Domain.Orders.RareOrderParticipationProjection.TryIdentityKey(order, out var identity)
+                        || !positions.ContainsKey(identity))))
+            {
+                _continuations.Enqueue(continuation);
+                AutomationMachine.Detail(state, "稀客参与状态尚未完整确认或此订单已暂停，保留当前进度等待恢复。", nowMs);
+                continue;
+            }
             var policy = SpecialBusinessRules.BuildWirePolicy(_input.Snapshot["specialBusiness"], J.Str(order["specialBusinessRole"]), _businessGeneration);
             var payload = J.Obj(J.Clone(continuation.Payload));
             if (J.Str(payload["specialTargetSignature"]) != J.Str(policy["specialTargetSignature"])
                 || J.Num(payload["specialTargetRevision"]) != J.Num(policy["specialTargetRevision"])) continue;
             payload["autoTakeBeverage"] = J.Bool(payload["autoTakeBeverage"]) && !J.Bool(state["beverageHandled"]) && !J.Bool(order["hasServedBeverage"]);
             payload["autoStartCooking"] = J.Bool(payload["autoStartCooking"]) && !J.Bool(state["prepared"]) && !J.Bool(order["hasServedFood"]);
-            if (J.Bool(payload["autoStartCooking"]))
+            if (J.Bool(payload["autoStartCooking"]) && J.Str(state["kind"]) == "rare")
+            {
+                // 预检与实际准备之间库存仍可能改变。续接只验证原精确目标，不以旧预约作为
+                // 材料许可；不满足时让下一次 PlanRare 采用新主方案，不重放旧配方。
+                var target = state["recipeTarget"] as JsonObject;
+                var ingredientError = target is null || !SameRecipe(target, payload)
+                    || !J.Numbers(target["extraIngredientIds"]).SequenceEqual(J.Numbers(payload["extraIngredientIds"]))
+                    ? "料理目标已更新，等待当前主方案重新预约。" : RareIngredientDeferral(target);
+                if (ingredientError.Length > 0)
+                {
+                    payload["autoStartCooking"] = false;
+                    AutomationMachine.Waiting(state, "ensure-cooking", ingredientError, nowMs);
+                }
+            }
+            if (J.Bool(payload["autoStartCooking"]) && J.Str(payload["foodSupplySource"]) != "stored")
             {
                 var runtime = _input.Snapshot["recommendationState"];
                 var pool = Cookers.BuildAutomationCookerPool(runtime);
@@ -289,6 +326,12 @@ public sealed partial class AutomationCoordinator
         var rotated = AutomationMachine.ReconcileTarget(state, signature, revision, nowMs);
         if (J.Str(targetRule["enforcement"]) != "require" || J.Arr(targetRule["tags"]).Count == 0)
         {
+            // 目标只有开锅/送达后才锁定。等待厨具时保存的普通料理也必须随当前唯一主方案
+            // 更新，否则旧加料耗尽后会无限重试，而页面和高亮已经展示另一份足料方案。
+            // 这不是制作失败回滚：未提交目标的替换不消耗失败或回退预算，也不重置已送酒事实。
+            // 已有锅次、送达、完结或人工屏障仍保留原目标，不因推荐刷新重复制作。
+            if (CanRefreshUnstartedRareTarget(state, order))
+                state["recipeTarget"] = J.Clone(recommended);
             if (state["recipeTarget"] is JsonObject ordinary) CopyPolicy(ordinary, SpecialBusinessRules.EmptyWirePolicy());
             state["recipeTargetSignature"] = ""; state["recipeTargetRevision"] = 0;
             return "";
@@ -330,6 +373,21 @@ public sealed partial class AutomationCoordinator
         return "当前特殊经营目标没有可执行且未被实际拒绝的料理方案。";
     }
 
+    /// <summary>
+    /// 只有明确尚未开锅才可跟随新主方案。丢失命令回执、料理任务集合未知、同一精确订单
+    /// 存在任务（包括重复而无法唯一对账的任务）都不能由“未读到 jobId”反推没有副作用。
+    /// 保留旧目标不改变既有原生对账/重试语义，也不自动解除任何人工确认或失败暂停。
+    /// </summary>
+    private bool CanRefreshUnstartedRareTarget(JsonObject state, JsonObject order)
+        => !J.Bool(state["prepared"]) && !J.Bool(state["foodDelivered"]) && !J.Bool(state["completed"])
+            && !J.Bool(state["manualResolutionRequired"]) && !J.Bool(order["hasServedFood"])
+            && J.Str(state["cookingJobId"]).Length == 0
+            && !_resetUncertainOrders.Contains(StateKey("rare", J.Str(state["orderKey"])))
+            && _input.Snapshot["automationCookingJobs"] is JsonArray
+            && !J.Objects(_input.Snapshot["automationCookingJobs"]).Any(job => J.Str(job["targetKind"]) == "rare"
+                && J.Num(job["orderLifecycleSequence"], -1) == J.Num(order["orderLifecycleSequence"], -2)
+                && J.Str(job["traceId"]) == J.Str(order["traceId"]));
+
     private bool IsRejected(JsonObject target, JsonNode? tags) => J.Str(J.Obj(_input.Snapshot["specialBusiness"])["challengeType"]) == SpecialBusinessRules.WackyChallenge
         && _rejectedRecipes.Contains(SpecialBusinessRules.RejectedRecipeKey(tags, J.Num(target["foodId"], -1), J.Num(target["recipeId"], -1), J.Numbers(target["extraIngredientIds"])), StringComparer.Ordinal);
 
@@ -355,6 +413,9 @@ public sealed partial class AutomationCoordinator
         var food = plan["food"] as JsonObject;
         var beverageCandidate = plan["beverage"] as JsonObject;
         var recipe = food is null ? null : J.Obj(food["recipe"]);
+        if (J.Str(food?["supplySource"]) == "stored"
+            && (!J.Bool(preferences["autoPrepCollectCooking"]) || !J.Bool(preferences["autoPrepCompleteOrder"])))
+            return (null, null);
         var drink = beverageCandidate is null ? null : J.Obj(beverageCandidate["beverage"]);
         var extras = food is null ? Array.Empty<double>() : J.Objects(food["extraIngredients"]).Select(x => J.Num(x["id"])).ToArray();
         var order = J.Obj(item["order"]);
@@ -369,7 +430,9 @@ public sealed partial class AutomationCoordinator
             || needBeverage && (drink is null || J.Bool(preferences["autoPrepBeverageFavoritesOnly"]) && !beverageFavorite)) return (null, null);
         var target = needRecipe && recipe is not null ? J.Object(("recipeId", recipe["recipeId"]), ("foodId", recipe["id"]),
             ("recipeName", recipe["name"]), ("cookerName", recipe["cooker"]), ("extraIngredientIds", J.Array(extras)),
-            ("foodTags", food!["activeTags"]), ("favorite", recipeFavorite), ("preferenceFallback", !J.Bool(food["meetsRequiredFood"]))) : null;
+            ("foodTags", food!["activeTags"]), ("foodProductionKind", food["productKind"]), ("foodSupplySource", food["supplySource"]),
+            ("productionFoodId", J.Obj(food["productionRecipe"])["id"]),
+            ("favorite", recipeFavorite), ("preferenceFallback", !J.Bool(food["meetsRequiredFood"]))) : null;
         if (target is not null) CopyPolicy(target, SpecialBusinessRules.EmptyWirePolicy());
         return (target, needBeverage && drink is not null ? J.Object(("beverageId", drink["id"]), ("beverageName", drink["name"]), ("favorite", beverageFavorite)) : null);
     }
@@ -381,8 +444,7 @@ public sealed partial class AutomationCoordinator
             && _states.TryGetValue(pair.Key, out var state) && J.Str(state["kind"]) == kind).Select(pair => pair.Value);
         var sorted = kind == "normal"
             ? Domain.Orders.OrderIdentityAndSorting.SortNormalForExecution(orders)
-            : Domain.Orders.OrderIdentityAndSorting.SortRareForExecution(orders,
-                _input.Snapshot["specialBusiness"]);
+            : Domain.Orders.RareOrderParticipationProjection.SortForExecution(orders, _input.Snapshot, _input.Preferences);
         return sorted.Select(order => new KeyValuePair<string, JsonObject>(StateKey(kind, OrderKey(kind, order)), order));
     }
 

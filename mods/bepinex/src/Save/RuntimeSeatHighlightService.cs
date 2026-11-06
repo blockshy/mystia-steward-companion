@@ -132,9 +132,9 @@ internal static class RuntimeSeatHighlightService
                 }
                 active.Claims = claim.Claims;
 
-                if (!TryApplyPulseLocked(active, desired.Palette, now, out var pulseFailure))
+                if (!TryApplyColorLocked(active, desired.Palette, now, out var pulseFailure))
                 {
-                    TryLogFailureLocked(claim, "pulse", pulseFailure);
+                    TryLogFailureLocked(claim, "color", pulseFailure);
                     DestroyActiveVisualLocked(deskCode);
                     NextAttemptAt[deskCode] = now + RetryIntervalSeconds;
                     _status = $"unavailable: {NormalizeStatus(pulseFailure)}";
@@ -596,7 +596,7 @@ internal static class RuntimeSeatHighlightService
                 return false;
             }
             fillRenderer.sprite = fillSprite;
-            fillRenderer.color = RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+            fillRenderer.color = RuntimeTargetHighlightStyle.BuildSeatFillColor(
                 target.Claims,
                 targetSet.Palette,
                 Time.realtimeSinceStartup);
@@ -1185,7 +1185,7 @@ internal static class RuntimeSeatHighlightService
         return true;
     }
 
-    private static bool TryApplyPulseLocked(
+    private static bool TryApplyColorLocked(
         ActiveSeatVisual active,
         RuntimeTargetHighlightPalette palette,
         float realtimeSinceStartup,
@@ -1199,16 +1199,22 @@ internal static class RuntimeSeatHighlightService
 
         try
         {
-            active.FillRenderer.color = RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+            var color = RuntimeTargetHighlightStyle.BuildSeatFillColor(
                 active.Claims,
                 palette,
                 realtimeSinceStartup);
+            // 单声明桌位已取消呼吸；只有改色或共享桌位轮换到另一种颜色才写入渲染器。
+            if (!active.LastAppliedColor.HasValue || !active.LastAppliedColor.Value.Equals(color))
+            {
+                active.FillRenderer.color = color;
+                active.LastAppliedColor = color;
+            }
             failure = "";
             return true;
         }
         catch (Exception ex)
         {
-            failure = $"seat fill pulse failed: {NormalizeStatus(ex.GetBaseException().Message)}";
+            failure = $"seat fill color update failed: {NormalizeStatus(ex.GetBaseException().Message)}";
             return false;
         }
     }
@@ -1974,5 +1980,6 @@ internal static class RuntimeSeatHighlightService
         public bool FillFlipX { get; }
         public bool FillFlipY { get; }
         public float NextHealthCheckAt { get; set; }
+        public Color? LastAppliedColor { get; set; }
     }
 }

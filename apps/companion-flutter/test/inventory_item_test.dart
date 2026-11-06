@@ -8,7 +8,6 @@ import 'package:mystia_steward_companion/ui/inventory_item.dart';
 import 'package:mystia_steward_companion/ui/steward_theme.dart';
 
 import 'support/steward_test_fonts.dart';
-import 'support/text_geometry.dart';
 
 /// 使用实际正文中文字体和正式壳层剩余宽度检查库存项目，不把640px窗口直接当成
 /// 640px正文。项目只收合成显示数据，测试不会读真实库存、发HTTP或写游戏状态。
@@ -53,11 +52,6 @@ void main() {
     of: find.byKey(ValueKey(key)),
     matching: find.byType(FCheckbox),
   );
-  // pump结束后不直接查询仅允许布局/绘制阶段使用的RenderBox基线；共享工具
-  // 使用实际段落的字体、缩放和宽度进行只读测量，仍保持原0.1px对齐容差。
-  double baseline(WidgetTester tester, String text) =>
-      textBaseline(tester, find.text(text));
-
   for (final desktop in [true, false]) {
     for (final scale in [1.0, 1.5]) {
       for (final kind in [
@@ -124,10 +118,14 @@ void main() {
           final shortStock = tester.getRect(find.text('库存 0'));
           expect(name.right, lessThanOrEqualTo(stock.left));
           expect(stock.right, closeTo(shortStock.right, .1));
-          expect(
-            baseline(tester, '精选山珍蘑菇与竹笋'),
-            closeTo(baseline(tester, '库存 9999'), .1),
+          // 标签和长名称增高时，库存仍相对整条居中，不再被首行基线拖到上方。
+          final body = tester.getRect(
+            find.descendant(
+              of: find.byKey(const ValueKey('long')),
+              matching: find.byKey(const ValueKey('inventory-item-body')),
+            ),
           );
+          expect(stock.center.dy, closeTo(body.center.dy, .1));
           expect(
             tester.getSize(check('long')).height,
             greaterThanOrEqualTo(44),

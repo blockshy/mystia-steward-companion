@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <LangVersion>10.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <!-- 直接编译正式色带实现与目标模型；只替换 Unity/IL2CPP 引擎边界，不复制产品算法。 -->
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListColorBlocks.cs" Link="RuntimePinnedListColorBlocks.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListUiAccess.cs" Link="RuntimePinnedListUiAccess.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimePinnedListMeshAccess.cs" Link="RuntimePinnedListMeshAccess.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeBackgroundBandMesh.cs" Link="RuntimeBackgroundBandMesh.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeTargetHighlightStyle.cs" Link="RuntimeTargetHighlightStyle.cs" />
+    <Compile Include="../../mods/bepinex/src/Save/RuntimeUiTargetSet.cs" Link="RuntimeUiTargetSet.cs" />
+  </ItemGroup>
+</Project>

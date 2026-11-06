@@ -109,7 +109,7 @@ internal static class RuntimeUiPinningService
                 coreStatus = $"patches=checkPinnedPrefix:{_checkPinnedPatchStatus}, cookingScope:{_cookingScopePatchStatus}, beverageScope:{_beverageScopePatchStatus}, cookingPanel:{_cookingPanelPatchStatus}, storagePanel:{_storagePanelPatchStatus}; targetSet={DescribeTargetSet(targetSet)}; targetTransition={_lastTargetTransition}; authorityPanelFence={authorityFenceStatus}; orderSurfaces=hud:{(_hudOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")},throwDelivery:{(_throwDeliveryOrderHighlightTargetSynchronized ? "synchronized" : "retry-pending")}; panelRefresh=cooking:{DescribePanelLocked(_cookingPanel)}, storage:{DescribePanelLocked(_storagePanel)}, attempts:{_panelRefreshAttempts}, successes:{_panelRefreshSuccesses}, failures:{_panelRefreshFailures}, stale:{_panelRefreshStalePanels}, warningLogs:{_panelRefreshWarningLogs}/{MaxPanelRefreshWarningLogs}, lastError:{_lastPanelRefreshError}";
             }
 
-            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; order={RuntimeOrderHighlightService.Status}; throwDeliveryOrder={RuntimeThrowDeliverOrderHighlightService.Status}; recipeVariant={RuntimeTargetRecipeVariantService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
+            return $"{coreStatus}; highlight={RuntimeCookerHighlightService.Status}; seat={RuntimeSeatHighlightService.Status}; order={RuntimeOrderHighlightService.Status}; throwDeliveryOrder={RuntimeThrowDeliverOrderHighlightService.Status}; recipeVariant={RuntimeTargetRecipeVariantService.Status}; listHighlight={RuntimePinnedListHighlightService.Status}; listOrder={RuntimeUiListOrderService.Status}; forcedTotal=recipe:{Interlocked.Read(ref _recipeForces)}, ingredients:{Interlocked.Read(ref _ingredientForces)}, beverage:{Interlocked.Read(ref _beverageForces)}; scopeImbalance={Interlocked.Read(ref _scopeCleanupImbalances)}";
         }
     }
 
@@ -117,6 +117,7 @@ internal static class RuntimeUiPinningService
     {
         _log = log;
         RuntimeTargetRecipeVariantService.Attach(log);
+        RuntimeUiListOrderService.Attach(log);
         try
         {
             _harmony ??= new Harmony("com.tyukki.mystia-steward-companion.runtime-ui-pinning");
@@ -126,7 +127,7 @@ internal static class RuntimeUiPinningService
             PatchScopeMethods(
                 _harmony,
                 CookingSelectionPanelTypeName,
-                new[] { "UpdateAllVisual", "UpdateRecipeField" },
+                new[] { "UpdateAllVisual", "UpdateRecipeField", "UpdateIngField" },
                 RuntimeUiListSurfaceKind.Cooking,
                 0,
                 nameof(OnCookingRefreshStarted),
@@ -289,6 +290,45 @@ internal static class RuntimeUiPinningService
             return IsAuthorityFenceTargetLocked(current)
                 && ReferenceEquals(_authorityFencePresentationTarget, expectedTargetSet);
         }
+    }
+
+    /// <summary>
+    /// 为列表排序提供当前同步刷新栈的精确面板与目标。首次完整刷新内联执行食材分类，
+    /// 必须从作用域取得所属料理面板，不能从场景或对象名称猜测。调用方在读写列表前
+    /// 还须取得同经营代次的发布租约并再次核验本上下文，防止后台发布与同步回调竞争。
+    /// </summary>
+    internal static bool TryGetListOrderContext(RuntimeUiListSurfaceKind kind, object? expectedPanel,
+        out object panel, out RuntimeUiTargetSetSnapshot target)
+    {
+        panel = null!;
+        target = RuntimeUiTargetSetSnapshot.Disabled;
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (!lifecycle.IsActive || Environment.CurrentManagedThreadId != lifecycle.ThreadId) return false;
+        object? instance;
+        RuntimeUiTargetSetSnapshot? scoped;
+        if (kind == RuntimeUiListSurfaceKind.Cooking)
+        {
+            if (_cookingRefreshDepth <= 0 || _cookingScopeFailed) return false;
+            instance = _cookingScopeInstance;
+            scoped = _cookingScopeTarget;
+        }
+        else if (kind == RuntimeUiListSurfaceKind.Beverage)
+        {
+            if (_beverageRefreshDepth <= 0 || _beverageScopeFailed) return false;
+            instance = _beverageScopeInstance;
+            scoped = _beverageScopeTarget;
+        }
+        else return false;
+        if (instance == null || scoped == null || scoped.SessionGeneration != lifecycle.Generation
+            || !TryReadLivePanelPointer(instance, out var panelPointer)
+            || !IsSurfaceRefreshTargetCurrentOrDeferred(scoped)) return false;
+        // 同一原生面板在嵌套Hook中可能取得不同托管wrapper；以同型、非零原生指针确认身份。
+        if (expectedPanel != null && (expectedPanel.GetType() != instance.GetType()
+            || !TryReadLivePanelPointer(expectedPanel, out var expectedPointer)
+            || expectedPointer != panelPointer)) return false;
+        panel = instance;
+        target = scoped;
+        return true;
     }
 
     /// <summary>
@@ -462,6 +502,29 @@ internal static class RuntimeUiPinningService
         return current;
     }
 
+    /// <summary>
+    /// 调度暂停只撤回这一笔精确稀客订单的全部声明。代次、trace 和生命周期必须完全一致，
+    /// 不按桌号或客人名查找；guestId 已由调度命令的当前 capture CAS 核验。
+    /// </summary>
+    internal static void RemoveRareTargetIfMatches(long generation, string traceId, long lifecycle, int guestId, string reason)
+    {
+        List<TargetDiagnostic>? diagnostics = null;
+        try
+        {
+            lock (TargetPublicationRoot)
+            {
+                var current = Volatile.Read(ref _targetSet);
+                if (guestId < 0 || current.SessionGeneration != generation) return;
+                var retained = current.Targets.Where(target => target.Kind != RuntimeUiTargetKind.Rare
+                    || target.OrderTraceId != traceId || target.OrderLifecycleSequence != lifecycle).ToArray();
+                if (retained.Length == current.Targets.Count) return;
+                PublishTargets(generation, retained, ref diagnostics);
+                AddTargetDiagnostic(ref diagnostics, false, $"稀客调度撤回高亮：{traceId}/{lifecycle}；{reason}");
+            }
+        }
+        finally { WriteTargetDiagnostics(diagnostics); }
+    }
+
     public static void Abandon(string reason)
     {
         lock (SyncRoot)
@@ -571,7 +634,7 @@ internal static class RuntimeUiPinningService
         IReadOnlyList<RuntimeUiTargetSnapshot> targets,
         ref List<TargetDiagnostic>? diagnostics)
     {
-        var orderedTargets = targets.OrderBy(target => target.Kind).ToArray();
+        var orderedTargets = targets.OrderBy(target => target.ColorSlot).ToArray();
         var current = Volatile.Read(ref _targetSet);
         var completesAuthorityFence = IsAuthorityFenceTargetLocked(current);
         var targetMatches = !completesAuthorityFence

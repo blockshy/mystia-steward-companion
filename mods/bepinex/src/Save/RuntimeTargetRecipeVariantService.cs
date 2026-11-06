@@ -324,7 +324,10 @@ internal static class RuntimeTargetRecipeVariantService
     {
         ArgumentNullException.ThrowIfNull(targetSet);
         var plans = new List<TargetRecipeVariantPlan>();
-        foreach (var target in targetSet.Targets.OrderBy(target => target.Kind))
+        // 同一基础料理的加料方案也按实际点单先后出现，不能由客人种类或可复用色槽决定。
+        // 生命周期来自普客/稀客共用计数器；并列时用槽号保证离线夹具的确定顺序。
+        foreach (var target in targetSet.Targets.OrderBy(target => target.OrderLifecycleSequence)
+            .ThenBy(target => target.ColorSlot))
         {
             if (!target.ListPinningEnabled
                 || !target.RecipeVariantEnabled
@@ -343,13 +346,13 @@ internal static class RuntimeTargetRecipeVariantService
                     target.RecipeId,
                     target.IngredientIds,
                     target.ExtraIngredientIds,
-                    target.Kind,
+                    target.Claim,
                     target.TargetRevision));
             }
             else
             {
                 existing.AddClaim(
-                    target.Kind,
+                    target.Claim,
                     target.TargetRevision,
                     target.IngredientIds);
             }
@@ -1002,7 +1005,8 @@ internal static class RuntimeTargetRecipeVariantService
                     transferredSelectionIntent,
                     transferredSwitchAttempt,
                     mutationUncertain,
-                    mutationUncertainReason);
+                    mutationUncertainReason,
+                    complete);
                 if (complete)
                 {
                     _injectedRows += pendingInsertions.Count;
@@ -2777,6 +2781,62 @@ internal static class RuntimeTargetRecipeVariantService
             _lastResult = reason;
         }
         return false;
+    }
+
+    /// <summary>
+    /// 在原生列表绑定按钮之前，为排序读取确切料理行的声明。调用方须持有当前发布租约并在
+    /// 主线程一次性核验列表类型、身份及全部行的指针/ID/唯一成员关系；此处不逐行重读整表，
+    /// 避免将一次列表排序放大为平方级原生调用，也不建立按钮租约或改变加料事务。
+    /// </summary>
+    internal static bool TryGetRecipeListOrderClaims(
+        object panel,
+        object recipeList,
+        RuntimeUiTargetSetSnapshot target,
+        nint recipePointer,
+        int recipeId,
+        out RuntimeUiTargetKinds claims)
+    {
+        claims = RuntimeUiTargetKinds.None;
+        var panelPointer = TryGetNativePointer(panel);
+        var listPointer = TryGetNativePointer(recipeList);
+        var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
+        if (panelPointer == 0 || listPointer == 0 || recipePointer == 0 || recipeId < 0
+            || !lifecycle.IsActive || target.Generation <= 0 || target.SessionGeneration != lifecycle.Generation
+            || !RuntimeUiPinningService.IsSurfaceRefreshTargetCurrentOrDeferred(target)) return false;
+
+        lock (StateRoot)
+        {
+            if (!Panels.TryGetValue(panelPointer, out var state))
+            {
+                // 未安装变体或尚未登记页面时，只有明确不含变体的发布才能按已验证的原生行排序。
+                // 不能把缺失的变体映射当成普通同ID料理，否则会把不同加料方案错误合并。
+                if (target.Targets.Any(item => item.ListPinningEnabled && item.RecipeVariantEnabled
+                    && item.RecipeId >= 0 && item.ExtraIngredientIds.Count > 0)) return false;
+                claims = target.GetBaseRecipeClaims(recipeId);
+                return true;
+            }
+            if (state.Retired || state.PanelEpoch <= 0 || state.PanelPointer != panelPointer
+                || state.RecipeListPointer != listPointer || state.BusinessGeneration != lifecycle.Generation
+                || !ReferenceEquals(state.TargetSet, target) || !state.SurfaceComplete || state.MutationUncertain
+                || state.ControlledRecipes.Values.Any(owner => !owner.Complete)) return false;
+
+            if (TryFindSyntheticPlanLocked(state, recipePointer, out var syntheticOwner, out var plan))
+            {
+                if (syntheticOwner.RecipeId != recipeId || plan.RecipeId != recipeId) return false;
+                claims = plan.Claims;
+                return true;
+            }
+            if (TryFindAuthoritativeRecipeLocked(state, recipePointer, out var baseOwner))
+            {
+                if (baseOwner.RecipeId != recipeId) return false;
+                claims = baseOwner.BaseClaims;
+                return true;
+            }
+            // 同ID但非登记指针不能冒充权威基础行或合成行；其余已证实原生行保留自己的基础声明。
+            if (state.ControlledRecipes.ContainsKey(recipeId)) return false;
+            claims = target.GetBaseRecipeClaims(recipeId);
+            return true;
+        }
     }
 
     internal static bool TryResolveRecipeRowClaims(
@@ -7918,7 +7978,8 @@ internal static class RuntimeTargetRecipeVariantService
             RecipeSelectionIntent? selectionIntent,
             RecipeSwitchAttempt? switchAttempt,
             bool mutationUncertain,
-            string mutationUncertainReason)
+            string mutationUncertainReason,
+            bool surfaceComplete)
         {
             PanelPointer = panelPointer;
             PanelEpoch = panelEpoch;
@@ -7931,6 +7992,7 @@ internal static class RuntimeTargetRecipeVariantService
             SwitchAttempt = switchAttempt;
             MutationUncertain = mutationUncertain;
             MutationUncertainReason = mutationUncertainReason;
+            SurfaceComplete = surfaceComplete;
         }
 
         public nint PanelPointer { get; }
@@ -7945,6 +8007,8 @@ internal static class RuntimeTargetRecipeVariantService
         public bool MutationUncertain { get; set; }
         public string MutationUncertainReason { get; set; }
         public bool Retired { get; set; }
+        // 空controlled集合也可能来自创建前的失败；独立记录整次注入验收，不能用All(Complete)猜成功。
+        public bool SurfaceComplete { get; }
     }
 
     private sealed class ButtonBinding
@@ -8586,14 +8650,14 @@ internal sealed class TargetRecipeVariantPlan
         int recipeId,
         IReadOnlyList<int> expectedIngredientIds,
         IReadOnlyList<int> extraIngredientIds,
-        RuntimeUiTargetKind kind,
+        RuntimeUiTargetKinds claims,
         string targetRevision)
     {
         RecipeId = recipeId;
         ExpectedIngredientIds = Array.AsReadOnly(expectedIngredientIds.ToArray());
         BaseIngredientIds = Array.Empty<int>();
         ExtraIngredientIds = Array.AsReadOnly(extraIngredientIds.ToArray());
-        AddClaim(kind, targetRevision);
+        AddClaim(claims, targetRevision);
     }
 
     private TargetRecipeVariantPlan(
@@ -8620,16 +8684,14 @@ internal sealed class TargetRecipeVariantPlan
     public string RevisionFingerprint => BuildFingerprint(_targetRevisions);
     public string Identity => $"variant:{RecipeId}:{string.Join(",", ExtraIngredientIds)}:{RevisionFingerprint}";
 
-    public void AddClaim(RuntimeUiTargetKind kind, string targetRevision)
+    public void AddClaim(RuntimeUiTargetKinds claims, string targetRevision)
     {
-        Claims |= kind == RuntimeUiTargetKind.Rare
-            ? RuntimeUiTargetKinds.Rare
-            : RuntimeUiTargetKinds.Normal;
+        Claims |= claims;
         _targetRevisions.Add(targetRevision);
     }
 
     public void AddClaim(
-        RuntimeUiTargetKind kind,
+        RuntimeUiTargetKinds claims,
         string targetRevision,
         IReadOnlyList<int> expectedIngredientIds)
     {
@@ -8638,7 +8700,7 @@ internal sealed class TargetRecipeVariantPlan
             throw new InvalidOperationException(
                 $"merged targets for recipe {RecipeId} disagree on the ingredient set");
         }
-        AddClaim(kind, targetRevision);
+        AddClaim(claims, targetRevision);
     }
 
     public TargetRecipeVariantPlan WithBaseIngredients(

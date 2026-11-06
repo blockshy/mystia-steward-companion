@@ -150,7 +150,8 @@ internal sealed partial class LocalApiServer : IDisposable
         CompanionDeviceAuthorityStore deviceAuthorityStore,
         ManualLogSource log,
         GameMediaService? gameMediaService = null,
-        DiagnosticPackageStore? diagnosticPackages = null)
+        DiagnosticPackageStore? diagnosticPackages = null,
+        MystiaStewardCompanion.Ui.GameFocusOverlayStore? focusOverlayStore = null)
     {
         BindAddress = IPAddress.Loopback;
         Port = Math.Clamp(port, 1024, 65535);
@@ -168,6 +169,7 @@ internal sealed partial class LocalApiServer : IDisposable
         _getConnectionConfig = getConnectionConfig;
         _updateConnectionConfig = updateConnectionConfig;
         _diagnosticPackages = diagnosticPackages;
+        if (focusOverlayStore != null) _focusOverlayStore = focusOverlayStore;
         _openLogFolder = openLogFolder;
         _editInventory = editInventory;
         _editInventoryBulk = editInventoryBulk;
@@ -194,6 +196,7 @@ internal sealed partial class LocalApiServer : IDisposable
         }
         RuntimeAutomationControlState.ConfigureResourceReadiness(_gameMediaReady);
         RuntimeAutomationControlState.Reset("正在等待主设备连接并完成自动化配置同步。");
+        RuntimeRareGuestParticipationState.Reset();
     }
 
     public IPAddress BindAddress { get; }
@@ -610,6 +613,9 @@ internal sealed partial class LocalApiServer : IDisposable
                     case "/game-media/reload":
                         WriteResponse(stream, 200, "OK", ToJson(new { ok = true, status = RequireGameMediaService().RequestReload() }));
                         break;
+                    case "/ui/focus-overlay":
+                        WriteResponse(stream, 200, "OK", ToJson(UpdateFocusOverlay(requestData)));
+                        break;
                     case "/business/page-session/open":
                         WriteResponse(stream, 200, "OK", OpenBusinessPageSession(request, requestData));
                         break;
@@ -713,8 +719,8 @@ internal sealed partial class LocalApiServer : IDisposable
                     case "/inventory/bulk-set":
                         WriteResponse(stream, 200, "OK", BuildInventoryBulkEditJson(query, manualWrite!));
                         break;
-                    case "/orders/rare/dismiss":
-                        WriteResponse(stream, 200, "OK", BuildRareOrderDismissJson(query));
+                    case "/orders/rare/participation":
+                        WriteResponse(stream, 200, "OK", ToJson(UpdateRareGuestParticipation(request, requestData)));
                         break;
                     case "/rare-guests/invite-all":
                         WriteResponse(
@@ -825,6 +831,9 @@ internal sealed partial class LocalApiServer : IDisposable
                     break;
                 case "/logs/settings":
                     WriteResponse(stream, 200, "OK", BuildLogSettingsJson());
+                    break;
+                case "/ui/focus-overlay":
+                    WriteResponse(stream, 200, "OK", ToJson(_focusOverlayStore.Snapshot));
                     break;
                 case "/logs/packages":
                     WriteResponse(stream, 200, "OK", ListDiagnosticPackagesJson());
@@ -1107,6 +1116,8 @@ internal sealed partial class LocalApiServer : IDisposable
                 state.AuthorityRevision,
                 "automation-authority-unavailable",
                 "主设备已注册，正在同步自动化运行状态；已开始的料理保持暂停。");
+            RuntimeRareGuestParticipationState.ApplyManagedGuestIdsFromAuthority(
+                RuntimeAutomationControlState.SnapshotManagedRareGuestIds(), resetManagedParticipation: false);
             return state;
         }
     }
@@ -1231,6 +1242,9 @@ internal sealed partial class LocalApiServer : IDisposable
                 _log.LogWarning($"Companion authority transition could not advance queued automation commands cleanly: {ex.GetBaseException().Message}");
             }
         }
+        RuntimeRareGuestParticipationState.ApplyManagedGuestIdsFromAuthority(
+            RuntimeAutomationControlState.SnapshotManagedRareGuestIds(),
+            resetManagedParticipation: reasonCode == "automation-primary-device-changing");
         RuntimeUiPinningService.ClearTargetsForAuthorityTransition(
             RuntimeNightBusinessLifecycle.Generation,
             logReason);
@@ -1552,9 +1566,9 @@ internal sealed partial class LocalApiServer : IDisposable
     private static bool RequiresPrimaryManualWrite(string path) => path is
         "/favorites/add-recipe" or "/favorites/remove-recipe" or "/favorites/add-beverage" or "/favorites/remove-beverage"
         or "/custom-recipes/upsert" or "/custom-recipes/remove" or "/custom-recipes/settings" or "/custom-recipes/update-flags" or "/custom-recipes/move"
-        or "/inventory/set" or "/inventory/bulk-set" or "/rare-guests/invite" or "/rare-guests/invite-all" or "/orders/rare/dismiss"
+        or "/inventory/set" or "/inventory/bulk-set" or "/rare-guests/invite" or "/rare-guests/invite-all" or "/orders/rare/participation"
         or "/logs/config" or "/logs/console" or "/logs/open-folder" or "/logs/export-diagnostics" or "/logs/packages/delete" or "/diagnostics/automation-decision"
-        or "/local-api/config" or "/updates/download" or "/updates/install-on-exit" or "/game-media/reload";
+        or "/local-api/config" or "/updates/download" or "/updates/install-on-exit" or "/game-media/reload" or "/ui/focus-overlay";
 
     private static bool IsQueuedManualWrite(string path) => path is
         "/inventory/set" or "/inventory/bulk-set" or "/rare-guests/invite" or "/rare-guests/invite-all";
@@ -1989,6 +2003,9 @@ internal sealed partial class LocalApiServer : IDisposable
                 FoodId = ReadIntQuery(query, "foodId", -1),
                 RecipeId = ReadIntQuery(query, "recipeId", -1),
                 RecipeName = ReadStringQuery(query, "recipeName"),
+                FoodProductionKind = ReadStringQuery(query, "foodProductionKind"),
+                FoodSupplySource = ReadStringQuery(query, "foodSupplySource"),
+                MissionGeneration = ReadLongQuery(query, "missionGeneration", 0),
                 ExtraIngredientIds = ReadIntListQuery(query, "extraIngredientIds"),
                 PredictedFoodTags = ReadStringListQuery(query, "predictedFoodTags"),
                 PredictedFoodTagsProvided = HasQueryParameter(query, "predictedFoodTags"),
@@ -2055,26 +2072,6 @@ internal sealed partial class LocalApiServer : IDisposable
         }
     }
 
-    private static string BuildRareOrderDismissJson(string query)
-    {
-        try
-        {
-            var removed = SpecialOrderRuntimeCapture.DismissOrder(
-                ReadIntQuery(query, "deskCode", -1),
-                ReadNullableIntQuery(query, "runtimeGuestId"),
-                ReadNullableIntQuery(query, "foodTagId"),
-                ReadNullableIntQuery(query, "beverageTagId"));
-            var status = removed > 0
-                ? $"已删除 {removed} 条稀客订单缓存。"
-                : "未找到匹配的稀客订单缓存。";
-            return ToJson(new LocalApiRareOrderDismissDto { Ok = true, Removed = removed, Status = status, Error = null });
-        }
-        catch (Exception ex)
-        {
-            return ToJson(new LocalApiRareOrderDismissDto { Ok = false, Removed = 0, Status = "", Error = ex.Message });
-        }
-    }
-
     private string UpdateUiPinningTargetsJson(string request, string query)
     {
         try
@@ -2095,10 +2092,10 @@ internal sealed partial class LocalApiServer : IDisposable
                     });
                 }
                 if (!HasQueryParameter(query, "targetCount")
-                    || ReadStringQuery(query, "targetCount") is not ("0" or "1" or "2")
+                    || ReadStringQuery(query, "targetCount") is not ("0" or "1" or "2" or "3" or "4" or "5" or "6" or "7" or "8")
                     || !int.TryParse(ReadStringQuery(query, "targetCount"), out var targetCount))
                 {
-                    throw new FormatException("targetCount must be exactly 0, 1, or 2.");
+                    throw new FormatException("targetCount 必须为 0 至 8 的整数。");
                 }
 
                 var targets = new List<RuntimeUiTargetSnapshot>(targetCount);

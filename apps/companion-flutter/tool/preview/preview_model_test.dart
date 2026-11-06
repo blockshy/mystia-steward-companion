@@ -1,3 +1,14 @@
+import 'dart:convert';
+
+import 'package:companion_protocol/companion_protocol.dart';
+import 'package:flutter/widgets.dart';
+import 'package:forui/forui.dart';
+import 'package:material_ui/material_ui.dart' as material;
+import 'package:mystia_steward_companion/features/rare_guest_scheduling.dart';
+import 'package:mystia_steward_companion/features/service_menu_adapter.dart';
+import 'package:mystia_steward_companion/features/service_order_highlight.dart';
+import 'package:mystia_steward_companion/ui/menu_item_content.dart';
+import 'package:mystia_steward_companion/ui/steward_theme.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mystia_steward_companion/app/workbench_model.dart';
 
@@ -9,6 +20,301 @@ void main() {
   // 三态主题会读取 Flutter 的系统亮度端口；建立测试绑定即可，不初始化原生平台、
   // 生产会话或持久化。显式主题与旧布尔迁移仍由下方原有断言验证。
   TestWidgetsFlutterBinding.ensureInitialized();
+  DataMap participationRequest(
+    RichPreviewWorkbenchModel model,
+    String action, {
+    bool group = false,
+    String trace = 'R-1001',
+  }) {
+    final state = object(model.snapshot['rareGuestParticipation']);
+    final entries = records(state['entries']);
+    DataMap identity(DataMap entry) => {
+      'businessGeneration': state['businessGeneration'],
+      'traceId': entry['traceId'],
+      'orderLifecycleSequence': entry['orderLifecycleSequence'],
+      'guestId': entry['guestId'],
+    };
+    return {
+      'expectedAuthorityRevision': model.authority['authorityRevision'],
+      'expectedBusinessGeneration': state['businessGeneration'],
+      'expectedParticipationRevision': state['participationRevision'],
+      'action': action,
+      'target': group
+          ? {
+              'type': 'guest',
+              'guestId': 301,
+              'expectedCurrentOrders': [
+                for (final entry in entries.where(
+                  (row) => row['guestId'] == 301,
+                ))
+                  identity(entry),
+              ],
+            }
+          : {
+              'type': 'order',
+              'order': identity(
+                entries.singleWhere((row) => row['traceId'] == trace),
+              ),
+            },
+    };
+  }
+
+  List<Object?> queue(RichPreviewWorkbenchModel model) => records(
+    object(model.snapshot['rareGuestParticipation'])['displayOrderKeys'],
+  ).map((row) => row['traceId']).toList();
+
+  test('综合迁移预览使用当前配置与八笔精确身份，并复用两种特殊产物展示模型', () {
+    final model = RichPreviewWorkbenchModel(desktop: false)
+      ..selectScenario('migration-features');
+    addTearDown(model.dispose);
+    expect(() => CompanionProfile(model.profile), returnsNormally);
+    expect(
+      model.authority['profileSchemaVersion'],
+      CompanionProfile.schemaVersion,
+    );
+    expect(model.night['ordersReadComplete'], isTrue);
+    expect(
+      object(model.snapshot['normalBusiness'])['ordersReadComplete'],
+      isTrue,
+    );
+    final rare = records(model.night['orders']);
+    final normal = records(object(model.snapshot['normalBusiness'])['orders']);
+    expect(rare, hasLength(4));
+    expect(normal, hasLength(4));
+    for (final row in rare) {
+      expect(row['traceId'], matches(r'^R-\d+$'));
+      expect(row['orderLifecycleSequence'], greaterThan(0));
+    }
+    for (final row in normal) {
+      expect(row['traceId'], matches(r'^N-\d+$'));
+      expect(row['orderKey'], matches(r'^ptr:[0-9a-f]+$'));
+    }
+    expect(queue(model), ['R-1004', 'R-1003']);
+    expect(records(model.serviceOrders['recommendations']), hasLength(2));
+    final colors = records(
+      object(model.business['gameUiTargets'])['orderColors'],
+    );
+    expect(colors, hasLength(4));
+    // 两类默认各两色，最多三组；暂停订单与超出辅助数量的订单不占声明槽位。
+    expect(colors.map((row) => row['color']).toSet(), hasLength(4));
+    expect(colors.map((row) => row['colorSlot']).toSet(), {0, 1, 4, 5});
+    expect(
+      colors.where((row) => row['kind'] == 'rare').map((row) => row['traceId']),
+      ['R-1004', 'R-1003'],
+    );
+    final plans = records(model.recommendations['recommendations']);
+    final stored = serviceFoodView(
+      model,
+      object(records(plans[2]['executionPlans']).single['food']),
+    );
+    final cooked = serviceFoodView(
+      model,
+      object(records(plans[3]['executionPlans']).single['food']),
+    );
+    expect(stored.preparedSupply, isTrue);
+    expect(stored.productionRecipeName, isNull);
+    expect(stored.ingredients, isEmpty);
+    expect(stored.extras, isEmpty);
+    expect(cooked.preparedSupply, isFalse);
+    expect(cooked.productionRecipeName, '海鲜味噌汤');
+    expect(cooked.productionRecipeId, 101);
+    expect(cooked.extras!.single.name, '猪肉');
+  });
+
+  test('综合预览单笔整组CAS、暂停排尾优先和旧修订拒绝均只改变合成内存', () async {
+    final model = RichPreviewWorkbenchModel()
+      ..selectScenario('migration-features');
+    addTearDown(model.dispose);
+    final stale = participationRequest(model, 'pause');
+    await model.mutate(
+      '/orders/rare/participation',
+      body: participationRequest(model, 'enable-tail'),
+    );
+    expect(queue(model), ['R-1004', 'R-1003', 'R-1001']);
+    final revision = object(
+      model.snapshot['rareGuestParticipation'],
+    )['participationRevision'];
+    await model.mutate(
+      '/orders/rare/participation',
+      body: participationRequest(model, 'enable-tail'),
+    );
+    expect(
+      object(model.snapshot['rareGuestParticipation'])['participationRevision'],
+      revision,
+    );
+    await model.mutate(
+      '/orders/rare/participation',
+      body: participationRequest(model, 'pause', group: true),
+    );
+    expect(queue(model), ['R-1004', 'R-1003']);
+    await model.mutate(
+      '/orders/rare/participation',
+      body: participationRequest(model, 'enable-front', group: true),
+    );
+    expect(queue(model), ['R-1004', 'R-1001', 'R-1002', 'R-1003']);
+    final colors = jsonEncode(
+      object(model.business['gameUiTargets'])['orderColors'],
+    );
+    final before = jsonEncode(model.snapshot);
+    await model.mutate('/orders/rare/participation', body: stale);
+    expect(model.error, contains('已变化'));
+    expect(jsonEncode(model.snapshot), before);
+    final incomplete = participationRequest(model, 'pause', group: true);
+    object(incomplete['target'])['expectedCurrentOrders'] = records(
+      object(incomplete['target'])['expectedCurrentOrders'],
+    ).take(1).toList();
+    await model.mutate('/orders/rare/participation', body: incomplete);
+    expect(model.error, contains('已变化'));
+    expect(jsonEncode(model.snapshot), before);
+    expect(
+      jsonEncode(object(model.business['gameUiTargets'])['orderColors']),
+      colors,
+    );
+    expect(records(model.serviceOrders['recommendations']), hasLength(4));
+    model.authority = {...model.authority, 'currentDeviceIsPrimary': false};
+    await model.mutate(
+      '/orders/rare/participation',
+      body: participationRequest(model, 'pause'),
+    );
+    expect(model.error, contains('查看设备'));
+    expect(jsonEncode(model.snapshot), before);
+  });
+
+  test('综合预览调色、模块和名单保存同步当前展示，但关闭模块保留配置', () async {
+    final model = RichPreviewWorkbenchModel()
+      ..selectScenario('migration-features');
+    addTearDown(model.dispose);
+    final order = records(model.night['orders'])
+        .singleWhere((row) => row['traceId'] == 'R-1004');
+    await model.updateProfile({
+      'rareOrderHighlightPalette': [
+        '#112233',
+        ...values(model.profile['rareOrderHighlightPalette']).skip(1),
+      ],
+    });
+    expect(
+      serviceOrderHighlight(model, rare: true, order: order).toARGB32(),
+      0xff112233,
+    );
+    await model.updateProfile({
+      'rareOrderHighlightPalette': ['#112233'],
+    });
+    expect(
+      records(object(model.business['gameUiTargets'])['rare']),
+      hasLength(1),
+    );
+    final beforeDisable = jsonEncode(model.profile);
+    final colorsBefore = jsonEncode(
+      object(model.business['gameUiTargets'])['orderColors'],
+    );
+    final normalBefore = jsonEncode(
+      object(model.business['gameUiTargets'])['normal'],
+    );
+    await model.updateProfile({'rareGameUiEnabled': false});
+    expect(records(object(model.business['gameUiTargets'])['rare']), isEmpty);
+    expect(
+      jsonEncode(object(model.business['gameUiTargets'])['normal']),
+      normalBefore,
+    );
+    expect(
+      jsonEncode(object(model.business['gameUiTargets'])['orderColors']),
+      colorsBefore,
+    );
+    await model.updateProfile({'rareGameUiEnabled': true});
+    expect(jsonEncode(model.profile), beforeDisable);
+    expect(
+      records(object(model.business['gameUiTargets'])['rare']),
+      hasLength(1),
+    );
+    await model.updateProfile({'normalGameUiEnabled': false});
+    expect(records(object(model.business['gameUiTargets'])['normal']), isEmpty);
+    expect(
+      records(object(model.business['gameUiTargets'])['rare']),
+      hasLength(1),
+    );
+    await model.updateProfile({'normalGameUiEnabled': true});
+    expect(jsonEncode(model.profile), beforeDisable);
+    await model.updateProfile({'gameUiEnabled': false});
+    expect(records(object(model.business['gameUiTargets'])['rare']), isEmpty);
+    expect(
+      records(object(model.business['gameUiTargets'])['orderColors']),
+      hasLength(3),
+    );
+    await model.updateProfile({'rareGuestParticipationModuleEnabled': false});
+    expect(model.profile['managedRareGuestIds'], [301]);
+    expect(
+      object(model.snapshot['rareGuestParticipation'])['displayOrderKeys'],
+      isNull,
+    );
+    expect(records(model.serviceOrders['recommendations']), hasLength(4));
+    await model.updateProfile({'rareGuestParticipationModuleEnabled': true});
+    expect(queue(model).contains('R-1001'), isFalse);
+    await model.updateProfile({
+      'managedRareGuestIds': [301, 302],
+    });
+    expect(queue(model), ['R-1004']);
+    await model.updateProfile({
+      'managedRareGuestIds': [301],
+    });
+    expect(queue(model), ['R-1004', 'R-1003']);
+    model.reset();
+    expect(model.scenario, 'night');
+    expect(model.profile['rareGuestParticipationModuleEnabled'], isFalse);
+  });
+
+  testWidgets('综合场景390px复用生产调度页按钮和特殊产物组件', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    tester.view.physicalSize = const Size(390, 850);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    addTearDown(tester.view.resetPhysicalSize);
+    final model = RichPreviewWorkbenchModel(desktop: false)
+      ..selectScenario('migration-features');
+    addTearDown(model.dispose);
+    final theme = stewardTheme(dark: false, touch: true);
+    Widget host(Widget child) => material.MaterialApp(
+      theme: theme.toApproximateMaterialTheme(),
+      builder: (context, child) => FTheme(data: theme, child: child!),
+      home: Padding(padding: const EdgeInsets.all(16), child: child),
+    );
+    await tester.pumpWidget(
+      host(
+        ListenableBuilder(
+          listenable: model,
+          builder: (context, _) => RareGuestSchedulingPage(model),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('已暂停'), findsNWidgets(2));
+    // 手机窄屏使用带完整语义的图标按钮，按动作身份定位，不依赖宽屏文字。
+    await tester.tap(
+      find.byKey(const ValueKey(('scheduling-group', 301, 'enable-front'))),
+    );
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.pumpAndSettle();
+    expect(queue(model), ['R-1004', 'R-1001', 'R-1002', 'R-1003']);
+    expect(tester.takeException(), isNull);
+    final rows = records(model.recommendations['recommendations']);
+    await tester.pumpWidget(
+      host(
+        ListView(
+          children: [
+            for (final row in rows.skip(2))
+              MenuItemContent(
+                serviceFoodView(
+                  model,
+                  object(records(row['executionPlans']).single['food']),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('保温箱成品'), findsOneWidget);
+    expect(find.text('基底 · 海鲜味噌汤'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
 
   test('连接管理与诊断包仅改变合成内存，操作历史不含Token且读取不新增记录', () async {
     final model = RichPreviewWorkbenchModel();

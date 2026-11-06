@@ -77,8 +77,23 @@ namespace Il2CppInterop.Runtime
 
 namespace Il2CppSystem
 {
+    internal sealed record Type(System.Type Value)
+    {
+        public static implicit operator Type(System.Type value) => new(value);
+    }
     internal sealed class Action
     {
+    }
+}
+
+namespace Il2CppInterop.Runtime.InteropTypes.Arrays
+{
+    internal sealed class Il2CppReferenceArray<T>
+    {
+        private readonly T[] _items;
+        public Il2CppReferenceArray(int count) => _items = new T[count];
+        public int Length => _items.Length;
+        public T this[int index] { get => _items[index]; set => _items[index] = value; }
     }
 }
 
@@ -145,10 +160,18 @@ namespace UnityEngine
             Attach(transform);
         }
 
+        public GameObject(string name, Il2CppInterop.Runtime.InteropTypes.Arrays.Il2CppReferenceArray<Il2CppSystem.Type> types) : this()
+        {
+            this.name = name;
+            for (var index = 0; index < types.Length; index++)
+                if (types[index].Value != typeof(RectTransform)) Attach((Component)Activator.CreateInstance(types[index].Value)!);
+        }
+
         public static List<GameObject> Instantiated { get; } = new();
         public static List<GameObject> Destroyed { get; } = new();
 
         public RectTransform transform { get; }
+        public int layer { get; set; }
         public bool activeSelf => _activeSelf;
         public bool activeInHierarchy => _activeSelf && (transform.parent?.gameObject.activeInHierarchy ?? true);
         public bool ReturnBaseComponentWrappers { get; set; }
@@ -192,6 +215,11 @@ namespace UnityEngine
             clone.transform.localPosition = transform.localPosition;
             clone.transform.localRotation = transform.localRotation;
             clone.transform.localScale = transform.localScale;
+            clone.transform.anchorMin = transform.anchorMin;
+            clone.transform.anchorMax = transform.anchorMax;
+            clone.transform.pivot = transform.pivot;
+            clone.transform.sizeDelta = transform.sizeDelta;
+            clone.transform.anchoredPosition = transform.anchoredPosition;
             clone.SetActive(activeSelf);
             clone.ReturnBaseComponentWrappers = ReturnBaseComponentWrappers;
             clone.ReturnBaseTypedComponentWrappers = ReturnBaseTypedComponentWrappers;
@@ -212,6 +240,7 @@ namespace UnityEngine
                             color = sourceImage.color,
                             raycastTarget = sourceImage.raycastTarget,
                             enabled = sourceImage.enabled,
+                            maskable = sourceImage.maskable,
                         });
                         break;
                     default:
@@ -274,7 +303,7 @@ namespace UnityEngine
             }
         }
 
-        public Vector3 localPosition { get; set; }
+        public virtual Vector3 localPosition { get; set; }
         public Quaternion localRotation { get; set; } = Quaternion.identity;
         public Vector3 localScale { get; set; } = Vector3.one;
         public int childCount => Children.Count;
@@ -296,6 +325,8 @@ namespace UnityEngine
             parent.Children.Remove(this);
             parent.Children.Insert(Math.Clamp(index, 0, parent.Children.Count), this);
         }
+
+        public void SetParent(Transform target, bool worldPositionStays) => parent = target;
     }
 
     internal sealed class RectTransform : Transform
@@ -306,6 +337,38 @@ namespace UnityEngine
 
         internal RectTransform(GameObject owner) : base(owner)
         {
+        }
+
+        // 模拟Unity序列化的矩形数据，不让生产代码读取测试专用的正文高度。
+        // anchoredPosition相对插值锚点，localPosition相对父pivot，二者不能默认相等；
+        // 拉伸矩形的实际尺寸还包含父矩形尺寸乘锚点跨度，不能仅返回sizeDelta。
+        public Vector2 anchorMin { get; set; } = new(0.5f, 0.5f);
+        public Vector2 anchorMax { get; set; } = new(0.5f, 0.5f);
+        public Vector2 pivot { get; set; } = new(0.5f, 0.5f);
+        public Vector2 sizeDelta { get; set; } = new(32, 66);
+        public Vector2 anchoredPosition { get; set; }
+        private float _localZ;
+        private Rect ParentRect => parent is RectTransform parentRect ? parentRect.rect : new Rect(0, 0, 0, 0);
+        private Vector2 AnchorReference => new(
+            ParentRect.xMin + ParentRect.width * (anchorMin.x + (anchorMax.x - anchorMin.x) * pivot.x),
+            ParentRect.yMin + ParentRect.height * (anchorMin.y + (anchorMax.y - anchorMin.y) * pivot.y));
+        public override Vector3 localPosition
+        {
+            get => new(AnchorReference.x + anchoredPosition.x, AnchorReference.y + anchoredPosition.y, _localZ);
+            set
+            {
+                anchoredPosition = new(value.x - AnchorReference.x, value.y - AnchorReference.y);
+                _localZ = value.z;
+            }
+        }
+        public Rect rect
+        {
+            get
+            {
+                var width = ParentRect.width * (anchorMax.x - anchorMin.x) + sizeDelta.x;
+                var height = ParentRect.height * (anchorMax.y - anchorMin.y) + sizeDelta.y;
+                return new Rect(-pivot.x * width, -pivot.y * height, width, height);
+            }
         }
     }
 
@@ -320,6 +383,15 @@ namespace UnityEngine
     internal readonly record struct Vector3(float x, float y, float z)
     {
         public static Vector3 one => new(1f, 1f, 1f);
+    }
+
+    internal readonly record struct Vector2(float x, float y);
+    internal readonly record struct Vector4(float x, float y, float z, float w);
+    internal readonly record struct Vector2Int(int x, int y);
+    internal readonly record struct Rect(float xMin, float yMin, float width, float height)
+    {
+        public float xMax => xMin + width;
+        public float yMax => yMin + height;
     }
 
     internal readonly record struct Quaternion(float x, float y, float z, float w)
@@ -340,6 +412,11 @@ namespace UnityEngine
     }
 }
 
+namespace TMPro
+{
+    internal sealed class TextMeshProUGUI : UnityEngine.Component { }
+}
+
 namespace UnityEngine.UI
 {
     internal class LayoutGroup : UnityEngine.Component
@@ -350,10 +427,20 @@ namespace UnityEngine.UI
     {
     }
 
+    internal sealed class RectMask2D : UnityEngine.Component
+    {
+        public bool enabled { get; set; } = true;
+        public UnityEngine.Vector4 padding { get; set; }
+        public UnityEngine.Vector2Int softness { get; set; }
+    }
+
     internal class Image : UnityEngine.Component
     {
         public UnityEngine.Sprite? sprite { get; set; }
-        public UnityEngine.Color color { get; set; } = new(1f, 1f, 1f, 1f);
+        private UnityEngine.Color _color = new(1f, 1f, 1f, 1f);
+        public int ColorWrites { get; private set; }
+        public UnityEngine.Color color { get => _color; set { _color = value; ColorWrites++; } }
+        public bool maskable { get; set; } = true;
         public bool raycastTarget { get; set; } = true;
         public bool enabled { get; set; } = true;
     }
@@ -398,6 +485,12 @@ namespace NightScene.UI.GuestManagementUtility
             image.sprite ??= new Sprite();
             _borderRoot.Attach(image);
             borderStyleImageForCurrent = image;
+            var deskObject = new GameObject { name = "ExactDeskLabelFixture" };
+            deskObject.transform.parent = owner.transform;
+            deskObject.transform.sizeDelta = new Vector2(64, 20);
+            deskObject.transform.localPosition = new Vector3(0, 25, 0);
+            text = new TMPro.TextMeshProUGUI();
+            deskObject.Attach(text);
         }
 
         // 计数精确属性访问，验证优化的是非活动注册读取次数；不能以总 Tick 次数替代。
@@ -407,6 +500,7 @@ namespace NightScene.UI.GuestManagementUtility
             get { ActiveOrderReadCount++; return _activeOrder; }
         }
         public Image borderStyleImageForCurrent { get; }
+        public TMPro.TextMeshProUGUI text { get; }
         public bool current { get; set; }
         public int ChangeBorderStyleCalls { get; private set; }
 
@@ -568,9 +662,13 @@ namespace MystiaStewardCompanion.Save
             var candidate = value is UnityEngine.Component component
                 ? component.NativeComponent ?? component
                 : value;
-            return targetTypeName == "UnityEngine.UI.Image" && candidate is UnityEngine.UI.Image
-                ? candidate
-                : null;
+            return targetTypeName switch
+            {
+                "UnityEngine.UI.Image" when candidate is UnityEngine.UI.Image => candidate,
+                "UnityEngine.UI.RectMask2D" when candidate is UnityEngine.UI.RectMask2D => candidate,
+                "UnityEngine.RectTransform" when candidate is UnityEngine.RectTransform => candidate,
+                _ => null,
+            };
         }
     }
 }

@@ -159,7 +159,9 @@ internal static class RuntimeMissionDefinitionDiagnosticReader
                     includeConditionDescriptions ? TryReadConditionDescription(condition) : "");
                 if (typeValue == ServeInWorkConditionType)
                 {
-                    if (amount < 0)
+                    // ServeInWork 的 amount 是经过精确 Int32 读取的料理 ID。游戏原生将 -1
+                    // 定义为黑暗料理；只有小于 -1 才是无效身份，不能让合法任务污染整个任务集合。
+                    if (amount < -1)
                     {
                         throw new InvalidOperationException(
                             $"{FinishConditionTypeName}.amount contains an invalid ServeInWork food ID.");

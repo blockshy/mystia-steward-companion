@@ -22,6 +22,17 @@ public static class RuntimeDataNormalizer
         data["rareCustomerProfiles"] = Array(Objects(raw["rareCustomers"]).Select(item => Normalize(item, "profiles")).Where(item => item != null));
         if (new[] { "recipes", "ingredients", "beverages", "normalCustomers", "rareCustomers" }.Any(kind => Arr(data[kind]).Count == 0))
             return Empty(NonEmpty(Str(raw["status"]), NonEmpty(Str(raw["source"]), "运行时数据不完整")));
+        // 特殊成品与普通配方分离。只透传具有明确种类、负 ID 和完整成品字段的原生定义；
+        // 缺失特殊能力不影响常规目录，重复身份保留给候选层拒绝，不能在此猜测选取一项。
+        if (raw["specialProducts"] is JsonArray)
+            data["specialProducts"] = Array(Objects(raw["specialProducts"])
+                .Where(item => Integer(item["id"]) && Num(item["id"]) == -1
+                    && Str(item["productKind"]) == "dark-cuisine" && Str(item["name"]).Trim().Length > 0
+                    && Integer(item["level"]) && Num(item["level"]) >= 0
+                    && Integer(item["price"]) && Num(item["price"]) >= 0
+                    && item["positiveTags"] is JsonArray tags && tags.All(tag => tag is JsonValue value && value.TryGetValue<string>(out _)))
+                .Select(item => Object(("id", -1), ("productKind", "dark-cuisine"), ("name", Str(item["name"])),
+                    ("level", item["level"]), ("price", item["price"]), ("positiveTags", Texts(item["positiveTags"])))));
         data["source"] = "runtime";
         data["foodTagIdMap"] = StringRecord(raw["foodTagIdMap"]);
         data["beverageTagIdMap"] = StringRecord(raw["beverageTagIdMap"]);

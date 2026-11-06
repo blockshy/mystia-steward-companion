@@ -20,6 +20,10 @@ const projects = [
   ['csharp-automation', 'CSharpAutomationSmoke', true],
   ['csharp-business-host', 'CSharpBusinessHost', true],
   ['csharp-game-ui-targets', 'CSharpGameUiTargetsSmoke', true],
+  // 特殊成品、保温箱事务与稀客参与队列使用隔离托管边界，不依赖真实游戏。
+  ['dark-cuisine-task-priority', 'DarkCuisineTaskPriority', true],
+  ['runtime-dark-cuisine', 'RuntimeDarkCuisineSmoke', true],
+  ['runtime-rare-guest-participation', 'RuntimeRareGuestParticipationSmoke', true],
   ['csharp-business-package', 'CSharpBusinessPackageSmoke', true],
   ['local-api-storage', 'LocalApiStorageSmoke', true],
   ['runtime-automation-control', 'RuntimeAutomationControlSmoke', true],
@@ -30,9 +34,19 @@ const projects = [
   // 隔离父/子测试进程验证环境继承，不启动游戏、管家或 Steam，不改变机器级配置。
   ['companion-process-environment', 'CompanionProcessEnvironmentSmoke', true],
   ['runtime-performance-diagnostics', 'RuntimePerformanceDiagnosticsSmoke', true],
+  // 游戏内只读专注层用托管UGUI夹具验证输入隔离、几何、销毁与稳定帧开销。
+  ['runtime-game-focus-overlay', 'RuntimeGameFocusOverlaySmoke', true],
+  // 游戏电脑显示配置独立验证历史迁移、原字节备份、并发修订及真实文件写失败。
+  ['game-focus-overlay-store', 'GameFocusOverlayStoreSmoke', true],
   // 高频 UI 维护的身份失效、重绑和投影分配回归同样纳入门禁，不能只测计时器本身。
   ['runtime-order-highlight', 'RuntimeOrderHighlightSmoke', true],
   ['runtime-seat-highlight', 'RuntimeSeatHighlightSmoke', true],
+  // 厨具背景执行正式服务和网格实现，隔离验证原生区域绑定、逐笔声明撤销及资源复用。
+  ['runtime-cooker-color-blocks', 'RuntimeCookerColorBlocksSmoke', true],
+  // 列表背景执行正式网格分色，覆盖三角形裁剪、纹理属性及无输入/布局副作用。
+  ['runtime-list-color-blocks', 'RuntimeListColorBlocksSmoke', true],
+  // 列表按点单顺序稳定置换，直接验证正式排序事务及精确原生桥，包含失败回退。
+  ['runtime-ui-list-order', 'RuntimeUiListOrderSmoke', true],
   // 来源订单失效必须同时撤回各高亮表面；同帧关闭/重开不得枚举到待销毁的私有克隆。
   ['ui-pinning-runtime', 'UiPinningRuntimeSmoke', true],
   ['runtime-throw-delivery-order-highlight', 'RuntimeThrowDeliverOrderHighlightSmoke', true],
@@ -42,6 +56,9 @@ for (const [directory, name, smoke] of projects) {
   if (smoke) run('dotnet', [`tests/${directory}/bin/Release/net6.0/${name}.dll`]);
 }
 // 双模式新增行为不能由冻结的旧 TypeScript oracle 表达，使用生产领域程序集验证。
+// 酒水专项直接调用正式作用域前缀，确认多目标完整传递；不将此结果当作 Harmony 注入证据。
+run('dotnet', ['tests/ui-pinning-runtime/bin/Release/net6.0/UiPinningRuntimeSmoke.dll', '--beverage-targets']);
+run('dotnet', ['tests/ui-pinning-runtime/bin/Release/net6.0/UiPinningRuntimeSmoke.dll', '--list-order-context']);
 run('dotnet', ['tests/csharp-recommendations/bin/Release/net6.0/CSharpRecommendations.dll', '--custom-modes']);
 // 排队时租约自然到期不能靠“没有新快照”获得延迟执行权；这项模拟不触发真实副作用。
 run('dotnet', ['tests/csharp-business-host/bin/Release/net6.0/CSharpBusinessHost.dll', '--lease-expiry']);

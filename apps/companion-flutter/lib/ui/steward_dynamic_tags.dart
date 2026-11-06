@@ -21,6 +21,7 @@ class StewardDynamicTags<T> extends StatelessWidget {
     this.saving = false,
     this.boundary,
     this.itemLeading,
+    this.showLabel = true,
     super.key,
   });
 
@@ -30,6 +31,9 @@ class StewardDynamicTags<T> extends StatelessWidget {
   final bool enabled, saving, allowAdd;
   final String addHint;
   final Object? boundary;
+
+  /// 外层已有明确分组标题时可以隐藏重复标签；下拉仍保留完整无障碍名称。
+  final bool showLabel;
 
   /// 同一个精确选项值在候选和已选标签中共用装饰图片；缺失目录的历史ID也会传给
   /// 调用方，由其保留图标回退。图片不能参与筛选、身份判断或增删配置。
@@ -54,6 +58,7 @@ class StewardDynamicTags<T> extends StatelessWidget {
               child: StewardSelect<T>(
                 key: const ValueKey('dynamic-tags-add'),
                 label: label,
+                showLabel: showLabel,
                 hint: !allowAdd
                     ? '目录未就绪'
                     : available.isEmpty

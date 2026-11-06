@@ -18,6 +18,7 @@ try
     VerifyCompletionRemovalCommitsOnlyAfterNativeSuccess();
     VerifyCleanupRemovalCommitsOnlyAfterNativeSuccess();
     VerifyRepellRemovalCommitsAfterNativeSuccess();
+    VerifyControllerLeaveTerminalBoundaries();
     VerifyNormalCompletionAndCleanupBoundaries();
     VerifyTerminalReceiptsUseExactHookIdentity();
     VerifyCapturedOrderLifecycleAbaKeepsTheNewBinding();
@@ -84,6 +85,7 @@ static void VerifyLifecycleHooksUseExact783Signatures()
                  ("EvaulateManualOrder", "IsExactManualEvaluateOrder"),
                  ("CleanOrderInfo", "IsExactControllerOnlyMethod"),
                  ("RepellInternal", "IsExactRepellInternal"),
+                 ("LeaveFromDesk", "IsExactLeaveFromDesk"),
              })
     {
         var method = managerType.GetMethod(
@@ -107,6 +109,17 @@ static void VerifyLifecycleHooksUseExact783Signatures()
         }
     }
 
+
+    var invalidLeave = typeof(NightScene.GuestManagementUtility.InvalidGuestsManager).GetMethod(
+        "LeaveFromDesk",
+        BindingFlags.Public | BindingFlags.Instance)
+        ?? throw new InvalidOperationException("The invalid LeaveFromDesk fixture was not found.");
+    foreach (var captureType in new[] { typeof(SpecialOrderRuntimeCapture), typeof(NormalOrderRuntimeCapture) })
+    {
+        AssertEqual(false,
+            GetCaptureMutation(captureType, "IsExactLeaveFromDesk").Invoke(null, new object[] { invalidLeave }) is true,
+            $"{captureType.Name} accepted a CLR callback instead of Il2CppSystem.Action.");
+    }
 
     var invalidRepell = typeof(NightScene.GuestManagementUtility.InvalidGuestsManager).GetMethod(
         "RepellInternal",
@@ -800,6 +813,148 @@ static void VerifyRepellRemovalCommitsAfterNativeSuccess()
     }
 }
 
+/// <summary>
+/// 直接回调验证两类订单的离桌边界；模拟正常返回、跳过和异常，不把这些托管测试当作原生注入测试。
+/// 覆盖耐心耗尽内联清理后仍留有旧栈、同桌其他客人、重入新订单及同指针 ABA。
+/// </summary>
+static void VerifyControllerLeaveTerminalBoundaries()
+{
+    var wasActive = RuntimeNightBusinessLifecycle.IsActive;
+    var previousGeneration = RuntimeNightBusinessLifecycle.Generation;
+    try
+    {
+        RuntimeNightBusinessLifecycle.IsActive = true;
+        RuntimeNightBusinessLifecycle.Generation = 103;
+        foreach (var (captureType, kind) in new[]
+                 {
+                     (typeof(SpecialOrderRuntimeCapture), RuntimeOrderKind.Special),
+                     (typeof(NormalOrderRuntimeCapture), RuntimeOrderKind.Normal),
+                 })
+        {
+            var orders = GetCaptureOrders(captureType);
+            var add = GetCaptureMutation(captureType, "OnControllerOrderAdded");
+            var before = GetCaptureMutation(captureType, "CaptureControllerOrdersBeforeLeave");
+            var after = GetCaptureMutation(captureType, "OnControllerOrdersLeaveSucceeded");
+            NightScene.GuestManagementUtility.GuestsManager.OrderBase NewOrder() =>
+                kind == RuntimeOrderKind.Special ? new SpecialOrder(17, -1, "") : new NormalOrder();
+            NightScene.GuestManagementUtility.GuestGroupController NewController() =>
+                kind == RuntimeOrderKind.Special
+                    ? new SpecialOrderController("甜", "无酒精")
+                    : new NightScene.GuestManagementUtility.GuestGroupController();
+            RuntimeOrderBindingToken Bind(
+                NightScene.GuestManagementUtility.GuestGroupController controller,
+                NightScene.GuestManagementUtility.GuestsManager.OrderBase order)
+            {
+                controller.RejectOrderPeek = false;
+                controller.CurrentOrder = order;
+                add.Invoke(null, new object?[] { controller, order, true });
+                return new RuntimeOrderBindingToken(
+                    103, kind, order.Pointer, controller.Pointer,
+                    RequireActiveLifecycle(103, kind, order.Pointer, controller.Pointer,
+                        "The leave fixture did not bind an exact active lifecycle."));
+            }
+            RuntimeOrderBindingToken[] Capture(NightScene.GuestManagementUtility.GuestGroupController controller)
+            {
+                // 清理路径可能已经清空/保留历史栈，两者都不能成为离桌撤回的查询依赖。
+                controller.CurrentOrder = null;
+                controller.RejectOrderPeek = true;
+                var arguments = new object?[] { controller, null };
+                before.Invoke(null, arguments);
+                return arguments[1] as RuntimeOrderBindingToken[]
+                    ?? throw new InvalidOperationException("The leave prefix did not return scalar bindings.");
+            }
+
+            orders.Clear();
+            RuntimeOrderTerminalReceiptStore.Clear();
+            try
+            {
+                var controller = NewController();
+                var order = NewOrder();
+                var token = Bind(controller, order);
+                var state = Capture(controller);
+                AssertEqual(1, state.Length, $"{captureType.Name} missed the active order before leave.");
+                AssertEqual(token, state[0], "The leave prefix did not freeze the exact old lifecycle.");
+                AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(token, out _),
+                    "Entering LeaveFromDesk published a receipt before native success.");
+                after.Invoke(null, new object?[] { state, false });
+                AssertEqual(1, orders.Count, "Skipping native leave removed an order.");
+                AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token),
+                    "Skipping native leave retired an active lifecycle.");
+
+                // 模拟 Harmony 的顺序：只有原方法返回才调用 postfix；异常原样向上抛出。
+                var manager = new NightScene.GuestManagementUtility.GuestsManager { ThrowDuringLeave = true };
+                var threw = false;
+                try
+                {
+                    manager.LeaveFromDesk(controller,
+                        NightScene.GuestManagementUtility.GuestGroupController.LeaveType.Normal, null, true);
+                    after.Invoke(null, new object?[] { state, true });
+                }
+                catch (InvalidOperationException)
+                {
+                    threw = true;
+                }
+                AssertEqual(true, threw, "The failure fixture did not throw.");
+                AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(token, out _),
+                    "A failed native leave published a receipt.");
+                AssertEqual(1, orders.Count, "A failed native leave removed an order.");
+
+                manager.ThrowDuringLeave = false;
+                manager.LeaveFromDesk(controller,
+                    NightScene.GuestManagementUtility.GuestGroupController.LeaveType.Normal, null, true);
+                after.Invoke(null, new object?[] { state, true });
+                AssertEqual(0, orders.Count, "A successful native leave retained an expired order.");
+                AssertEqual(false, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(token),
+                    "A successful native leave did not retire its lifecycle.");
+                AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(token, out var receipt),
+                    "A successful native leave did not publish a terminal receipt.");
+                AssertEqual(RuntimeOrderTerminalReceiptSource.LeaveFromDesk, receipt.Source,
+                    "The leave receipt lost its exact source.");
+                AssertEqual(RuntimeOrderTerminalDisposition.Removed, receipt.Disposition,
+                    "Leaving was incorrectly reported as a successful evaluation.");
+                AssertEqual(0, Capture(controller).Length, "A repeated leave recaptured retired bindings.");
+
+                // 同一个控制器可以留下多条捕获；离桌必须撤回离桌前的全部精确绑定。
+                // 所有测试订单都使用同一桌号，证明另一个控制器不会被按桌号一起删掉。
+                var first = Bind(controller, order);
+                var second = Bind(controller, NewOrder());
+                var otherController = NewController();
+                var other = Bind(otherController, NewOrder());
+                state = Capture(controller);
+                AssertEqual(2, state.Length, "Leave did not freeze both existing controller bindings.");
+                var replacement = Bind(controller, order);
+                var successor = Bind(controller, NewOrder());
+                AssertEqual(true, replacement.LifecycleSequence > first.LifecycleSequence,
+                    "The same native tuple did not advance its lifecycle.");
+                after.Invoke(null, new object?[] { state, true });
+                AssertEqual(false, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(second),
+                    "Leave retained an old non-current order binding.");
+                AssertEqual(true, RuntimeOrderTerminalReceiptStore.TryFind(first, out _),
+                    "Leave did not preserve the old ABA lifecycle's terminal fact.");
+                foreach (var retained in new[] { replacement, successor, other })
+                {
+                    AssertEqual(true, RuntimeOrderTerminalReceiptStore.MatchesActiveLifecycle(retained),
+                        "The old leave postfix removed a replacement, successor, or other-controller order.");
+                    AssertEqual(false, RuntimeOrderTerminalReceiptStore.TryFind(retained, out _),
+                        "The old leave postfix invented a terminal receipt for a new or unrelated order.");
+                }
+                AssertEqual(3, orders.Count, "Leave removed a new or unrelated capture, or retained an old capture.");
+            }
+            finally
+            {
+                orders.Clear();
+                RuntimeOrderTerminalReceiptStore.Clear();
+            }
+        }
+        Console.WriteLine("PASS: normal/special leave callbacks cover success, skip, exception, empty stack, same desk, multiple bindings and ABA.");
+    }
+    finally
+    {
+        RuntimeNightBusinessLifecycle.IsActive = wasActive;
+        RuntimeNightBusinessLifecycle.Generation = previousGeneration;
+    }
+}
+
 static void VerifyNormalCompletionAndCleanupBoundaries()
 {
     var orders = GetCaptureOrders(typeof(NormalOrderRuntimeCapture));
@@ -909,8 +1064,9 @@ static void VerifyBusinessReadinessRequiresCompleteHooksBeforeTheGeneration()
                 "EvaulateManualOrder",
                 "CleanOrderInfo",
                 "RepellInternal",
+                "LeaveFromDesk",
             };
-            AssertEqual(7, required.Length, $"{captureType.Name} changed the complete required lifecycle Hook count.");
+            AssertEqual(8, required.Length, $"{captureType.Name} changed the complete required lifecycle Hook count.");
             foreach (var methodName in requiredMethodNames)
             {
                 AssertEqual(

@@ -81,7 +81,7 @@ public static partial class OrderRecommendationService
     private static double Objective(JsonObject c, string key, bool food) => food ? key switch
     {
         "foodPreference" => Count(c, "matchedPositiveTags"), "negativeRisk" => Count(c, "matchedNegativeTags"), "extraCount" => Count(c, "extraIngredients"),
-        "resourcePressure" => Num(c["resourcePressure"]), "totalCost" => Num(c["baseCost"]) + Num(c["extraCost"]), "profit" => Field(c, "recipe", "price") - Num(c["baseCost"]) - Num(c["extraCost"]), "cookerAvailable" => Bool(c["cookerAvailable"]) ? 1 : 0, _ => 0
+        "resourcePressure" => Num(c["resourcePressure"]), "totalCost" => Num(c["baseCost"]) + Num(c["extraCost"]), "profit" => Field(c, "recipe", "price") - Num(c["baseCost"]) - Num(c["extraCost"]), _ => 0
     } : key switch { "beveragePreference" => Count(c, "matchedTags"), "profit" => Field(c, "beverage", "price"), "beverageStock" => StockRank(c), _ => 0 };
     private static double RowLimit(double value) => double.IsFinite(value) ? Math.Max(0, Math.Truncate(value)) : double.PositiveInfinity;
     public static JsonObject FoodRow(JsonObject food)

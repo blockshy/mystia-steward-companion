@@ -696,8 +696,271 @@ void main() {
         expect(checkpoint['registryId'], model.authority['registryId']);
         expect(native.readBacks, greaterThan(2));
         expect(model.primary, isFalse, reason: '同步 ACK 不得自动切主。');
+        // 查看设备修改专注内容只保存本机，成为主设备后才同步耐久偏好。
+        final viewerFocusPosts = http.requests['POST /ui/focus-overlay'] ?? 0;
+        await model.updateLocal({'serviceFocusShowFood': false});
+        expect(http.requests['POST /ui/focus-overlay'] ?? 0, viewerFocusPosts);
         await model.mutate('/devices/primary', body: {'deviceId': id});
         expect(model.primary, isTrue, reason: model.error);
+        // 游戏内显示是独立宿主资源：读写不修改业务profile，写入采用自己的修订，
+        // 旧GET、冲突与丢失回执均不能覆盖新配置或触发自动重放。
+        const overlayPath = '/ui/focus-overlay';
+        await model.readResource('/favorites');
+        final favoritesBeforeOverlay = model.resources['/favorites'];
+        await model.readResource(overlayPath);
+        expect(
+          gameFocusOverlayConfirmed(model.resources[overlayPath] ?? {}),
+          isTrue,
+          reason: model.error,
+        );
+        expect(model.resources['/favorites'], same(favoritesBeforeOverlay));
+        expect(
+          object(
+            object(model.resources[overlayPath]!['settings'])['content'],
+          )['showFood'],
+          false,
+          reason: '切换主设备必须同步此前保存的本机显示选项。',
+        );
+
+        final profileBeforeOverlay =
+            model.authority['currentDeviceProfileHash'];
+        final overlayRevision = model.resources[overlayPath]!['revision'];
+        final oldOverlay = http.holdNext('GET', overlayPath);
+        final oldOverlayRead = model.readResource(overlayPath);
+        await oldOverlay.arrived.future.timeout(const Duration(seconds: 5));
+        await model.mutate(
+          overlayPath,
+          body: {
+            'expectedRevision': overlayRevision,
+            'changes': {'enabled': true, 'backgroundOpacity': 54},
+          },
+        );
+        expect(model.error, isEmpty, reason: model.error);
+        final confirmedOverlay = model.resources[overlayPath];
+        expect(object(confirmedOverlay?['settings'])['backgroundOpacity'], 54);
+        oldOverlay.release();
+        await oldOverlayRead;
+        expect(model.resources[overlayPath], same(confirmedOverlay));
+        expect(
+          model.authority['currentDeviceProfileHash'],
+          profileBeforeOverlay,
+        );
+        expect(model.recentOperations.first.name, '设置游戏内专注显示');
+
+        final writesBeforeConflict = http.requests['POST $overlayPath'] ?? 0;
+        final readsBeforeConflict = http.requests['GET $overlayPath'] ?? 0;
+        await model.mutate(
+          overlayPath,
+          body: {
+            'expectedRevision': overlayRevision,
+            'changes': {'backgroundOpacity': 10},
+          },
+        );
+        expect(model.error, isNotEmpty);
+        expect(http.requests['POST $overlayPath'], writesBeforeConflict + 1);
+        expect(http.requests['GET $overlayPath'], readsBeforeConflict + 1);
+        expect(
+          object(
+            model.resources[overlayPath]?['settings'],
+          )['backgroundOpacity'],
+          54,
+        );
+
+        final lostOverlayReply = http.holdNext(
+          'POST',
+          overlayPath,
+          failAfterRelease: true,
+        );
+        final overlayPosts = http.requests['POST $overlayPath'] ?? 0;
+        final writingOverlay = model.mutate(
+          overlayPath,
+          body: {
+            'expectedRevision': model.resources[overlayPath]!['revision'],
+            'changes': {'enabled': false},
+          },
+        );
+        await lostOverlayReply.arrived.future.timeout(
+          const Duration(seconds: 5),
+        );
+        expect(
+          gameFocusOverlayConfirmed(model.resources[overlayPath] ?? {}),
+          isFalse,
+        );
+        lostOverlayReply.release();
+        await writingOverlay;
+        expect(http.requests['POST $overlayPath'], overlayPosts + 1);
+        expect(
+          gameFocusOverlayConfirmed(model.resources[overlayPath] ?? {}),
+          isTrue,
+        );
+        expect(
+          object(model.resources[overlayPath]?['settings'])['enabled'],
+          isFalse,
+        );
+        http.failedReads.add(overlayPath);
+        await model.readResource(overlayPath);
+        expect(
+          gameFocusOverlayConfirmed(model.resources[overlayPath] ?? {}),
+          isFalse,
+        );
+        http.failedReads.remove(overlayPath);
+        await model.readResource(overlayPath);
+        expect(
+          gameFocusOverlayConfirmed(model.resources[overlayPath] ?? {}),
+          isTrue,
+        );
+        // 自动镜像的未知回执只核对，不因后续轮询自动重复 POST。
+        final mirrorBefore = http.requests['POST $overlayPath'] ?? 0;
+        final lostMirror = http.holdNext(
+          'POST',
+          overlayPath,
+          failAfterRelease: true,
+        );
+        final savingMirror = model.updateLocal({
+          'serviceFocusShowIngredients': false,
+          'themeMode': 'dark',
+        });
+        await lostMirror.arrived.future.timeout(const Duration(seconds: 5));
+        final savedMirrorPreferences = jsonMap(
+          jsonDecode(await native.file.readAsString()),
+        );
+        expect(
+          savedMirrorPreferences['serviceFocusShowIngredients'],
+          false,
+          reason: '必须先耐久保存本机选项，再同步游戏内显示。',
+        );
+        lostMirror.release();
+        await savingMirror;
+        expect(http.requests['POST $overlayPath'], mirrorBefore + 1);
+        expect(model.error, isEmpty, reason: '补读已确认目标内容，不应继续报未同步。');
+        await model.readResource(overlayPath);
+        await model.readResource(overlayPath);
+        expect(http.requests['POST $overlayPath'], mirrorBefore + 1);
+        final mirroredSettings = object(
+          model.resources[overlayPath]!['settings'],
+        );
+        expect(object(mirroredSettings['content'])['showIngredients'], false);
+        expect(mirroredSettings['theme'], 'dark');
+        expect(
+          mirroredSettings['backgroundOpacity'],
+          54,
+          reason: '内容镜像不覆盖用户独立设置的外观。',
+        );
+        await Future.wait([
+          model.updateLocal({'serviceFocusShowIngredients': true}),
+          model.updateLocal({'serviceFocusShowBeverage': false}),
+        ]);
+        final lastContent = object(
+          object(model.resources[overlayPath]!['settings'])['content'],
+        );
+        expect(lastContent['showIngredients'], true);
+        expect(lastContent['showBeverage'], false);
+        expect(lastContent['showFood'], false);
+        expect(model.error, isEmpty, reason: model.error);
+        expect(
+          model.authority['currentDeviceProfileHash'],
+          profileBeforeOverlay,
+        );
+        // 镜像GET与手动POST分属两个异步入口。受控传输保留已验证的旧完整DTO，
+        // 模拟其在更晚手动写入确认后才到达；内容相同时不写，变化时必须采用新修订。
+        for (final changeContent in [false, true]) {
+          final stale = jsonMap(
+            jsonDecode(jsonEncode(model.resources[overlayPath])),
+          );
+          final initialRevision = stale['revision']! as int;
+          final oldCooker =
+              object(object(stale['settings'])['content'])['showCooker'] ==
+              true;
+          final expectedCooker = changeContent ? !oldCooker : oldCooker;
+          final postsBefore = http.requests['POST $overlayPath'] ?? 0;
+          final delayedManual = http.holdNext('POST', overlayPath);
+          final manualSave = model.mutate(
+            overlayPath,
+            body: {
+              'expectedRevision': initialRevision,
+              'changes': {'backgroundOpacity': changeContent ? 66 : 65},
+            },
+          );
+          await delayedManual.arrived.future.timeout(
+            const Duration(seconds: 5),
+          );
+          final staleMirror = http.holdNext(
+            'GET',
+            overlayPath,
+            replacement: stale,
+          );
+          final mirrorSave = model.updateLocal({
+            'serviceFocusShowCooker': expectedCooker,
+          });
+          await staleMirror.arrived.future.timeout(const Duration(seconds: 5));
+          delayedManual.release();
+          await manualSave;
+          expect(
+            model.resources[overlayPath]!['revision'],
+            initialRevision + 1,
+          );
+          staleMirror.release();
+          await mirrorSave;
+          final current = model.resources[overlayPath]!;
+          expect(
+            current['revision'],
+            initialRevision + (changeContent ? 2 : 1),
+            reason: '迟到GET不能回滚手动设置，也不能据旧修订发送冲突写入。',
+          );
+          expect(
+            object(current['settings'])['backgroundOpacity'],
+            changeContent ? 66 : 65,
+          );
+          expect(
+            object(object(current['settings'])['content'])['showCooker'],
+            expectedCooker,
+          );
+          expect(
+            http.requests['POST $overlayPath'],
+            postsBefore + (changeContent ? 2 : 1),
+          );
+          expect(model.error, isEmpty, reason: model.error);
+        }
+
+        // 反向交叉：手动POST先落盘但回执未回，镜像GET/POST已确认下一修订。
+        // 迟到的旧成功或旧失败都不得把新内容降级成旧配置或未知状态。
+        for (final failOldReply in [false, true]) {
+          final initial = model.resources[overlayPath]!;
+          final initialRevision = initial['revision']! as int;
+          final oldExtras =
+              object(object(initial['settings'])['content'])['showExtras'] ==
+              true;
+          final delayedManual = http.holdNext(
+            'POST',
+            overlayPath,
+            failAfterRelease: failOldReply,
+          );
+          final manualSave = model.mutate(
+            overlayPath,
+            body: {
+              'expectedRevision': initialRevision,
+              'changes': {'backgroundOpacity': failOldReply ? 68 : 67},
+            },
+          );
+          await delayedManual.arrived.future.timeout(
+            const Duration(seconds: 5),
+          );
+          await model.updateLocal({'serviceFocusShowExtras': !oldExtras});
+          final newer = model.resources[overlayPath]!;
+          expect(newer['revision'], initialRevision + 2);
+          delayedManual.release();
+          await manualSave;
+          expect(
+            model.resources[overlayPath],
+            same(newer),
+            reason: '旧${failOldReply ? '失败' : '成功'}不能覆盖更新的镜像确认。',
+          );
+          expect(
+            gameFocusOverlayConfirmed(model.resources[overlayPath]!),
+            isTrue,
+          );
+          expect(model.error, isEmpty, reason: model.error);
+        }
         expect(model.profile['automationEnabled'], isFalse);
         await model.updateProfile({'autoRareConcurrency': 3});
         expect(model.profile['autoRareConcurrency'], 3, reason: model.error);
@@ -807,6 +1070,8 @@ void main() {
         } finally {
           customPeer.close();
         }
+        await model.readResource('/favorites');
+        expect(model.favoritesConfirmed, isTrue);
         await model.mutate(
           '/favorites/add-recipe',
           query: {
@@ -822,6 +1087,102 @@ void main() {
               .single['customerName'],
           '合成稀客',
         );
+        // 读取失败保留只读展示但撤销确认；直接调用模型也不能绕过页面按钮禁用。
+        http.failedReads.add('/favorites');
+        await model.readResource('/favorites');
+        expect(model.favoritesConfirmed, isFalse);
+        final beforeBlocked =
+            http.requests['POST /favorites/add-beverage'] ?? 0;
+        await model.mutate(
+          '/favorites/add-beverage',
+          query: {
+            'customerId': '1',
+            'customerName': '合成稀客',
+            'beverageId': '3',
+            'beverageTag': '低酒精',
+          },
+        );
+        expect(
+          http.requests['POST /favorites/add-beverage'] ?? 0,
+          beforeBlocked,
+        );
+        http.failedReads.remove('/favorites');
+        await model.readResource('/favorites');
+        expect(model.favoritesConfirmed, isTrue);
+
+        // POST 已到真实宿主并落库，但回执在传输层丢失。只补读，不重复 POST，且
+        // 写入前已经到达的旧 GET 释放后也不能覆盖确认后的新收藏。
+        final staleFavorites = http.holdNext('GET', '/favorites');
+        final staleRead = model.readResource('/favorites');
+        await staleFavorites.arrived.future.timeout(const Duration(seconds: 5));
+        final lostWrite = http.holdNext(
+          'POST',
+          '/favorites/add-beverage',
+          failAfterRelease: true,
+        );
+        final mutation = model.mutate(
+          '/favorites/add-beverage',
+          query: {
+            'customerId': '1',
+            'customerName': '合成稀客',
+            'beverageId': '3',
+            'beverageTag': '低酒精',
+          },
+        );
+        await lostWrite.arrived.future.timeout(const Duration(seconds: 5));
+        expect(model.favoritesConfirmed, isFalse);
+        final beforeRecover = http.requests['GET /favorites'] ?? 0;
+        lostWrite.release();
+        await mutation;
+        expect(
+          http.requests['POST /favorites/add-beverage'],
+          beforeBlocked + 1,
+        );
+        expect(http.requests['GET /favorites'], beforeRecover + 1);
+        expect(model.favoritesConfirmed, isTrue);
+        final recoveredFavoriteState = model.resources['/favorites'];
+        expect(
+          records(recoveredFavoriteState?['beverages']).single['beverageId'],
+          3,
+        );
+        staleFavorites.release();
+        await staleRead;
+        expect(model.resources['/favorites'], same(recoveredFavoriteState));
+
+        // 补读同时失败时保持未知，后续手工刷新成功才恢复操作，不盲目重试移除。
+        final beverageId = label(
+          records(recoveredFavoriteState?['beverages']).single['id'],
+        );
+        http.failedReads.add('/favorites');
+        final lostRemoval = http.holdNext(
+          'POST',
+          '/favorites/remove-beverage',
+          failAfterRelease: true,
+        );
+        final removal = model.mutate(
+          '/favorites/remove-beverage',
+          query: {'id': beverageId},
+        );
+        await lostRemoval.arrived.future.timeout(const Duration(seconds: 5));
+        lostRemoval.release();
+        await removal;
+        expect(model.favoritesConfirmed, isFalse);
+        final beforeSecondRemoval =
+            http.requests['POST /favorites/remove-beverage'];
+        await model.mutate(
+          '/favorites/remove-beverage',
+          query: {'id': beverageId},
+        );
+        expect(
+          http.requests['POST /favorites/remove-beverage'],
+          beforeSecondRemoval,
+        );
+        http.failedReads.remove('/favorites');
+        await model.readResource('/favorites');
+        expect(model.favoritesConfirmed, isTrue);
+        expect(records(model.resources['/favorites']?['beverages']), isEmpty);
+        // 清除本组预期故障，后面的任务读取继续校验自身的专用只读语义。
+        await model.refresh();
         // 该路径走真实 C# LocalApiAvailableMissionsPayload。宿主的读取委托明确
         // 抛 Forbidden；LocalApiServer 捕获后使用缓存快照的 0/0 代次，构造
         // mission-data-incomplete 与精确命令失败诊断，而非原样返回缓存中的
@@ -951,7 +1312,7 @@ void main() {
           model.dispose();
           // 模拟上一版本客户端实际保存的无 profileSchemaVersion checkpoint。
           // 恢复历史订单排序并去掉当时尚不存在的总开关，保留既有身份与修订；
-          // 新组合根明确丢弃旧排序、迁移旧评分模式，再以当前权威响应落盘 schema 4。
+          // 新组合根明确丢弃旧排序、迁移旧评分与配色，再以当前权威响应落盘当前 schema。
           final previousPreferences = jsonMap(
             jsonDecode(await native.file.readAsString()),
           );
@@ -961,6 +1322,20 @@ void main() {
           previousCheckpoint['profile'] =
               Map<String, Object?>.of(jsonMap(previousCheckpoint['profile']))
                 ..remove('gameUiEnabled')
+                ..remove('rareGameUiEnabled')
+                ..remove('normalGameUiEnabled')
+                ..remove('rareOrderHighlightPalette')
+                ..remove('normalOrderHighlightPalette')
+                ..remove('rareHighlightOrderCount')
+                ..remove('normalHighlightOrderCount')
+                ..remove('rareGuestParticipationModuleEnabled')
+                ..remove('managedRareGuestIds')
+                ..removeWhere(
+                  (key, _) =>
+                      CompanionProfile.autoResumeDefaults.containsKey(key),
+                )
+                ..['rareTargetHighlightColor'] = '#FFDB2E'
+                ..['normalTargetHighlightColor'] = '#5FACD3'
                 ..['serviceOrderSortMode'] = 'guest'
                 // 旧版没有 custom 枚举，曾允许 balanced 名称下保存已改动的目标。
                 ..['recommendationSortProfile'] = {
@@ -970,6 +1345,21 @@ void main() {
                     )['recommendationSortProfile'],
                   ),
                   'preset': 'balanced',
+                  'objectives': [
+                    ...jsonObjects(
+                      jsonMap(
+                        jsonMap(
+                          previousCheckpoint['profile'],
+                        )['recommendationSortProfile'],
+                      )['objectives'],
+                    ),
+                    {
+                      'key': 'cookerAvailable',
+                      'enabled': true,
+                      'weight': 60,
+                      'direction': 'desc',
+                    },
+                  ],
                 };
           await native.file.writeAsString(
             jsonEncode({

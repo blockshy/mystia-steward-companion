@@ -19,6 +19,7 @@ try
     VerifyFullActiveFileRotatesOnOpen(root);
     VerifySectionUsesOneFlush(root);
     VerifyEnabledReadDoesNotWaitForWriter(root);
+    DeferredDiagnosticTests.Run(root);
     VerifyProductionSourceContract();
     // 配置文件中的历史越界值也按同一 1–30 上限收敛，不能只约束表单。
     AssertEqual(1, AggregateModLogService.NormalizeMaxFileCount(0), "日志数量下界失效。");
@@ -352,7 +353,8 @@ static void VerifyProductionSourceContract()
     using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("AggregateModLogService.cs")
         ?? throw new InvalidOperationException("Aggregate log source resource was not embedded.");
     using var reader = new StreamReader(stream);
-    var source = reader.ReadToEnd();
+    // Git 在 Windows 工作副本使用 CRLF；只归一换行，不弱化写入器健康检查的顺序约束。
+    var source = reader.ReadToEnd().Replace("\r\n", "\n", StringComparison.Ordinal);
 
     AssertContains(source, "FileShare.ReadWrite | FileShare.Delete", "Active aggregate logs no longer permit intentional external deletion.");
     AssertContains(source, "EnsureWriterLocked();\n\n                var now", "Automation repeat suppression can bypass writer health checks.");

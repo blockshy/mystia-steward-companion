@@ -79,10 +79,14 @@ public static partial class OrderRecommendationService
                 ("sort", sort), ("policy", policy), ("planning", planning));
             var projection = cache.Recommendation(sharedSignature, semanticInput, budget, () =>
             {
-            var generated = cache.Food(data, demand, candidateContext, Object(("requiredExtraIngredientIds", rule["requiredExtraIngredientIds"]), ("forbiddenExtraIngredientIds", rule["forbiddenExtraIngredientIds"])));
+            // 已确认的特殊任务目标必须保留其成品语义，不能因没有普通配方而默默改送其他料理。
+            // 专项候选为空仅阻止此订单的料理方案；其他订单仍独立生成推荐。
+            var darkCuisine = Str(sort["missionProductKind"]) == "dark-cuisine";
+            var generated = darkCuisine ? RecommendationEngine.BuildDarkCuisineCandidates(data, demand, candidateContext)
+                : cache.Food(data, demand, candidateContext, Object(("requiredExtraIngredientIds", rule["requiredExtraIngredientIds"]), ("forbiddenExtraIngredientIds", rule["forbiddenExtraIngredientIds"])));
             var beverages = Objects(cache.Beverage(data, NormalTargetSelector.Demand(customer, foodTag, beverageTag), candidateContext)).ToArray();
             var customs = CustomRecipes.BuildCustomFoodCandidates(Object(("customRecipes", custom), ("data", data), ("customer", customer), ("requiredFoodTag", foodTag), ("requiredBeverageTag", beverageTag), ("specialFoodTarget", target), ("requiredExtraIngredientIds", rule["requiredExtraIngredientIds"]), ("forbiddenExtraIngredientIds", rule["forbiddenExtraIngredientIds"]), ("context", candidateContext)));
-            var merged = CustomRecipes.MergeCustomFoodCandidateReferences(generated, customs).ToArray();
+            var merged = darkCuisine ? Objects(generated).ToArray() : CustomRecipes.MergeCustomFoodCandidateReferences(generated, customs).ToArray();
             var foods = merged.Where(f => FoodAllowed(f, rule, rejected, foodTag)).ToArray();
             beverages = beverages.Where(b => Str(rule["blockingReason"]).Length == 0 && ((!Bool(rule["requiresBaseOrderMatch"]) && !Bool(rule["requiresHighEvaluation"])) || Bool(b["meetsRequiredBeverage"]))).ToArray();
             var context = RuntimeRecommendationSupport.BuildRecommendationRuntimeContext(runtime, sets, preferences, data, Object(("budget", budget)));
@@ -110,7 +114,7 @@ public static partial class OrderRecommendationService
             var beverageRows = DeriveRows(beverages, foods, false, budget, Str(context["budgetPolicy"]), sort, preferences["recommendationSortProfile"], rowLimit, double.PositiveInfinity);
             ProjectPrimary(ref recipeRows, ref beverageRows, primary, rowLimit, variantLimit, sort);
             var diagnostic = execution.Count == 0 ? BlockedDiagnostic(data, demand, context, sets, generated, merged, foods, beverages, raw, safe, execution, rule) : null;
-            var messages = (diagnostic == null ? System.Array.Empty<string>() : new[] { Str(diagnostic["message"]) }).Concat(SpecialBlockedMessages(raw, safe, rule)).Concat(BlockedPlanMessages(safe, budget, Str(context["budgetPolicy"])));
+            var messages = (darkCuisine && execution.Count == 0 ? new[] { "黑暗料理任务等待可用基底配方、禁忌加料与匹配酒水；不会改送普通料理。" } : diagnostic == null ? System.Array.Empty<string>() : new[] { Str(diagnostic["message"]) }).Concat(SpecialBlockedMessages(raw, safe, rule)).Concat(BlockedPlanMessages(safe, budget, Str(context["budgetPolicy"])));
             // 料理/酒水行与诊断均由本次调用新建且尚无父节点，可直接移交给最终投影。
             // customer、budget以及完整方案仍来自只读输入或raw树，必须显式复制，不能移动其父级。
             // 使用普通JsonObject组装独占的新节点，避免通用Object为这些新数组再深复制一遍。

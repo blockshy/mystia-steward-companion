@@ -244,6 +244,9 @@ public sealed partial class AutomationCoordinator
                 return;
             }
             var state = _states[request.StateKey];
+            // 主线程参与检查尚未进入任何游戏动作时，只等待新的完整输入；不能把该拒绝
+            // 当作阶段完成，也不能接续旧请求中预先准备的动作或丢弃已确认的料理任务。
+            if (TryDeferRareParticipationAdmission(state, request, response, nowMs)) return;
             ApplyOrderResponse(state, request, response, nowMs);
             // 被宿主或适配器拒绝的请求不能触发“预检后准备”续接；等待只允许既有流程继续对账。
             if (J.Str(automation["outcome"]) is not ("progressed" or "completed" or "waiting")) return;
@@ -263,6 +266,47 @@ public sealed partial class AutomationCoordinator
                 _continuations.Enqueue(new Continuation(request.StateKey, "complete-rare", payload, request.Scope));
             }
         }
+    }
+
+    /// <summary>
+    /// 仅处理主线程在稀客参与准入之前返回的明确无副作用等待。原因使用封闭清单，且拒绝
+    /// 任何已准备、送达、结算、任务句柄或成功步骤证据；一般 blocked、人工暂停和副作用
+    /// 不确定仍交给原结果状态机。等待保留请求阶段、锅次与预算，下次只由最新完整快照
+    /// 重新计划，不重放当前请求或它携带的后续动作。此方法不解除已经存在的暂停。
+    /// </summary>
+    private bool TryDeferRareParticipationAdmission(JsonObject state, PendingCommand request,
+        JsonObject response, long nowMs)
+    {
+        var automation = J.Obj(response["automation"]);
+        if (request.Action is not ("prepare-rare" or "complete-rare")
+            || J.Str(automation["outcome"]) != "waiting" || J.Str(automation["stage"]) != "participation"
+            || J.Str(automation["reasonCode"]) is not ("participation-source-incomplete"
+                or "participation-profile-not-aligned" or "participation-orders-not-aligned")
+            || J.Bool(response["ok"]) || J.Bool(response["prepared"]) || J.Bool(response["servedFood"])
+            || J.Bool(response["servedBeverage"]) || J.Bool(response["completedOrder"])
+            || J.Str(automation["jobId"]).Length > 0
+            || J.Objects(response["steps"]).Any(step => J.Bool(step["ok"]) && !J.Bool(step["skipped"]))
+            || AutomationMachine.RequiresManual(J.Str(automation["reasonCode"]),
+                J.Objects(response["steps"]).Select(step => J.Str(step["code"])))) return false;
+
+        // 本次请求完全没有执行，释放它预留但未使用的精确槽位；不影响其他在途命令。
+        foreach (var payload in new[] { request.Payload, request.ContinuationPayload })
+        {
+            if (payload is null || !J.Bool(payload["autoStartCooking"])) continue;
+            var index = (int)J.Num(payload["cookerControllerIndex"], -1);
+            if (index >= 0) _usedCookers.Remove(index);
+        }
+        if (J.Bool(state["paused"]) || J.Bool(state["manualResolutionRequired"])) return true;
+
+        // 保留尚未到期的既有等待；提供有界冷却避免同一不完整输入形成紧密循环。
+        // 冷却到期只是允许下一次检查，并不替代参与集合、当前推荐及现场权限验证。
+        var delay = Math.Clamp(J.Num(automation["retryAfterMs"], 500), 500, 5000);
+        state["nextAttemptAtMs"] = Math.Max(J.Num(state["nextAttemptAtMs"]), nowMs + delay);
+        AutomationMachine.SetStep(state, request.Stage, nowMs);
+        var message = AutomationMachine.FailureMessage(response);
+        state["lastError"] = message;
+        AutomationMachine.Detail(state, message, nowMs);
+        return true;
     }
 
     /// <summary>

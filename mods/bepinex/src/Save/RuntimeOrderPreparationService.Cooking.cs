@@ -232,11 +232,20 @@ internal static partial class RuntimeOrderPreparationService
                 : CookingStartResult.Failed(cookerValidationMessage);
         }
 
+        // 与原生 FinishCooking 的禁忌转换前提一致；放在所有材料副作用之前，失败只阻止本订单。
+        if (!TryValidateDarkCuisineProduction(target, recipe, finalFood, out var productDiagnostic))
+            return CookingStartResult.WaitForCooker(string.IsNullOrWhiteSpace(productDiagnostic)
+                ? "料理产物身份尚未确认，尚未扣料。" : productDiagnostic);
+
         var ingredientIds = baseIngredientIds.Concat(extraIngredientIds).ToArray();
         if (!HasEnoughIngredients(ingredientIds, out var missingIngredientId))
         {
-            AppendAutomationLog("start-failed", collectionTarget, $"{recipeName}: missing ingredient #{missingIngredientId}");
-            return CookingStartResult.Failed($"材料不足，缺少材料 #{missingIngredientId}。");
+            // 此处尚未调用扣料或SetCook，可明确等待新的库存/推荐；不能将同一临时资源
+            // 不足重复计为失败，更不能沿用旧方案不断重试。扣料后的异常仍走下方安全屏障。
+            AppendAutomationLog("start-waiting", collectionTarget,
+                $"{recipeName}: ingredients-unavailable-before-cooking; missing ingredient #{missingIngredientId}; no ingredient deduction or SetCook.");
+            return CookingStartResult.WaitForIngredients(
+                $"材料库存不足，缺少材料 #{missingIngredientId}；尚未扣料，等待按最新库存重新选择方案。");
         }
 
         if (!TryCaptureYuumaFoodTargetRevision(
@@ -1358,6 +1367,10 @@ internal static partial class RuntimeOrderPreparationService
         bool timeoutEligible = true)
     {
         var nowUtc = DateTime.UtcNow;
+        // 终态是纯托管证据；先于暂停、控制权和厨具对象读取，且不改动现场料理。
+        if (AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(
+                job.FoodDeliveryCommitted, job.Target.OrderBinding, out var terminalReceipt))
+            return RetireCookingJobForOrderTerminatedBeforeDelivery(job, terminalReceipt, nowUtc);
         if (!timeoutEligible)
         {
             job.DeliveryTimeoutClock.Observe(nowUtc, eligible: false);
@@ -1586,6 +1599,41 @@ internal static partial class RuntimeOrderPreparationService
         }
 
         return (false, "", OrderPreparationStepCodes.CookingPending);
+    }
+
+    /// <summary>订单在Mod送达前结束时只释放逻辑预约，不送达、不入箱、不退款，也不复位游戏厨具。</summary>
+    private static (bool Remove, string Message, string Code)
+        RetireCookingJobForOrderTerminatedBeforeDelivery(
+            AutomationCookingJob job,
+            RuntimeOrderTerminalReceipt terminalReceipt,
+            DateTime observedAtUtc)
+    {
+        var code = OrderPreparationStepCodes.OrderTerminatedBeforeDelivery;
+        var message = $"{job.RecipeName} 的目标订单已在 Mod 送达前由游戏结束"
+            + $"（结果={terminalReceipt.Disposition}; 来源={terminalReceipt.Source}; 编号={terminalReceipt.Sequence}）；"
+            + "旧自动料理任务已结束并释放厨具预约，锅内料理和厨具现场保持原状，"
+            + "不会送达、评价、移入保温箱或复位厨具。";
+        var leaseReleased = job.ControllerLease.Release(
+            AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery,
+            observedAtUtc);
+        job.FoodDeliveryEvaluationState = AutomationFoodDeliveryEvaluationState.OrderTerminated;
+        job.FoodDeliveryEvaluationMessage = message;
+        job.FoodDeliveryEvaluationCode = code;
+        if (leaseReleased)
+        {
+            AppendAutomationLog(
+                "controller-lease-release",
+                job.Target,
+                job.FormatLogContext($"reason={code}"));
+        }
+        RecordAutomationRuntimeEvent(
+            code,
+            job,
+            message,
+            outcome: "interrupted",
+            reasonCode: code,
+            terminal: true);
+        return (true, message, code);
     }
 
     private static (bool Remove, string Message, string Code) EnterManualHandoff(

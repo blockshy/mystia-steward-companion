@@ -236,16 +236,22 @@ class ColorSetting extends StatefulWidget {
     required this.value,
     required this.onSave,
     this.resetKey,
+    this.presetColors,
     super.key,
   });
   final String title, value;
   final Future<void> Function(String)? onSave;
   final Object? resetKey;
+
+  /// 模块可提供符合语义的快捷色；颜色选择器仍允许任意自定义颜色。
+  final List<String>? presetColors;
   @override
   State<ColorSetting> createState() => _ColorSettingState();
 }
 
 class _ColorSettingState extends State<ColorSetting> {
+  // 通用设置保留八种快捷色；具有冷暖类别语义的模块通过presetColors提供自己的色板。
+  // 预设只提供选色入口，不在构建或打开页面时改写当前保存的自定义色值。
   static const _palette = [
     '#FFDB2E',
     '#5FACD3',
@@ -254,6 +260,7 @@ class _ColorSettingState extends State<ColorSetting> {
     '#BA9CE8',
     '#FFFFFF',
     '#000000',
+    '#F08C78',
   ];
   late int _draft = _parse(widget.value);
   bool _saving = false;
@@ -405,7 +412,7 @@ class _ColorSettingState extends State<ColorSetting> {
             spacing: 6,
             runSpacing: 6,
             children: [
-              for (final color in _palette)
+              for (final color in widget.presetColors ?? _palette)
                 Semantics(
                   label: '${widget.title} $color',
                   button: true,

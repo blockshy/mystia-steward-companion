@@ -4,6 +4,7 @@ using System.Text.Json;
 
 try
 {
+    AssertDarkCuisineDoesNotRequireFabricatedRecipe();
     AssertValidSignalBindsToUniqueLiveOrder();
     AssertGlobalRuntimeGatesFailClosed();
     AssertOrderIdentityAndOwnershipAreExact();
@@ -14,6 +15,7 @@ try
     AssertRepeatedObservationDoesNotChangeBusinessProjection();
     AssertInvalidContextClearsExistingPriority();
     AssertGuestReadCompletenessSurvivesProjection();
+    AssertIncompleteOrderSetNeverProvesUniqueTaskOwnership();
 
     Console.WriteLine(
         "PASS: mission recipe priority binds only to one current ordinary-business order "
@@ -34,16 +36,83 @@ static void AssertGuestReadCompletenessSurvivesProjection()
         var source = new NightBusinessContext
         {
             ActiveRareGuestsReadComplete = complete,
+            // 名单与订单分别采集，使用相反值避免投影错误地将两者合并。
+            OrdersReadComplete = !complete,
             ActiveRareGuests = new List<NightBusinessGuest> { new() { GuestId = 3 } },
-            Orders = new List<NightBusinessOrder> { CreateOrder() },
+            // 完整订单集合会新增优先级；不完整集合携带一个旧优先级，以验证清除时的复制路径。
+            Orders = new List<NightBusinessOrder>
+            {
+                complete ? Project(CreateContext(CreateOrder())).Orders.Single() : CreateOrder(),
+            },
             Error = complete ? null : "partial collection read",
         };
         var projected = Project(source);
         AssertNotSame(source, projected, "Projection was not exercised.");
         AssertEqual(complete, projected.ActiveRareGuestsReadComplete, "Guest completeness was lost.");
+        AssertEqual(!complete, projected.OrdersReadComplete, "Order completeness was lost or confused with guest completeness.");
         AssertEqual(1, projected.ActiveRareGuests.Count, "Confirmed partial guests were lost.");
         AssertEqual(source.Error, projected.Error, "Guest read failure was lost.");
     }
+}
+
+/// <summary>
+/// 同一稀客多笔订单中的任一笔漏读，会把“暂时只读到一笔”伪装成唯一归属。
+/// 此回归覆盖普通任务和黑暗料理，且不启用调度模块，确保任务投影自己承担完整性边界。
+/// </summary>
+static void AssertIncompleteOrderSetNeverProvesUniqueTaskOwnership()
+{
+    foreach (var foodId in new[] { 1, -1 })
+    {
+        var serve = CreateServeSnapshot();
+        serve = serve with { Signals = new[] { serve.Signals.Single() with { FoodId = foodId } } };
+        var first = CreateOrder();
+        var second = CreateOrder(traceId: "R-0002", deskCode: 2);
+        var completePair = CreateContext(first, second);
+        AssertNoPriority(Project(completePair, serve: serve),
+            $"同一客人的两笔完整订单不能分配唯一任务，food={foodId}。");
+        var partial = new NightBusinessContext
+        {
+            OrdersReadComplete = false,
+            ActiveRareGuestsReadComplete = true,
+            Orders = new List<NightBusinessOrder> { first },
+            Source = "smoke-partial-orders",
+        };
+        AssertNoPriority(Project(partial, serve: serve),
+            $"另一笔订单漏读后错误地把剩余订单当作唯一归属，food={foodId}。");
+        AssertNoPriority(Project(completePair, serve: serve),
+            $"恢复完整两笔订单后仍须保持身份歧义，food={foodId}。");
+        var recovered = Project(CreateContext(first), serve: serve);
+        AssertNotNull(recovered.Orders.Single().MissionRecipePriority,
+            $"第二笔真实结束且确认完整后，应重新计算唯一任务归属，food={foodId}。");
+        var stalePartial = new NightBusinessContext
+        {
+            OrdersReadComplete = false,
+            Orders = recovered.Orders.ToList(),
+            Source = "smoke-stale-priority",
+        };
+        var cleared = Project(stalePartial, serve: serve);
+        AssertNoPriority(cleared, $"不完整集合不得保留上轮的任务归属，food={foodId}。");
+        AssertEqual(false, cleared.OrdersReadComplete, "清除旧信号不能把采集状态写成完整。");
+        AssertNotNull(recovered.Orders.Single().MissionRecipePriority, "清除投影不得修改上轮输入对象。");
+        AssertNoPriority(Project(new NightBusinessContext { Orders = new List<NightBusinessOrder> { first } }, serve: serve),
+            $"缺省完整性不能被当作完整读取，food={foodId}。");
+    }
+}
+
+/// <summary>特殊产物保留成品身份与空配方；普通任务仍要求唯一真实配方，不能全局放宽。</summary>
+static void AssertDarkCuisineDoesNotRequireFabricatedRecipe()
+{
+    var serve = CreateServeSnapshot();
+    var dark = serve.Signals.Single() with { FoodId = -1 };
+    var projected = Project(CreateContext(CreateOrder()), catalog: CreateCatalog(recipes: Array.Empty<Recipe>()),
+        serve: serve with { Signals = new[] { dark } });
+    var priority = projected.Orders.Single().MissionRecipePriority;
+    AssertNotNull(priority, "黑暗料理任务不应要求虚构目录配方。");
+    AssertEqual(-1, priority!.FoodId, "黑暗料理目标ID丢失。");
+    AssertEqual("dark-cuisine", priority.ProductKind, "特殊产物种类丢失。");
+    AssertNull(priority.RecipeId, "黑暗料理任务被伪造为普通配方。");
+    AssertNoPriority(Project(CreateContext(CreateOrder()), serve: serve with { Signals = new[] { dark with { FoodId = -2 } } }),
+        "未知负数不能当作黑暗料理。");
 }
 
 static void AssertValidSignalBindsToUniqueLiveOrder()
@@ -515,6 +584,7 @@ static NightBusinessContext CreateContext(params NightBusinessOrder[] orders)
                 Source = "smoke",
             },
         },
+        OrdersReadComplete = true,
         Orders = orders.ToList(),
         Source = "smoke",
         Error = null,

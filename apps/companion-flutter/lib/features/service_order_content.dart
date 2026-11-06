@@ -5,51 +5,72 @@ import '../app/workbench_model.dart';
 import '../ui/components.dart';
 import '../ui/entity_image.dart';
 import '../ui/menu_item_content.dart';
+import '../ui/semantic_tag.dart';
+import '../ui/steward_opacity.dart';
 import '../ui/steward_style.dart';
 import 'service_menu_adapter.dart';
 import 'service_plan_placeholder.dart';
 import 'service_favorites.dart';
 
-/// 订单标题统一占据左列，进度标签只在右列换行；避免把送达状态分散到菜品正文。
-/// 右列受实际可用宽度约束，长中文与大字号可以增加高度，不截断、不缩小命中区域。
+/// 订单标题与短进度共用一行。长名称和受限说明保留完整提示与语义，视觉上省略，
+/// 不因新增“待评价”等状态使右列换行，从而推动下方整份料理配方。
 class OrderHeading extends StatelessWidget {
   const OrderHeading(
     this.title, {
     this.statuses = const [],
+    this.statusDescription = '',
     this.leading,
     super.key,
   });
   final String title;
   final List<Widget> statuses;
+  final String statusDescription;
   final Widget? leading;
 
   @override
-  Widget build(BuildContext context) => LayoutBuilder(
-    builder: (context, constraints) => StewardBaselineRow(
-      children: [
-        if (leading != null) ...[
-          StewardFirstLineCenter(
-            textStyle: StewardText.value,
-            referenceText: title,
-            child: leading!,
+  Widget build(BuildContext context) => StewardBaselineRow(
+    children: [
+      if (leading != null) ...[
+        StewardFirstLineCenter(
+          textStyle: StewardText.value,
+          referenceText: title,
+          child: leading!,
+        ),
+        const SizedBox(width: 6),
+      ],
+      Expanded(
+        child: FTooltip(
+          tipBuilder: (_, _) => Text(title),
+          child: Text(
+            title,
+            style: StewardText.value,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
-          const SizedBox(width: 6),
-        ],
-        Expanded(child: Text(title, style: StewardText.value)),
-        if (statuses.isNotEmpty) ...[
-          const SizedBox(width: 8),
-          ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: constraints.maxWidth * .6),
-            child: Wrap(
-              alignment: WrapAlignment.end,
-              spacing: 5,
-              runSpacing: 5,
-              children: statuses,
+        ),
+      ),
+      if (statuses.isNotEmpty) ...[
+        const SizedBox(width: 8),
+        FTooltip(
+          tipBuilder: (_, _) => Text(statusDescription),
+          child: Semantics(
+            label: statusDescription,
+            excludeSemantics: true,
+            // 阶段拥有实际所需宽度，不与客人类型、警告等分剩余空间。
+            // 这些短内容全部有界；只有左侧长名称可以省略，关键阶段不能消失。
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (var index = 0; index < statuses.length; index++) ...[
+                  if (index > 0) const SizedBox(width: 5),
+                  statuses[index],
+                ],
+              ],
             ),
           ),
-        ],
+        ),
       ],
-    ),
+    ],
   );
 }
 
@@ -99,24 +120,136 @@ class ServiceOrderHeading extends StatelessWidget {
     final desk = order['deskCode'];
     final deskText = desk is int && desk >= 0 ? '${desk + 1}' : label(desk);
     final guestImage = serviceGuestImage(order, rare: rare);
-    return OrderHeading(
-      title ?? '$deskText 桌 · ${label(order['guestName'])}',
-      // 头像身份与订单通道独立：复制稀客也可能提交普通订单。
-      // 精确类型或目录身份缺失时保留通用图标，不按订单类型猜测客群图片。
-      leading: EntityImage(
-        kind: guestImage.kind,
-        id: guestImage.id,
-        fallback: FLucideIcons.userRound,
-        size: StewardImageSize.name,
-      ),
-      statuses: [
-        if (showKind) StatusBadge(rare ? '稀客' : '普客'),
-        ...orderProgressTags(order),
-        if (order[rare ? 'automationAllowed' : 'canAutomate'] == false)
-          const OrderTag('暂不可自动处理', kind: OrderTagKind.warning),
-      ],
+    final progress = orderProgressTags(order).cast<OrderTag>();
+    final blocked = order[rare ? 'automationAllowed' : 'canAutomate'] == false;
+    final summary = _orderHeadingProgress(order);
+    final schedulingPaused =
+        rare && item['presentationSchedulingPaused'] == true;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 窄屏保留客人名与现有送达阶段，调度暂停使用独立图标和完整提示。
+        // 不增加正文行，也不把暂停解释为订单失效或自动化恢复授权。
+        final compactPause =
+            constraints.maxWidth < MediaQuery.textScalerOf(context).scale(420);
+        return OrderHeading(
+          title ?? '$deskText 桌 · ${label(order['guestName'])}',
+          // 头像身份与订单通道独立：复制稀客也可能提交普通订单。
+          // 精确类型或目录身份缺失时保留通用图标，不按订单类型猜测客群图片。
+          leading: EntityImage(
+            kind: guestImage.kind,
+            id: guestImage.id,
+            fallback: FLucideIcons.userRound,
+            size: StewardImageSize.name,
+          ),
+          statusDescription: [
+            if (showKind) rare ? '稀客' : '普客',
+            if (schedulingPaused) '调度暂停，可在稀客调度中启用',
+            ...progress.map((tag) => tag.text),
+            if (blocked) '暂不可自动处理',
+          ].join(' · '),
+          statuses: [
+            if (schedulingPaused)
+              FTooltip(
+                tipBuilder: (_, _) => const Text('调度暂停，可在稀客调度中启用'),
+                child: compactPause
+                    ? Icon(
+                        FLucideIcons.circlePause,
+                        semanticLabel: '调度暂停，可在稀客调度中启用',
+                        size: MediaQuery.textScalerOf(context).scale(14),
+                        color: context.theme.colors.mutedForeground,
+                      )
+                    : const _OrderHeadingStage('调度暂停', success: false),
+              ),
+            // 专注混合列表保留完整类型文字，但省去第二个标签外壳，
+            // 让窄屏优先完整显示当前阶段和尽可能多的客人名称。
+            if (showKind)
+              Text(
+                rare ? '稀客' : '普客',
+                style: StewardText.caption.copyWith(
+                  color: context.theme.colors.mutedForeground,
+                ),
+              ),
+            // 进度只显示当前最值得关注的阶段。完整送达事实仍留在提示与读屏中，
+            // 自动化诊断继续使用原始多标签，不丢失矛盾或未知的服务端事实。
+            // 尚未读到状态时只保留同高空槽，首次送达也不会改变正文起点。
+            Visibility(
+              visible: summary != null,
+              maintainSize: true,
+              maintainState: true,
+              maintainAnimation: true,
+              child: _OrderHeadingStage(
+                summary?.text ?? '状态',
+                success: summary?.kind == OrderTagKind.success,
+              ),
+            ),
+            if (blocked)
+              FTooltip(
+                tipBuilder: (_, _) => const Text('暂不可自动处理'),
+                child: Icon(
+                  FLucideIcons.triangleAlert,
+                  size: MediaQuery.textScalerOf(context).scale(16),
+                  color: context.stewardPaint.foreground(
+                    context.theme.colors.background.computeLuminance() < .3
+                        ? const Color(0xffffc195)
+                        : const Color(0xff965230),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
+}
+
+/// 标题阶段沿用项目语义标签的真实字体、行高、表面透明度及请求/成功色调，
+/// 仅省去装饰图标。短状态完整可见，比等分压缩后的图标或省略号更容易辨认。
+class _OrderHeadingStage extends StatelessWidget {
+  const _OrderHeadingStage(this.text, {required this.success});
+  final String text;
+  final bool success;
+
+  @override
+  Widget build(BuildContext context) {
+    final dark = context.theme.colors.background.computeLuminance() < .3;
+    return SemanticTag(
+      text: text,
+      semanticLabel: '订单状态：$text',
+      tone: success
+          ? Color(dark ? 0xff9fddbb : 0xff30694e)
+          : Color(dark ? 0xffe5cb91 : 0xff805d25),
+    );
+  }
+}
+
+/// 标题阶段优先级为已评价、待评价、已知送达事实。只消费现有布尔事实，
+/// 不由“两项已送达”推断 readyToEvaluate，也不把未知当成尚未送达。
+OrderTag? _orderHeadingProgress(DataMap order) {
+  if (order['hasEvaluated'] == true) {
+    return const OrderTag('已评价', kind: OrderTagKind.success);
+  }
+  if (order['readyToEvaluate'] == true) {
+    return const OrderTag('待评价', kind: OrderTagKind.request);
+  }
+  if (order['hasServedFood'] == true && order['hasServedBeverage'] == true) {
+    return const OrderTag('已送齐', kind: OrderTagKind.success);
+  }
+  if (order['hasServedFood'] == true) {
+    return const OrderTag('已有料理', kind: OrderTagKind.success);
+  }
+  if (order['hasServedBeverage'] == true) {
+    return const OrderTag('已有酒水', kind: OrderTagKind.success);
+  }
+  if (order['hasServedFood'] == false && order['hasServedBeverage'] == false) {
+    return const OrderTag('待送达', kind: OrderTagKind.request);
+  }
+  if (order['hasServedFood'] == false) {
+    return const OrderTag('待送料理', kind: OrderTagKind.request);
+  }
+  if (order['hasServedBeverage'] == false) {
+    return const OrderTag('待送酒水', kind: OrderTagKind.request);
+  }
+  return null;
 }
 
 /// 订单卡片只格式化服务端已选定的结果。这里的库存查找仅补充展示数量，

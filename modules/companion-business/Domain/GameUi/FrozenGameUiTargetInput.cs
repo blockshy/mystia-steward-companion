@@ -33,4 +33,6 @@ public readonly record struct FrozenGameUiTargetInput(
     JsonNode? Features = null,
     JsonNode? SpecialBusiness = null,
     double BusinessGeneration = 0,
-    bool PrioritizeMissionRecipe = false);
+    bool PrioritizeMissionRecipe = false,
+    JsonObject? Snapshot = null,
+    JsonObject? Preferences = null);

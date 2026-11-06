@@ -256,6 +256,58 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
   });
 
+  testWidgets('八种快捷色保持顺序，新增珊瑚色可直接保存且显示选中态', (tester) async {
+    var color = '#102030';
+    final calls = <String>[];
+    await tester.pumpWidget(
+      host(
+        StatefulBuilder(
+          builder: (_, refresh) => ColorSetting(
+            title: '高亮',
+            value: color,
+            onSave: (next) async {
+              calls.add(next);
+              refresh(() => color = next);
+            },
+          ),
+        ),
+      ),
+    );
+    const expected = [
+      '#FFDB2E',
+      '#5FACD3',
+      '#F97373',
+      '#7CCB8A',
+      '#BA9CE8',
+      '#FFFFFF',
+      '#000000',
+      '#F08C78',
+    ];
+    // 通过真实按钮顺序与点击结果核验，避免只比对内部调色板常量。
+    final presets = tester
+        .widgetList<FButton>(find.byType(FButton))
+        .where(
+          (button) =>
+              button.key is ValueKey<String> &&
+              (button.key! as ValueKey<String>).value.startsWith('palette-'),
+        );
+    expect(
+      presets.map((button) => (button.key! as ValueKey<String>).value),
+      expected.map((color) => 'palette-$color'),
+    );
+    final coral = find.byKey(const ValueKey('palette-#F08C78'));
+    await tester.ensureVisible(coral);
+    await tester.tap(coral);
+    await tester.pumpAndSettle();
+    expect(calls, ['#F08C78']);
+    expect(color, '#F08C78');
+    expect(
+      find.descendant(of: coral, matching: find.byIcon(FLucideIcons.check)),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('颜色确认一次保存完整值，保存延迟时禁用色盘与选择器', (tester) async {
     var color = '#102030';
     final calls = <String>[];

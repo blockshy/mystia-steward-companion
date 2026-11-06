@@ -380,7 +380,7 @@ void main() {
   });
 
   for (final desk in [0, 7]) {
-    testWidgets('稀客详情及确认显示${desk + 1}桌，清缓存载荷仍发送原码$desk', (tester) async {
+    testWidgets('稀客详情显示${desk + 1}桌并移除旧捕获清除入口', (tester) async {
       final model = _ServiceModel();
       addTearDown(model.dispose);
       await open(tester, model);
@@ -388,33 +388,8 @@ void main() {
       await tester.pumpAndSettle();
       final guest = desk == 0 ? '博丽灵梦' : '雾雨魔理沙';
       expect(serviceText('$guest · ${desk + 1} 桌'), findsOneWidget);
-      await tester.ensureVisible(serviceText('高级诊断 · 订单捕获'));
-      await tester.tap(serviceText('高级诊断 · 订单捕获'));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(serviceText('清除此捕获缓存'));
-      await tester.tap(serviceText('清除此捕获缓存'));
-      await tester.pumpAndSettle();
-      expect(
-        find.text('${desk + 1} 桌 · $guest。确认游戏现场与此残留记录不一致后再清除。'),
-        findsOneWidget,
-      );
-      await tester.tap(find.text('确认'));
-      await tester.pumpAndSettle();
-      final dismiss = model.writes.single;
-      expect(dismiss.$1, '/orders/rare/dismiss');
-      expect(dismiss.$2, {
-        'deskCode': '$desk',
-        'runtimeGuestId': '991',
-        'foodTagId': '1',
-        'beverageTagId': '2',
-      });
-      expect(dismiss.$3, isNull);
-      expect(
-        object(
-          records(model.recommendations['recommendations']).first['order'],
-        )['deskCode'],
-        0,
-      );
+      expect(serviceText('清除此捕获缓存'), findsNothing);
+      expect(model.writes, isEmpty);
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox());
     });
@@ -500,20 +475,21 @@ void main() {
     await tester.tap(serviceText('普客'));
     await tester.pumpAndSettle();
     final row = orderRow('normal', 0);
-    for (final text in [
-      '原料理：饭团',
-      '原酒水：绿茶',
-      '执行方案',
-      '待送料理',
-      '已有酒水',
-      '待评价',
-      '暂不可自动处理',
-    ]) {
+    for (final text in ['原料理：饭团', '原酒水：绿茶', '执行方案', '待评价']) {
       expect(
         find.descendant(of: row, matching: find.text(text)),
         findsOneWidget,
       );
     }
+    // 待评价是标题当前阶段；已知送达事实保留在提示/语义，不再追加第三个
+    // 可换行标签挤动下方配方。即使夹具提供矛盾事实，也不能擅自更改原值。
+    final heading = tester.widget<OrderHeading>(
+      find.descendant(of: row, matching: find.byType(OrderHeading)),
+    );
+    expect(heading.statusDescription, contains('待送料理'));
+    expect(heading.statusDescription, contains('已有酒水'));
+    expect(heading.statusDescription, contains('待评价'));
+    expect(heading.statusDescription, contains('暂不可自动处理'));
     final details = find.byWidgetPredicate(
       (widget) => widget is ServiceNormalPlanContent && widget.details,
     );
@@ -697,46 +673,6 @@ void main() {
     }
     expect(find.textContaining('9999'), findsNothing);
   });
-
-  for (final reconnect in [false, true]) {
-    testWidgets('清捕获确认期间${reconnect ? '连接变化拒绝提交' : '同一Map更新仍使用已渲染原ID'}', (
-      tester,
-    ) async {
-      final model = _ServiceModel();
-      addTearDown(model.dispose);
-      await open(tester, model);
-      await tester.ensureVisible(serviceText('高级诊断 · 订单捕获'));
-      await tester.tap(serviceText('高级诊断 · 订单捕获'));
-      await tester.pumpAndSettle();
-      await tester.ensureVisible(serviceText('清除此捕获缓存'));
-      await tester.tap(serviceText('清除此捕获缓存'));
-      await tester.pumpAndSettle();
-      if (reconnect) {
-        model.connectionVersion++;
-      } else {
-        final order = object(
-          records(model.recommendations['recommendations']).first['order'],
-        );
-        order['deskCode'] = 7;
-        order['runtimeGuestId'] = 1234;
-        order['foodTagId'] = 99;
-        order['beverageTagId'] = 98;
-      }
-      await tester.tap(find.text('确认'));
-      await tester.pumpAndSettle();
-      if (reconnect) {
-        expect(model.writes, isEmpty);
-      } else {
-        expect(model.writes.single.$2, {
-          'deskCode': '0',
-          'runtimeGuestId': '991',
-          'foodTagId': '1',
-          'beverageTagId': '2',
-        });
-      }
-      expect(tester.takeException(), isNull);
-    });
-  }
 
   testWidgets('异常桌号保留负数哨兵或未知标记，不伪造成第一桌', (tester) async {
     final model = _ServiceModel();

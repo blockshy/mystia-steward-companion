@@ -205,7 +205,13 @@ void main() {
             channel: channel,
             child: AnimatedBuilder(
               animation: model,
-              builder: (_, _) => ServicePage(model),
+              // 产品将状态放到页头；隔离页面夹具显式提供相同入口，避免退回Tab栏。
+              builder: (_, _) => Column(
+                children: [
+                  ServiceAutomationHeader(model),
+                  Expanded(child: ServicePage(model)),
+                ],
+              ),
             ),
           ),
         ),
@@ -245,7 +251,7 @@ void main() {
   }
 
   Future<void> preferences(WidgetTester tester) async {
-    final title = focusText('专注显示 · 本机');
+    final title = focusText('专注显示');
     await revealFocus(tester, title);
     await tester.tap(title);
     await tester.pumpAndSettle();
@@ -300,7 +306,52 @@ void main() {
     ]);
     expect(model.writes, isEmpty);
     expect(model.localWrites, isEmpty);
-    expect(model.reads, ['/favorites'], reason: '经营页只注册一次收藏读取；专注切换不重读或写游戏。');
+    expect(model.reads, [
+      '/favorites',
+      '/favorites',
+      '/ui/focus-overlay',
+    ], reason: '进入专注切换到收藏与宿主显示配置资源组；读取不会写游戏。');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('调度暂停排在所有非暂停订单后且优先于稀客优先设置', (tester) async {
+    final model = _FocusModel();
+    addTearDown(model.dispose);
+    for (final key in serviceFocusPreferences.keys.skip(2)) {
+      model.localPreferences[key] = false;
+    }
+    final rare = records(model.recommendations['recommendations']);
+    final normal = records(model.recommendations['normalOrderDetailPlans']);
+    object(rare[0]['order'])['serviceOrderPosition'] = 0;
+    object(rare[1]['order'])['serviceOrderPosition'] = 1;
+    object(normal[0]['order'])['serviceOrderPosition'] = 2;
+    rare[0]['presentationSchedulingPaused'] = true;
+    rare[1]['presentationSchedulingPaused'] = true;
+    model.localPreferences[serviceFocusRareFirstPreference] = true;
+    await open(tester, model);
+    await focus(tester);
+    expect(
+      tester.getTopLeft(focusText('2 桌 · 普客乙')).dy,
+      lessThan(tester.getTopLeft(focusText('1 桌 · 稀客甲')).dy),
+    );
+    expect(
+      tester.getTopLeft(focusText('1 桌 · 稀客甲')).dy,
+      lessThan(tester.getTopLeft(focusText('8 桌 · 稀客丙')).dy),
+    );
+    // 恢复只改变分组：参与稀客在前、普客居中、仍暂停稀客在后，不改输入顺位。
+    rare[1]['presentationSchedulingPaused'] = false;
+    model.notifyListeners();
+    await tester.pumpAndSettle();
+    expect(
+      tester.getTopLeft(focusText('8 桌 · 稀客丙')).dy,
+      lessThan(tester.getTopLeft(focusText('2 桌 · 普客乙')).dy),
+    );
+    expect(
+      tester.getTopLeft(focusText('2 桌 · 普客乙')).dy,
+      lessThan(tester.getTopLeft(focusText('1 桌 · 稀客甲')).dy),
+    );
+    expect(object(rare[0]['order'])['serviceOrderPosition'], 0);
+    expect(model.writes, isEmpty);
     expect(tester.takeException(), isNull);
   });
 

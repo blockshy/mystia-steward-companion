@@ -1,6 +1,6 @@
 # Flutter / C# Local API 契约验证
 
-此测试覆盖当前 profile schema 4 与 C# Business 协议。宿主直接编译当前生产 `LocalApiServer`、HTTP reader/router、设备权威、收藏与自定义菜谱 store；运行于真实 .NET 6。它不是 Node HTTP 模拟服务。所有数据在本次独占临时目录，Token 是公开合成值。原生游戏与更新委托默认拒绝；库存/邀请的指定合成参数仅进入 stdin 控制队列并更新内存计数，以验证生产写入许可的正反向路径，不操作任何游戏对象。
+此测试覆盖当前 profile schema 10 与 C# Business 协议。宿主直接编译当前生产 `LocalApiServer`、HTTP reader/router、设备权威、收藏与自定义菜谱 store；运行于真实 .NET 6。它不是 Node HTTP 模拟服务。所有数据在本次独占临时目录，Token 是公开合成值。原生游戏与更新委托默认拒绝；库存/邀请的指定合成参数仅进入 stdin 控制队列并更新内存计数，以验证生产写入许可的正反向路径，不操作任何游戏对象。
 
 ## 执行
 
@@ -27,13 +27,15 @@ dart run bin/verify.dart
 
 只运行纯值、真实 Dart HttpServer 传输和可控时序测试时使用 `dart run bin/verify.dart --unit-only`。完整测试还会启动前述已编译宿主，使用真实 TCP 请求；不会构建或启动游戏。
 
+完整runner先执行 `--snapshot-signature` 与 `--participation-admission`：实际生产内容签名必须响应稀客/普客读取完整位的变化，主线程准入对不完整/错误/集合冲突拒绝并正确释放许可锁；不操作游戏。
+
 完整runner同时执行 `--management <合成profile.json>` 专项：实际网卡校验、Token修改与旧凭据拒绝、BepInEx配置单次保存/失败内存恢复、排队激活的凭据切换、日志数量1–30、诊断包范围/重解析点/陈旧ID/精确删除及主设备权限。文件操作只作用于专项创建的临时目录，不读取或删除用户诊断包。
 
 Flutter 组合测试位于 `apps/companion-flutter/test/live_http_contract_test.dart`。在 Flutter 应用目录执行 `flutter test test/live_http_contract_test.dart`。可通过 `FLUTTER_CONTRACT_HOST` 覆盖 DLL 路径，通过 `DOTNET_EXE` 覆盖 dotnet 可执行文件。该测试以原生 HostApi 替身接入真实 `CompanionPlatform`、`LiveWorkbenchModel` 和 HTTP，会持久化合成偏好并回读；不把原生安全存储替身当作 DPAPI/Keystore 证据。
 
 ## 手工接入隔离宿主
 
-先用 `CompanionProfile.defaults().json` 写出当前 schema 4 的完整 profile JSON（包括 `gameUiEnabled`），再启动：
+先用 `CompanionProfile.defaults().json` 写出当前 schema 10 的完整 profile JSON（包括 `gameUiEnabled`），再启动：
 
 ```powershell
 dotnet tests/flutter-contracts/host/bin/Release/net6.0/FlutterContractsHost.dll recovery <profile.json>
@@ -43,11 +45,19 @@ dotnet tests/flutter-contracts/host/bin/Release/net6.0/FlutterContractsHost.dll 
 
 ## 覆盖范围与证据边界
 
+游戏内专注显示的独立入口为 `dotnet host/bin/Release/net6.0/FlutterContractsHost.dll --game-focus-overlay`。它直接验证正式设置存储、v1原字节备份与v2迁移、严格磁盘格式、CAS、原子写入失败，以及正式订单投影的需求指纹、场景/目录/生命周期、调度暂停恢复、内容开关、精确图片键、订单底色和黑暗料理来源；Flutter真实HTTP测试补充主设备权限、内容/主题同步、迟到GET、409补读与未知回执不重发。旧编辑状态字段已移除，游戏内面板始终穿透，位置尺寸由外部客户端设置。
+
+`--rare-order-display`以去敏后的四笔同客人订单验证显示与执行分离：名单中新单默认暂停时显示键仍完整，但自动化命令、原生高亮目标及参与许可均为空；逐单启用、再暂停和恢复只改变相应精确身份。缺项、重复、旧身份和不完整采集仍拒绝执行。完整验证入口包含该专项，不能只凭客户端卡片可见就认定动作资格有效。
+
+`--order-patience`验证原生字段读取边界、生命周期与ABA隔离、未知null、复制链、耐心变化刷新快照且不使推荐payload失效。`--rare-patience-auto-resume`调用正式宿主权威入口，覆盖严格低于阈值、主设备确认/在线、场景/资源、非阻塞锁、只触发一次以及没有自动化租约时的独立调度。自动化仍经过自己的执行许可；这两项都不操作真实游戏。
+
+`--cooking-ingredient-wait`调用原生生产结果工厂、结果分类与托管自动化状态机，验证开锅前缺料为普通等待、不累积失败预算、保留已经送达的酒水、料理任务与安全屏障优先。另检查缺料分支位于扣料及 `SetCook` 之前；此源码检查不等同于真实 Unity 执行验证。该入口不创建游戏对象、不扣库存、不启动游戏。
+
 本文件描述当前测试实现，不累积历次断言数量或个人工作区日志路径。每次报告应记录源码 SHA、锁定环境、实际命令与 runner 输出；管理、快照投影等子进程会单独报告断言，不能把不同时间或互相重叠的验证数量拼成一次完整运行结果。
 
-- DTO 严格类型、schema 4 默认安全配置/依赖约束/范围、不可变对象、精确来源上下文与当前签名。`gameUiEnabled` 是必需共享布尔字段，新配置默认关闭；配置关闭时不删除十个普客/稀客分项及颜色。
-- 本机历史 checkpoint 使用独立迁移入口：缺少版本的历史记录按 schema 1 处理，要求对应旧版本字段全集和类型严格有效；schema 1/2 均移除已取消的 `serviceOrderSortMode`。schema 1 按十个旧辅助分项是否任一开启推导 `gameUiEnabled`，schema 2/3 保留明确的总开关值。schema 1/2/3 的旧评分配置若九项目标精确匹配其命名预设，则保留预设；否则仅将模式设为 `custom`，完整保留原启用、权重、方向与数组顺序。自动化及其余偏好不被重置。缺字段、未知字段、错误类型及未来版本拒绝。迁移后的 checkpoint 带 `profileSchemaVersion=4`，仅作为设备注册初值，revision/hash/同步 ACK 仍来自服务端返回并耐久保存的权威结果；当前 HTTP 只接受 schema 4，不接受旧排序字段。
-- 四组排序预设逐组与生产 C# 导出的完整目标配置对比；默认采用 balanced。四个固定预设只接受其规范九项，只有显式 `custom` 允许调整启停、权重和方向；自定义即使与某预设同值也不反向改名。生产模型模式切换与叶字段修改串行合并，旧滑块不能覆盖刚切换的固定预设，不把列表位置解释为业务优先序。
+- DTO 严格类型、schema 10 默认安全配置/依赖约束/范围、不可变对象、精确来源上下文与当前签名。`gameUiEnabled` 是必需共享布尔字段，新配置默认关闭；配置关闭时不删除十个普客/稀客分项及颜色。`normalGameUiEnabled`、`rareGameUiEnabled` 为必需布尔分类总开关，默认开启，受全局开关约束；关闭分类保留分项与配色。两类调色板默认各2色，范围各1–3色，校验非法长度、同类重复色和颜色格式，跨类同色合法。
+- 本机历史 checkpoint 使用独立迁移入口：缺少版本的记录按 schema 1 处理，要求对应旧版本字段全集和类型严格有效。v1/v2 删除旧订单排序，v1 按旧辅助分项推导总开关，v2 以后保留显式开关。v1–v3 的历史可编辑评分预设按实际参数识别为固定预设或自定义，v4 以后的固定预设严格验证。v1–v4 删除无效厨具权重、保留其余八项；各自保留原单色并补为两色，新增调度默认关闭。v5 公共八色分别取前三色迁入两类；v6 严格验证历史颜色后保留前三色；v7 原默认整套或缩短前缀迁为同数量的冷暖预设，其余自定义保留前三色。v8 配色保持原样。v1–v6 先严格验证历史字段，再移除独立辅助数量字段，实际颜色数成为唯一辅助上限；保留其他偏好，不修改输入对象。缺字段、未知字段、错误类型及未来版本拒绝。v1–v8严格验证后新增两类总开关为true，不改变全局辅助状态和子项偏好。v1–v9新增等待条自动启用策略默认false/30/tail，与名单同一修订保存。迁移后的 checkpoint 带 `profileSchemaVersion=10`，仅作为设备注册初值，revision/hash/同步 ACK 仍来自服务端返回并耐久保存的权威结果；当前 HTTP 只接受 schema 10。
+- 四组排序预设逐组与生产 C# 导出的完整目标配置对比；默认采用 balanced。四个固定预设只接受其规范八项，只有显式 `custom` 允许调整启停、权重和方向；自定义即使与某预设同值也不反向改名。生产模型模式切换与叶字段修改串行合并，旧滑块不能覆盖刚切换的固定预设，不把列表位置解释为业务优先序。
 - 端点仅回环/私有 IPv4、禁止 DNS/重定向；UTF-8 Content-Length 与无 chunked；中文 Header 编解码；写请求损坏响应标记结果未知。
 - acquire/release 串行与迟到响应、取消尚未开始的 enable、游戏重启但 authorityRevision 相同的租约隔离。
 - 自动化意图仅来自已保存的 `activeProfile.automationEnabled`：全新客户端会话恢复开启/关闭状态，保存开启后自动获取租约，关闭或暂停释放；连接恢复与前台恢复不要求第二个临时开关。查看设备、未完成配置落盘/ACK、旧主设备仍不能租约。开启配置不绕过实际场景和业务来源检查。

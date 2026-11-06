@@ -1,6 +1,6 @@
 # 验证指南
 
-更新：2026-10-23。只把实际执行结果记为通过。Flutter 组件、真实 HTTP 隔离宿主、纯业务差分和原生受控测试各自证明不同边界；不互相替代。本文维护当前入口与证据要求，历史断言数量和某次本机结果留在对应验证记录中。
+更新：2026-11-06。只把实际执行结果记为通过。Flutter 组件、真实 HTTP 隔离宿主、纯业务差分和原生受控测试各自证明不同边界；不互相替代。本文维护当前入口与证据要求，历史断言数量和某次本机结果留在对应验证记录中。
 
 ## 按改动选择
 
@@ -16,6 +16,21 @@
 | 文档 | 路径/链接/命令审查、git diff --check |
 
 ## 非游戏验证入口
+
+游戏内专注显示另运行 `dotnet run --project tests/runtime-game-focus-overlay/RuntimeGameFocusOverlaySmoke.csproj -c Release -p:NuGetAudit=false`，以及构建正式契约宿主后运行 `dotnet tests/flutter-contracts/host/bin/Release/net6.0/FlutterContractsHost.dll --game-focus-overlay`。前者为托管UGUI模拟，验证图标缓存/分帧解码、紧凑卡片布局、永久输入穿透、外部位置尺寸和稳定帧开销；后者链接真实存储与订单投影，验证v2迁移、精确图片/颜色/内容过滤与身份隔离。两者均不连接游戏，不能代替真实游戏内绘制效果验收。
+
+新增功能按以下入口复核，完整命令与逐条断言以各测试工程为准：
+
+| 功能 | 隔离验证入口 |
+| --- | --- |
+| 黑暗料理任务与供给 | `tests/dark-cuisine-task-priority/`、`tests/runtime-dark-cuisine/`及自动化工程中的特殊料理用例，纳入`audit:business` |
+| 稀客队列及等待条规则 | `tests/runtime-rare-guest-participation/`、`tests/runtime-automation-control/`；契约宿主`--participation-admission`、`--order-patience`、`--rare-patience-auto-resume` |
+| 未开锅方案更换与缺料等待 | `tests/csharp-automation/RareIngredientFallbackTests.cs`；契约宿主`--cooking-ingredient-wait` |
+| 暂停订单完整显示 | 契约宿主`--rare-order-display`及Flutter的`paused_service_orders_test.dart` |
+| 多目标背景与排序 | `tests/runtime-cooker-color-blocks/`、`tests/runtime-list-color-blocks/`、`tests/runtime-ui-list-order/`及`ui-pinning-runtime`，纳入`audit:business` |
+| 调度设置与专注布局 | Flutter的`rare_guest_scheduling_test.dart`、`game_focus_overlay_controls_test.dart`、`game_focus_mirror_layout_test.dart`，覆盖窄屏、字号和状态变动 |
+
+契约宿主各模式需要先编译当前`FlutterContractsHost.csproj`；上述模式已由完整`flutter:contracts-test`串行调用，不能使用旧宿主DLL代替当前源码。明确缺料的等待测试不模拟实际扣料，未知提交的安全屏障仍须独立验证。
 
 ```powershell
 # 先设置 MYSTIA_FLUTTER_SDK_ROOT；运行库恢复只写隔离测试目录，不连接游戏。
@@ -45,11 +60,17 @@ Widget截图可设置 `MYSTIA_UI_FONT` 为本机中文字体文件、`MYSTIA_UI_
 
 现有三项真实Harmony/MonoMod探针的锁定入口为 `corepack pnpm test:dotnet6-harmony`，需要锁定Docker环境。环境不可用时明确记录未执行，不能用普通net6单元测试冒充这三项结果。
 
+`audit:business`中的`ui-pinning-runtime`默认模式也会初始化真实Harmony，需要匹配的MonoMod运行依赖；仅有正式Mod编译引用不保证该测试运行库齐全。缺少依赖时完整门禁会失败，不能把此前已通过的项目记为整套通过。可另运行该工程已有的`--color-blocks-only`、`--beverage-targets`、`--list-order-context`等隔离模式及其余独立项目，逐项记录实际结果；这些补测不补足Harmony注入证据，也不应修改默认门禁以静默跳过。
+
 `audit:business` 同时运行窗口计时/帧间隔、Steam 子进程环境、订单高亮身份失效与座位投影的纯托管回归。八卡稳定场景比较真实生产维护代码的属性读取次数，座位测试比较纯托管投影分配；这些结果不换算为 Unity 帧率。实际用户复现时的五秒性能窗口及日志字段见[日志与诊断](observability.md)。
 
 冻结输入专项分别验证自动化与游戏辅助的新组件入口和原 JSON 入口完整等价、输出所有权及当前性门禁。`--warm-pipeline` 使用人工八种点单，覆盖捕获、绑定、编排、目标、发布、HTTP 整链的新旧分配对照和并发读写；必须先生成上述大目录夹具。方案物化专项使用固定 TypeScript 参考比较完整结果，保证任务/收藏提升发生在80/32项截断之前。这些专项已纳入串行业务门禁，累计分配与墙钟时间均不代表 Unity FPS。
 
 ## 真实游戏边界
+
+列表按订单排序的离线回归使用 `dotnet run --project tests/runtime-ui-list-order/RuntimeUiListOrderSmoke.csproj -c Release`，直接链接正式稳定置换及原生反射桥；`ui-pinning-runtime -- --list-order-context`验证实际刷新作用域、主线程和发布租约。加料声明的绑定前身份映射由 `runtime-target-recipe-variant` 验证；本机缺少Harmony运行依赖时可显式使用 `--without-harmony` 执行其余状态机组，输出必须注明跳过六组FullVisual补丁及HarmonyContractSmoke，不能将其记为完整注入通过。三类列表桥的类型及调用顺序按当前metadata、interop、Native交叉核对；测试中的原生列表、Harmony与变体边界仍为可观测替身。
+
+食材/酒水列表的回归夹具必须以继承 `Il2CppSystem.ValueType` 的托管类模拟键值对，并区分泛型引用参数和非泛型装箱参数的写入，避免CLR结构体掩盖原生封送缺陷。另以 `tests/runtime-ui-list-order/verify-interop-contract.ps1 -InteropAssemblies <实际安装及离线生成的Il2Cppmscorlib.dll路径数组> -CecilAssembly <Mono.Cecil.dll路径>` 只读核对真实DLL的类型、精确setter签名与CIL调用；该工具不执行游戏程序集。原生IList的类型检查、拆箱与赋值行为仍须和当前Native资料交叉核对，不能由托管替身单独证明。
 
 涉及 Unity 对象、Hook 或原生游戏副作用的最终行为需要对应游戏环境证明。离线构建、模拟经营、组件截图和用户提供的经营测试反馈应分别标注来源与范围，不据此推导未执行的平台或场景已经通过。只有文档整理或历史压缩时检查链接、命令、文件树与差异即可，不触发游戏测试、安装或发布。
 

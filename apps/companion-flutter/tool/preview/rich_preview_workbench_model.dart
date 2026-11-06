@@ -2,9 +2,12 @@ import 'dart:convert';
 
 import 'package:companion_protocol/companion_protocol.dart';
 import 'package:flutter/painting.dart';
+import 'package:flutter/widgets.dart' show WidgetsBinding;
 import 'package:mystia_steward_companion/app/workbench_model.dart';
 
 import 'synthetic_game_media.dart';
+
+part 'migration_features_preview.dart';
 
 /// 独立预览入口的纯内存事实投影。此文件不导入网络、文件、原生平台或生产会话。
 /// 所有名称、数量、计划与结果仅用于交互验收，不计算推荐算法，不代表真实游戏结果。
@@ -19,6 +22,7 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
 
   static const scenarios = {
     'night': '夜间经营',
+    'migration-features': '调度·多色·特殊料理',
     'day': '日间工具',
     'viewer': '查看设备',
     'offline': '连接中断',
@@ -189,7 +193,9 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
       gameMediaReady &&
       primary &&
       profile['automationEnabled'] == true &&
-      (scenario == 'night' || scenario == 'barrier');
+      (scenario == 'night' ||
+          scenario == 'barrier' ||
+          scenario == 'migration-features');
   @override
   String error = '',
       notice = '',
@@ -397,6 +403,23 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
         },
     ];
     resources = {
+      // 独立预览仅模拟宿主设置及修订，不创建 Unity 窗口或更改任何真实游戏配置。
+      '/ui/focus-overlay': {
+        'ready': true,
+        'revision': 1,
+        'status': '离线预览，不会创建真实游戏内界面。',
+        'settings': {
+          'enabled': false,
+          'backgroundOpacity': 72,
+          'contentOpacity': 100,
+          'borderWidth': 1,
+          'fontSize': 16,
+          'content': gameFocusContentFromPreferences(const {}),
+          'theme': 'light',
+          'scrollPercent': 0,
+          'layout': {'x': .7, 'y': .12, 'width': .28, 'height': .72},
+        },
+      },
       '/favorites': {
         'version': 1,
         'recipes': [
@@ -917,6 +940,7 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
         },
       },
     };
+    if (next == 'migration-features') _installMigrationFeatures();
     if (next == 'orders-pending') {
       // 快照已有点单，但合成推荐尚未发布。复用生产只读投影生成 pending 字段，
       // 不在预览中直接伪造页面状态；已知原点料理、酒水仍由当前快照提供。
@@ -1278,6 +1302,68 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
         }
       }
       switch (path) {
+        case '/ui/focus-overlay':
+          final overlay = resources[path]!;
+          final changes = object(body?['changes']);
+          final editableFields = const {
+            'enabled',
+            'backgroundOpacity',
+            'contentOpacity',
+            'borderWidth',
+            'fontSize',
+            'content',
+            'theme',
+            'scrollPercent',
+            'layout',
+          };
+          final settings = {...object(overlay['settings'])};
+          if (body?['expectedRevision'] != overlay['revision'] ||
+              changes.isEmpty ||
+              changes.keys.any(
+                (key) => !editableFields.contains(key) && key != 'resetLayout',
+              )) {
+            error = '合成显示设置已变化或字段非法，请重新读取。';
+            _publish();
+            return;
+          }
+          for (final entry in changes.entries) {
+            if (editableFields.contains(entry.key))
+              settings[entry.key] = entry.value;
+          }
+          if (changes['resetLayout'] == true) {
+            settings['scrollPercent'] = 0;
+            settings['layout'] = {
+              'x': .7,
+              'y': .12,
+              'width': .28,
+              'height': .72,
+            };
+          }
+          final next = <String, Object?>{
+            ...overlay,
+            'settings': settings,
+            'ready': true,
+            'canReset': false,
+            'revision': (overlay['revision']! as int) + 1,
+          };
+          if (!gameFocusOverlayConfirmed(next) ||
+              changes.containsKey('resetLayout') &&
+                  changes['resetLayout'] != true) {
+            error = '合成显示设置超出允许范围。';
+            _publish();
+            return;
+          }
+          resources[path] = next;
+        case '/orders/rare/participation':
+          if (scenario != 'migration-features') {
+            error = '请先选择调度·多色·特殊料理合成场景。';
+          } else {
+            _mutatePreviewParticipation(body ?? const {});
+            if (error.isNotEmpty) {
+              _publish();
+              return;
+            }
+          }
         case '/favorites/add-recipe':
         case '/favorites/add-beverage':
           final recipe = path.endsWith('recipe');
@@ -1791,6 +1877,7 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
   @override
   Future<void> updateProfile(DataMap changes) async {
     if (!canEdit) return;
+    final previousProfile = _copy(profile);
     // 复用规范 DTO 验证表单范围，但不使用真实权限、租约或业务计算服务。
     try {
       profile = _copy(CompanionProfile({...profile, ...changes}).json);
@@ -1802,6 +1889,8 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
     }
     authority['authorityRevision'] =
         (authority['authorityRevision'] as int) + 1;
+    if (scenario == 'migration-features')
+      _syncMigrationProfile(previousProfile);
     _recordOperation('保存共享设置');
     _publish('共享设置已保存');
   }
@@ -1809,6 +1898,30 @@ class RichPreviewWorkbenchModel extends WorkbenchModel {
   @override
   Future<void> updateLocal(DataMap changes) async {
     localPreferences = {...localPreferences, ...changes};
+    // 离线预览仅投影主设备自己的设置；查看设备不能覆盖合成游戏电脑显示。
+    if (primary &&
+        changes.keys.any(
+          (key) =>
+              gameFocusContentPreferences.containsValue(key) ||
+              key == 'themeMode' ||
+              key == 'darkMode',
+        )) {
+      final overlay = resources['/ui/focus-overlay'];
+      if (overlay != null) {
+        resources['/ui/focus-overlay'] = {
+          ...overlay,
+          'settings': {
+            ...object(overlay['settings']),
+            'content': gameFocusContentFromPreferences(localPreferences),
+            'theme': gameFocusTheme(
+              localPreferences,
+              WidgetsBinding.instance.platformDispatcher.platformBrightness,
+            ),
+          },
+          'revision': (overlay['revision']! as int) + 1,
+        };
+      }
+    }
     _publish();
   }
 

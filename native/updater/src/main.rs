@@ -10,8 +10,54 @@
     allow(dead_code)
 )]
 
-mod package_manifest;
 mod client_exit;
+#[cfg(any(windows, feature = "updater-windows-ui-check"))]
+mod game_process;
+mod install_control;
+mod package_manifest;
+#[cfg(any(windows, feature = "updater-windows-ui-check"))]
+use game_process::GameProcess;
+use install_control::InstallControl;
+
+/// 隔离进程观察与安装事务；测试只提供状态序列，不需要操作真实游戏。
+trait ProcessObservation {
+    fn is_running(&self) -> Result<bool, String>;
+}
+#[cfg(any(windows, feature = "updater-windows-ui-check"))]
+impl ProcessObservation for GameProcess {
+    fn is_running(&self) -> Result<bool, String> {
+        self.is_running()
+    }
+}
+#[cfg(not(any(windows, feature = "updater-windows-ui-check")))]
+struct GameProcess {
+    pid: u32,
+}
+#[cfg(not(any(windows, feature = "updater-windows-ui-check")))]
+impl GameProcess {
+    fn open(pid: u32) -> Result<Self, String> {
+        if pid == 0 {
+            return Err("游戏进程编号无效。".into());
+        }
+        Ok(Self { pid })
+    }
+}
+#[cfg(not(any(windows, feature = "updater-windows-ui-check")))]
+impl ProcessObservation for GameProcess {
+    fn is_running(&self) -> Result<bool, String> {
+        Ok(Path::new("/proc")
+            .join(self.pid.to_string())
+            .try_exists()
+            .map_err(|e| e.to_string())?)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallOutcome {
+    Succeeded,
+    Cancelled,
+}
+const CANCELLED_MESSAGE: &str = "已取消安装，插件文件未替换。";
 use std::collections::HashMap;
 use std::env;
 use std::fs;
@@ -58,27 +104,6 @@ struct InstallContext {
     wait_timeout: Duration,
 }
 
-#[derive(Clone, Copy)]
-enum GameCloseMode {
-    #[cfg(not(target_os = "windows"))]
-    WaitOnly,
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "linux", feature = "updater-windows-ui-check")
-    ))]
-    RequestClose,
-    #[cfg(any(
-        target_os = "windows",
-        all(target_os = "linux", feature = "updater-windows-ui-check")
-    ))]
-    ForceTerminate,
-}
-
-#[derive(Clone, Copy)]
-struct InstallOptions {
-    game_close_mode: GameCloseMode,
-}
-
 #[derive(Clone)]
 struct InstallProgress {
     state: &'static str,
@@ -104,7 +129,8 @@ fn main() {
     let raw: Vec<String> = env::args().skip(1).collect();
     if raw.len() == 2 && raw[0] == "--validate-package" {
         if let Err(error) = package_manifest::validate(Path::new(&raw[1]), false) {
-            eprintln!("{error}"); process::exit(1);
+            eprintln!("{error}");
+            process::exit(1);
         }
         return;
     }
@@ -127,14 +153,15 @@ fn main() {
 fn run_silent(args: &HashMap<String, String>, status_file: &Path) -> Result<(), String> {
     let context = parse_install_context(args)?;
     let mut ignore_progress = |_progress: InstallProgress| {};
+    let game = GameProcess::open(context.game_pid)?;
     run_install(
         &context,
         status_file,
-        InstallOptions {
-            game_close_mode: GameCloseMode::WaitOnly,
-        },
+        &game,
+        &InstallControl::default(),
         &mut ignore_progress,
     )
+    .map(|_| ())
 }
 
 fn parse_install_context(args: &HashMap<String, String>) -> Result<InstallContext, String> {
@@ -165,89 +192,87 @@ fn parse_install_context(args: &HashMap<String, String>) -> Result<InstallContex
 fn run_install(
     context: &InstallContext,
     status_file: &Path,
-    options: InstallOptions,
+    game: &impl ProcessObservation,
+    control: &InstallControl,
     progress: &mut dyn FnMut(InstallProgress),
-) -> Result<(), String> {
+) -> Result<InstallOutcome, String> {
+    // 工作线程的错误与正常取消都必须发布一个终态；窗口随后等待线程退出才能释放控件。
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        run_install_steps(context, status_file, game, control, progress)
+    }))
+    .unwrap_or_else(|_| Err("安装线程异常终止，请检查插件与备份目录。".into()));
+    let event = match &result {
+        Ok(InstallOutcome::Succeeded) => {
+            InstallProgress::new("succeeded", "更新安装完成。请重新启动游戏。", 100)
+        }
+        Ok(InstallOutcome::Cancelled) => InstallProgress::new("cancelled", CANCELLED_MESSAGE, 0),
+        Err(error) => InstallProgress::new("failed", error, 100),
+    };
+    publish_progress(status_file, progress, event);
+    control.finish()?;
+    result
+}
+
+fn run_install_steps(
+    context: &InstallContext,
+    status_file: &Path,
+    game: &impl ProcessObservation,
+    control: &InstallControl,
+    progress: &mut dyn FnMut(InstallProgress),
+) -> Result<InstallOutcome, String> {
+    if control.cancelled()? {
+        return Ok(InstallOutcome::Cancelled);
+    }
     publish_progress(
         status_file,
         progress,
-        InstallProgress::new("preparing", "正在准备更新安装器。", 5),
+        InstallProgress::new("preparing", "正在校验更新包。准备与等待期间可以取消。", 5),
     );
     validate_plugin_path(&context.plugin_dir)?;
     package_manifest::validate(&context.staged_dir, false)?;
-    prepare_parent(&context.backup_dir)?;
-
-    publish_progress(
-        status_file,
-        progress,
-        InstallProgress::new("closing-companion", "正在关闭伴随窗口以释放程序文件。", 12),
-    );
-    if is_process_running(context.game_pid) {
-        match options.game_close_mode {
-            #[cfg(not(target_os = "windows"))]
-            GameCloseMode::WaitOnly => {
-                publish_progress(
-                    status_file,
-                    progress,
-                    InstallProgress::new(
-                        "waiting-game",
-                        format!(
-                            "检测到游戏进程 {} 仍在运行，请关闭游戏后继续安装。",
-                            context.game_pid
-                        ),
-                        20,
-                    ),
-                );
-            }
-            #[cfg(any(
-                target_os = "windows",
-                all(target_os = "linux", feature = "updater-windows-ui-check")
-            ))]
-            GameCloseMode::RequestClose => {
-                let requested = request_game_close(context.game_pid);
-                let message = if requested {
-                    format!(
-                        "已请求游戏进程 {} 正常关闭，正在等待退出。",
-                        context.game_pid
-                    )
-                } else {
-                    format!(
-                        "未找到游戏窗口，请手动关闭游戏进程 {} 后继续。",
-                        context.game_pid
-                    )
-                };
-                publish_progress(
-                    status_file,
-                    progress,
-                    InstallProgress::new("waiting-game", message, 20),
-                );
-            }
-            #[cfg(any(
-                target_os = "windows",
-                all(target_os = "linux", feature = "updater-windows-ui-check")
-            ))]
-            GameCloseMode::ForceTerminate => {
-                publish_progress(
-                    status_file,
-                    progress,
-                    InstallProgress::new("terminating-game", "正在强制结束游戏进程。", 18),
-                );
-                force_terminate_game(context.game_pid)?;
-            }
-        }
+    if !control.enter_waiting()? {
+        return Ok(InstallOutcome::Cancelled);
     }
-    wait_for_game_exit(
+    if !wait_for_game_exit(
+        game,
+        control,
         context.game_pid,
         context.wait_timeout,
         status_file,
         progress,
-    )?;
-    client_exit::request_and_wait(context.control_port, &context.plugin_dir, Duration::from_secs(10))?;
-
+    )? {
+        return Ok(InstallOutcome::Cancelled);
+    }
+    if control.cancelled()? {
+        return Ok(InstallOutcome::Cancelled);
+    }
     publish_progress(
         status_file,
         progress,
-        InstallProgress::new("installing", "正在替换插件文件。", 45),
+        InstallProgress::new(
+            "closing-companion",
+            "正在确认客户端退出。仍可取消后续安装。",
+            38,
+        ),
+    );
+    // 保留 Flutter v2 ACK 的 PID + 创建时间核验，并允许取消客户端退出等待。
+    if !client_exit::request_and_wait_cancellable(
+        context.control_port,
+        &context.plugin_dir,
+        Duration::from_secs(10),
+        control,
+    )? {
+        return Ok(InstallOutcome::Cancelled);
+    }
+    // 所有安装树写入只允许通过这一处仲裁。迟到的关闭事件不能中断备份/替换/回滚。
+    if !control.begin_replacement()? {
+        return Ok(InstallOutcome::Cancelled);
+    }
+    prepare_parent(&context.backup_dir)?;
+    publish_progress(
+        status_file,
+        progress,
+        InstallProgress::new("installing", "正在替换插件文件，完成前不能取消。", 45),
     );
     replace_plugin_directory(
         &context.plugin_dir,
@@ -256,12 +281,7 @@ fn run_install(
         status_file,
         progress,
     )?;
-    publish_progress(
-        status_file,
-        progress,
-        InstallProgress::new("succeeded", "更新安装完成。请重新启动游戏。", 100),
-    );
-    Ok(())
+    Ok(InstallOutcome::Succeeded)
 }
 
 /// 解析 `--key value` 或 `--flag` 形式的简单参数。
@@ -307,30 +327,29 @@ fn get_u64(args: &HashMap<String, String>, key: &str) -> Option<u64> {
     args.get(key).and_then(|value| value.parse::<u64>().ok())
 }
 
-/// 通过伴随窗口控制端口请求退出。
-///
-/// 发送失败会被忽略，因为伴随窗口可能已经退出；真正的安装安全性由等待游戏进程结束和文件重命名重试保证。
-
-
-/// 等待游戏进程退出。
-///
-/// BepInEx DLL 被游戏进程加载，游戏未退出时替换插件目录可能失败或留下半更新状态。
+/// 只观察已打开的游戏进程对象，不能发送关闭消息或终止进程。
+/// 观察失败与超时均停止安装；只有明确退出后才允许进入客户端确认与文件替换。
 fn wait_for_game_exit(
+    game: &impl ProcessObservation,
+    control: &InstallControl,
     pid: u32,
     timeout: Duration,
     status_file: &Path,
     progress: &mut dyn FnMut(InstallProgress),
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let started = Instant::now();
     let mut next_report = Duration::ZERO;
     while started.elapsed() < timeout {
-        if !is_process_running(pid) {
+        if control.cancelled()? {
+            return Ok(false);
+        }
+        if !game.is_running()? {
             publish_progress(
                 status_file,
                 progress,
-                InstallProgress::new("game-closed", "已检测到游戏进程退出。", 35),
+                InstallProgress::new("game-closed", "已确认游戏退出。", 35),
             );
-            return Ok(());
+            return Ok(true);
         }
         let elapsed = started.elapsed();
         if elapsed >= next_report {
@@ -339,63 +358,18 @@ fn wait_for_game_exit(
                 progress,
                 InstallProgress::new(
                     "waiting-game",
-                    format!("等待游戏进程 {pid} 退出，已等待 {} 秒。", elapsed.as_secs()),
+                    format!(
+                        "请保存并退出游戏。等待进程 {pid} 结束，已等待 {} 秒。",
+                        elapsed.as_secs()
+                    ),
                     25,
                 ),
             );
             next_report = elapsed + Duration::from_secs(2);
         }
-        thread::sleep(Duration::from_millis(700));
+        control.wait(Duration::from_millis(250))?;
     }
-    Err(format!("timed out waiting for game process {pid} to exit"))
-}
-
-#[cfg(target_os = "windows")]
-fn request_game_close(pid: u32) -> bool {
-    windows_process_control::request_close(pid)
-}
-
-#[cfg(all(target_os = "linux", feature = "updater-windows-ui-check"))]
-fn request_game_close(_pid: u32) -> bool {
-    false
-}
-
-#[cfg(target_os = "windows")]
-fn force_terminate_game(pid: u32) -> Result<(), String> {
-    let status = process::Command::new("taskkill")
-        // updater 由游戏进程启动，`/T` 会把子进程 updater 一并结束，导致安装流程停在强制关闭阶段。
-        // 这里只终止游戏进程本身；安装器继续等待目标 PID 退出后再替换文件。
-        .args(["/PID", &pid.to_string(), "/F"])
-        .status()
-        .map_err(|error| format!("failed to start taskkill: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("taskkill exited with status {status}"))
-    }
-}
-
-#[cfg(all(target_os = "linux", feature = "updater-windows-ui-check"))]
-fn force_terminate_game(_pid: u32) -> Result<(), String> {
-    Err("force termination is unavailable in the Windows UI compile check".to_string())
-}
-
-#[cfg(target_os = "windows")]
-fn is_process_running(pid: u32) -> bool {
-    // Windows 标准库没有稳定的跨版本进程查询 API；tasklist 输出足够用于本地 updater 的短轮询。
-    let output = process::Command::new("tasklist")
-        .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-        .output();
-    let Ok(output) = output else {
-        return true;
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    text.split_whitespace().any(|part| part == pid.to_string())
-}
-
-#[cfg(not(target_os = "windows"))]
-fn is_process_running(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    Err(format!("等待游戏进程 {pid} 退出超时，插件文件未替换。"))
 }
 
 /// 校验目标路径确实像本项目插件目录。
@@ -479,7 +453,9 @@ fn replace_plugin_directory(
     // 本次失败发生在任何旧目录移动之前，因此已安装版本完全不受影响。
     package_manifest::validate(staged_dir, false)?;
     if backup_dir.exists() {
-        return Err("backup directory already exists; inspect previous transaction before retry".into());
+        return Err(
+            "backup directory already exists; inspect previous transaction before retry".into(),
+        );
     }
     package_manifest::preserve(plugin_dir, staged_dir)?;
 
@@ -610,74 +586,22 @@ fn escape_json(value: &str) -> String {
         .collect()
 }
 
-#[cfg(target_os = "windows")]
-mod windows_process_control {
-    use std::ffi::c_void;
-
-    type Bool = i32;
-    type Dword = u32;
-    type Hwnd = *mut c_void;
-    type Lparam = isize;
-
-    const WM_CLOSE: u32 = 0x0010;
-
-    #[repr(C)]
-    struct EnumState {
-        pid: Dword,
-        requested: Bool,
-    }
-
-    pub fn request_close(pid: u32) -> bool {
-        let mut state = EnumState { pid, requested: 0 };
-        unsafe {
-            EnumWindows(enum_windows_proc, &mut state as *mut EnumState as Lparam);
-        }
-        state.requested != 0
-    }
-
-    unsafe extern "system" fn enum_windows_proc(hwnd: Hwnd, lparam: Lparam) -> Bool {
-        let state = &mut *(lparam as *mut EnumState);
-        if IsWindowVisible(hwnd) == 0 {
-            return 1;
-        }
-
-        let mut window_pid: Dword = 0;
-        GetWindowThreadProcessId(hwnd, &mut window_pid);
-        if window_pid == state.pid {
-            let _ = PostMessageW(hwnd, WM_CLOSE, 0, 0);
-            state.requested = 1;
-        }
-
-        1
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn EnumWindows(
-            lpEnumFunc: unsafe extern "system" fn(Hwnd, Lparam) -> Bool,
-            lParam: Lparam,
-        ) -> Bool;
-        fn GetWindowThreadProcessId(hWnd: Hwnd, lpdwProcessId: *mut Dword) -> Dword;
-        fn IsWindowVisible(hWnd: Hwnd) -> Bool;
-        fn PostMessageW(hWnd: Hwnd, Msg: u32, wParam: usize, lParam: isize) -> Bool;
-    }
-}
-
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", feature = "updater-windows-ui-check")
 ))]
 mod windows_updater_ui {
     use super::{
-        force_terminate_game, is_process_running, parse_install_context, run_install,
-        scale_logical_pixels, write_status, GameCloseMode, InstallContext, InstallOptions,
-        InstallProgress,
+        parse_install_context, run_install, scale_logical_pixels, write_status, GameProcess,
+        InstallContext, InstallControl, InstallOutcome, InstallProgress, CANCELLED_MESSAGE,
     };
+    use crate::install_control::CancelDecision;
     use std::collections::HashMap;
     use std::iter;
     use std::mem::size_of;
     use std::path::PathBuf;
     use std::ptr;
+    use std::sync::Arc;
     use std::thread;
     use windows_sys::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows_sys::Win32::Graphics::Gdi::{
@@ -694,21 +618,21 @@ mod windows_updater_ui {
         GetThreadDpiAwarenessContext, SetProcessDpiAwarenessContext, SystemParametersInfoForDpi,
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
     };
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus, SetFocus};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetClientRect,
-        GetMessageW, GetWindowLongPtrW, LoadCursorW, LoadIconW, MoveWindow, PostMessageW, PostQuitMessage,
-        RegisterClassW, SendMessageW, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
-        TranslateMessage, BS_PUSHBUTTON, CW_USEDEFAULT, GWLP_USERDATA, IDC_ARROW, IDI_APPLICATION, MSG,
-        NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SWP_NOACTIVATE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-        WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY, WM_DPICHANGED, WM_SETFONT, WM_SIZE, WNDCLASSW,
-        WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX, WS_OVERLAPPED, WS_SYSMENU, WS_VISIBLE,
+        GetMessageW, GetWindowLongPtrW, IsDialogMessageW, LoadCursorW, LoadIconW, MoveWindow,
+        PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetWindowLongPtrW,
+        SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, BS_PUSHBUTTON, CW_USEDEFAULT,
+        GWLP_USERDATA, IDC_ARROW, IDI_APPLICATION, MSG, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS,
+        SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOW, WM_APP, WM_CLOSE, WM_COMMAND, WM_DESTROY,
+        WM_DPICHANGED, WM_SETFONT, WM_SIZE, WNDCLASSW, WS_CAPTION, WS_CHILD, WS_MINIMIZEBOX,
+        WS_OVERLAPPED, WS_SYSMENU, WS_TABSTOP, WS_VISIBLE,
     };
 
     const WINDOW_CLIENT_WIDTH: i32 = 680;
     const WINDOW_CLIENT_HEIGHT: i32 = 330;
     const START_BUTTON_ID: u16 = 1001;
-    const FORCE_BUTTON_ID: u16 = 1002;
     const CLOSE_BUTTON_ID: u16 = 1003;
     const WM_APP_PROGRESS: u32 = WM_APP + 1;
     const STATIC_LEFT: u32 = 0;
@@ -723,18 +647,25 @@ mod windows_updater_ui {
         progress_bar: HWND,
         progress_label: HWND,
         start_button: HWND,
-        force_button: HWND,
         close_button: HWND,
         body_font: HFONT,
         title_font: HFONT,
         dpi: u32,
         worker_started: bool,
         install_finished: bool,
+        game: Arc<GameProcess>,
+        control: Arc<InstallControl>,
+        worker: Option<thread::JoinHandle<()>>,
         progress: u8,
     }
 
     impl Drop for UiState {
         fn drop(&mut self) {
+            // 异常退出消息循环也先取消可取消阶段并等待工作线程，防止窗口释放后继续替换。
+            if let Some(worker) = self.worker.take() {
+                let _ = self.control.cancel();
+                let _ = worker.join();
+            }
             unsafe {
                 if !self.body_font.is_null() {
                     let _ = DeleteObject(self.body_font as HGDIOBJ);
@@ -835,8 +766,11 @@ mod windows_updater_ui {
                 if result < 0 {
                     return Err("updater window message loop failed".to_string());
                 }
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+                // 原生 Tab / Shift+Tab / Enter / Escape 由对话框导航统一处理。
+                if IsDialogMessageW(hwnd, &msg) == 0 {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
             }
         }
 
@@ -853,15 +787,17 @@ mod windows_updater_ui {
         if dpi == 0 {
             return Err("get updater window DPI failed".to_string());
         }
+        // 在用户点击开始之前固定观察对象；观察失败不能伪装为游戏已退出。
+        let game = Arc::new(GameProcess::open(context.game_pid)?);
+        let game_running = game.is_running()?;
         let (body_font, title_font) = create_fonts(dpi)?;
-        let game_running = is_process_running(context.game_pid);
         let status_text = if game_running {
             format!("检测到游戏进程 {} 正在运行。", context.game_pid)
         } else {
             "游戏进程已退出，可以开始安装。".to_string()
         };
         let detail_text = if game_running {
-            "请保存游戏进度后点击“关闭游戏并安装”。如果游戏无法正常退出，再使用“强制结束游戏”。"
+            "点击“等待退出并安装”后，请自行保存并退出游戏；等待期间可以取消安装。"
         } else {
             "点击“开始安装”后会关闭伴随窗口、备份旧版本并替换插件目录。"
         };
@@ -872,12 +808,11 @@ mod windows_updater_ui {
         let progress_bar = create_progress_bar(hwnd, instance);
         let progress_label = create_label(hwnd, instance, "0%", STATIC_RIGHT);
         let start_text = if game_running {
-            "关闭游戏并安装"
+            "等待退出并安装"
         } else {
             "开始安装"
         };
         let start_button = create_button(hwnd, instance, START_BUTTON_ID, start_text);
-        let force_button = create_button(hwnd, instance, FORCE_BUTTON_ID, "强制结束游戏");
         let close_button = create_button(hwnd, instance, CLOSE_BUTTON_ID, "取消");
         let controls = [
             title_label,
@@ -886,7 +821,6 @@ mod windows_updater_ui {
             progress_bar,
             progress_label,
             start_button,
-            force_button,
             close_button,
         ];
         if controls.iter().any(|control| control.is_null()) {
@@ -898,7 +832,7 @@ mod windows_updater_ui {
         let _ = SendMessageW(progress_bar, PBM_SETRANGE32, 0, 100);
         let _ = SendMessageW(progress_bar, PBM_SETPOS, 0, 0);
         apply_fonts(&controls, title_label, body_font, title_font);
-        ShowWindow(force_button, if game_running { SW_SHOW } else { SW_HIDE });
+        SetFocus(start_button);
 
         Ok(UiState {
             context,
@@ -909,13 +843,15 @@ mod windows_updater_ui {
             progress_bar,
             progress_label,
             start_button,
-            force_button,
             close_button,
             body_font,
             title_font,
             dpi,
             worker_started: false,
             install_finished: false,
+            game,
+            control: Arc::new(InstallControl::default()),
+            worker: None,
             progress: 0,
         })
     }
@@ -932,23 +868,16 @@ mod windows_updater_ui {
                 let state = state_mut(hwnd);
                 if let Some(state) = state {
                     match id {
-                        START_BUTTON_ID => start_worker(hwnd, state, GameCloseMode::RequestClose),
-                        FORCE_BUTTON_ID => {
-                            if state.worker_started {
-                                set_text(
-                                    state.detail_label,
-                                    "正在强制结束游戏进程，安装程序会在进程退出后继续。",
-                                );
-                                EnableWindow(state.force_button, 0);
-                                let pid = state.context.game_pid;
-                                thread::spawn(move || {
-                                    let _ = force_terminate_game(pid);
-                                });
+                        START_BUTTON_ID => start_worker(hwnd, state),
+                        // IsDialogMessageW 的默认 Enter / Escape 使用 IDOK=1 / IDCANCEL=2。
+                        1 => {
+                            if GetFocus() == state.close_button || state.worker_started {
+                                close_or_cancel(hwnd, state);
                             } else {
-                                start_worker(hwnd, state, GameCloseMode::ForceTerminate);
+                                start_worker(hwnd, state);
                             }
                         }
-                        CLOSE_BUTTON_ID => close_or_cancel(hwnd, state),
+                        CLOSE_BUTTON_ID | 2 => close_or_cancel(hwnd, state),
                         _ => {}
                     }
                 }
@@ -1016,26 +945,27 @@ mod windows_updater_ui {
         }
     }
 
-    unsafe fn start_worker(hwnd: HWND, state: &mut UiState, game_close_mode: GameCloseMode) {
+    unsafe fn start_worker(hwnd: HWND, state: &mut UiState) {
         if state.worker_started {
             return;
         }
 
         state.worker_started = true;
         set_text(state.title_label, "正在安装更新");
-        set_text(state.detail_label, "安装开始后请不要手动删除插件目录。");
+        set_text(
+            state.detail_label,
+            "请保存并退出游戏；准备与等待期间可以取消安装。",
+        );
         EnableWindow(state.start_button, 0);
-        EnableWindow(state.close_button, 0);
-        if is_process_running(state.context.game_pid) {
-            EnableWindow(state.force_button, 1);
-        } else {
-            ShowWindow(state.force_button, SW_HIDE);
-        }
+        set_text(state.close_button, "取消安装");
+        SetFocus(state.close_button);
 
         let context = state.context.clone();
         let status_file = state.status_file.clone();
+        let game = state.game.clone();
+        let control = state.control.clone();
         let hwnd_value = hwnd as isize;
-        thread::spawn(move || {
+        state.worker = Some(thread::spawn(move || {
             let hwnd = hwnd_value as HWND;
             let mut post_progress = |progress: InstallProgress| unsafe {
                 post_ui_message(hwnd, progress, false, false);
@@ -1043,28 +973,28 @@ mod windows_updater_ui {
             let result = run_install(
                 &context,
                 &status_file,
-                InstallOptions { game_close_mode },
+                game.as_ref(),
+                control.as_ref(),
                 &mut post_progress,
             );
-            match result {
-                Ok(()) => unsafe {
-                    post_ui_message(
-                        hwnd,
-                        InstallProgress::new("succeeded", "更新安装完成。请重新启动游戏。", 100),
-                        true,
-                        true,
-                    );
-                },
-                Err(error) => unsafe {
-                    post_ui_message(
-                        hwnd,
-                        InstallProgress::new("failed", format!("更新安装失败：{error}"), 100),
-                        true,
-                        false,
-                    );
-                },
+            let (event, success) = match result {
+                Ok(InstallOutcome::Succeeded) => (
+                    InstallProgress::new("succeeded", "更新安装完成。请重新启动游戏。", 100),
+                    true,
+                ),
+                Ok(InstallOutcome::Cancelled) => (
+                    InstallProgress::new("cancelled", CANCELLED_MESSAGE, 0),
+                    false,
+                ),
+                Err(error) => (
+                    InstallProgress::new("failed", format!("更新安装失败：{error}"), 100),
+                    false,
+                ),
+            };
+            unsafe {
+                post_ui_message(hwnd, event, true, success);
             }
-        });
+        }));
     }
 
     unsafe fn apply_message(hwnd: HWND, state: &mut UiState, message: &UiMessage) {
@@ -1080,16 +1010,30 @@ mod windows_updater_ui {
             usize::from(message.progress.progress),
             0,
         );
+        if matches!(
+            message.progress.state,
+            "installing" | "backing-up" | "verifying" | "rolling-back"
+        ) {
+            EnableWindow(state.close_button, 0);
+            set_text(
+                state.detail_label,
+                "已开始替换插件文件，完成前不能取消。请不要手动修改插件目录。",
+            );
+        }
         if message.finished {
+            // 最后消息入队不等于线程退出，join 后才允许关闭窗口。
+            if let Some(worker) = state.worker.take() {
+                let _ = worker.join();
+            }
             state.install_finished = true;
-            EnableWindow(state.force_button, 0);
-            ShowWindow(state.force_button, SW_HIDE);
             EnableWindow(state.close_button, 1);
             set_text(state.close_button, "关闭");
             set_text(
                 state.title_label,
                 if message.success {
                     "更新安装完成"
+                } else if message.progress.state == "cancelled" {
+                    "已取消安装"
                 } else {
                     "更新安装失败"
                 },
@@ -1098,6 +1042,8 @@ mod windows_updater_ui {
                 state.detail_label,
                 if message.success {
                     "旧版本已备份，新版本已写入。关闭此窗口后重新启动游戏即可使用。"
+                } else if message.progress.state == "cancelled" {
+                    "插件文件保持原样；如客户端已退出，可再次打开客户端。"
                 } else {
                     "旧版本目录会尽量保留或回滚。请查看更新状态文件或重新下载更新包后再试。"
                 },
@@ -1105,23 +1051,33 @@ mod windows_updater_ui {
             let _ = SendMessageW(
                 state.progress_bar,
                 PBM_SETSTATE,
-                if message.success {
+                if message.success || message.progress.state == "cancelled" {
                     PBST_NORMAL as usize
                 } else {
                     PBST_ERROR as usize
                 },
                 0,
             );
+            SetFocus(state.close_button);
         }
         layout_controls(hwnd, state);
     }
 
     unsafe fn close_or_cancel(hwnd: HWND, state: &mut UiState) {
         if state.worker_started && !state.install_finished {
-            set_text(
-                state.detail_label,
-                "更新程序正在等待游戏退出或替换文件，完成前不能关闭。",
-            );
+            match state.control.cancel() {
+                Ok(CancelDecision::Accepted) => {
+                    EnableWindow(state.close_button, 0);
+                    set_text(state.detail_label, "正在取消安装，请等待工作线程确认。");
+                }
+                Ok(CancelDecision::TooLate) => {
+                    set_text(state.detail_label, "已进入文件替换阶段，完成前不能取消。")
+                }
+                Ok(CancelDecision::Finished) => {
+                    set_text(state.detail_label, "正在确认安装线程已结束。")
+                }
+                Err(error) => set_text(state.detail_label, &error),
+            }
             return;
         }
         if !state.worker_started {
@@ -1187,7 +1143,7 @@ mod windows_updater_ui {
             0,
             class_name.as_ptr(),
             text.as_ptr(),
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON as u32,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON as u32,
             0,
             0,
             1,
@@ -1317,7 +1273,6 @@ mod windows_updater_ui {
             state.detail_label,
             state.progress_label,
             state.start_button,
-            state.force_button,
             state.close_button,
         ];
         apply_fonts(&controls, state.title_label, body_font, title_font);
@@ -1383,24 +1338,15 @@ mod windows_updater_ui {
         );
 
         let close_width = scale_logical_pixels(78, dpi);
-        let force_width = scale_logical_pixels(128, dpi);
         let start_width = scale_logical_pixels(146, dpi);
         let button_y = (height - margin - button_height).max(margin);
         let close_x = width - margin - close_width;
-        let force_x = close_x - gap - force_width;
-        let start_x = force_x - gap - start_width;
+        let start_x = close_x - gap - start_width;
         move_control(
             state.start_button,
             start_x,
             button_y,
             start_width,
-            button_height,
-        );
-        move_control(
-            state.force_button,
-            force_x,
-            button_y,
-            force_width,
             button_height,
         );
         move_control(
@@ -1457,7 +1403,11 @@ mod tests {
             };
             package_manifest::fixture(&fixture.plugin);
             fs::create_dir_all(fixture.plugin.join("user-data")).unwrap();
-            fs::write(fixture.plugin.join("user-data/old-plugin.txt"),"previous complete version").unwrap();
+            fs::write(
+                fixture.plugin.join("user-data/old-plugin.txt"),
+                "previous complete version",
+            )
+            .unwrap();
             package_manifest::fixture(&fixture.staged);
             fixture
         }
@@ -1468,7 +1418,10 @@ mod tests {
                 "previous complete version"
             );
             assert!(self.plugin.join("package-manifest.json").exists());
-            assert!(self.plugin.join("MystiaStewardCompanion.Business.dll").exists());
+            assert!(self
+                .plugin
+                .join("MystiaStewardCompanion.Business.dll")
+                .exists());
             assert!(!self.backup.exists());
         }
     }
@@ -1477,6 +1430,96 @@ mod tests {
         fn drop(&mut self) {
             // root 是本测试新建的固定前缀唯一目录，只清理本 fixture，不接触任何游戏路径。
             let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// 状态注入只影响观察结果，不持有任何真实游戏进程。
+    struct ObservedGame(Result<bool, String>);
+    impl super::ProcessObservation for ObservedGame {
+        fn is_running(&self) -> Result<bool, String> {
+            self.0.clone()
+        }
+    }
+
+    impl PackageTransactionFixture {
+        fn context(&self) -> super::InstallContext {
+            super::InstallContext {
+                game_pid: 17,
+                plugin_dir: self.plugin.clone(),
+                staged_dir: self.staged.clone(),
+                backup_dir: self.backup.clone(),
+                // 以下取消/观察失败测试必须在连接客户端之前返回；这个端口不会被访问。
+                control_port: 1,
+                wait_timeout: std::time::Duration::from_millis(10),
+            }
+        }
+        fn assert_no_installation_writes(&self) {
+            self.assert_old_version_active();
+            super::package_manifest::validate(&self.staged, false).unwrap();
+            assert!(!self.staged.join("user-data").exists());
+        }
+    }
+
+    #[test]
+    fn cancellation_during_preparation_or_wait_never_mutates_installation() {
+        use super::*;
+        for cancel_state in [
+            "preparing",
+            "waiting-game",
+            "game-closed",
+            "closing-companion",
+        ] {
+            let fixture = PackageTransactionFixture::new();
+            let control = InstallControl::default();
+            let game = ObservedGame(Ok(cancel_state == "waiting-game"));
+            let mut terminal = Vec::new();
+            let result = run_install(
+                &fixture.context(),
+                &fixture.status,
+                &game,
+                &control,
+                &mut |event| {
+                    if event.state == cancel_state {
+                        assert_eq!(
+                            control.cancel().unwrap(),
+                            install_control::CancelDecision::Accepted
+                        );
+                    }
+                    if matches!(event.state, "cancelled" | "succeeded" | "failed") {
+                        terminal.push(event.state);
+                    }
+                },
+            );
+            assert_eq!(result.unwrap(), InstallOutcome::Cancelled, "{cancel_state}");
+            assert_eq!(terminal, ["cancelled"]);
+            fixture.assert_no_installation_writes();
+            let state: serde_json::Value =
+                serde_json::from_slice(&fs::read(&fixture.status).unwrap()).unwrap();
+            assert_eq!(state["state"], "cancelled");
+        }
+    }
+
+    #[test]
+    fn process_observation_failure_and_timeout_do_not_admit_replacement() {
+        use super::*;
+        for game in [
+            ObservedGame(Err("受控观察错误".into())),
+            ObservedGame(Ok(true)),
+        ] {
+            let fixture = PackageTransactionFixture::new();
+            let mut states = Vec::new();
+            assert!(run_install(
+                &fixture.context(),
+                &fixture.status,
+                &game,
+                &InstallControl::default(),
+                &mut |event| states.push(event.state)
+            )
+            .is_err());
+            assert!(!states.contains(&"installing"));
+            assert!(!states.contains(&"closing-companion"));
+            assert_eq!(states.last(), Some(&"failed"));
+            fixture.assert_no_installation_writes();
         }
     }
 
@@ -1531,7 +1574,10 @@ mod tests {
             },
         );
         let error = result.unwrap_err();
-        assert!(error.contains("restored previous version"), "unexpected rollback failure: {error}");
+        assert!(
+            error.contains("restored previous version"),
+            "unexpected rollback failure: {error}"
+        );
         assert!(observed.contains(&"rolling-back"));
         fixture.assert_old_version_active();
         assert_eq!(
@@ -1587,9 +1633,14 @@ mod tests {
             assert!(validate_staged_package(&root).is_err(), "mixed {file}");
         }
         reset();
-        let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(root.join("package-manifest.json")).unwrap()).unwrap();
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("package-manifest.json")).unwrap()).unwrap();
         manifest["files"][1] = manifest["files"][0].clone();
-        fs::write(root.join("package-manifest.json"), serde_json::to_vec(&manifest).unwrap()).unwrap();
+        fs::write(
+            root.join("package-manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
         assert!(validate_staged_package(&root).is_err());
         // root 是当前测试独有、固定前缀的临时目录，清理不接触真实插件文件。
         fs::remove_dir_all(root).unwrap();

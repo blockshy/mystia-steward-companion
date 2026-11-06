@@ -4,8 +4,13 @@ using MystiaStewardCompanion.Save;
 
 try
 {
+    var withoutHarmony = args.Contains("--without-harmony", StringComparer.Ordinal);
     VerifyPlansAndIdentity();
+    VerifyEightOrderPlansAndClaims();
+    Console.WriteLine("PASS: 八单变体身份、完整配方及有序加料声明合并。");
     VerifyStableInsertionOrderAndExactClaims();
+    VerifyChronologicalPlansAndPreBindingOrderClaims();
+    Console.WriteLine("PASS: 变体点单顺序与绑定前精确排序声明，含旧发布/错列表/不完整注入拒绝。");
     VerifyApplicableRecipeFiltering();
     VerifyFreshCookCount();
     VerifyCookCountModesAndInsertionReadback();
@@ -16,12 +21,16 @@ try
     VerifyRecipeSwitchFailureAndOutputRetirement();
     VerifyOutputReadyEpochTransfer();
     VerifyFullVisualFailureRetiresOutputBeforeReads();
-    VerifyNativeFullVisualExceptionRetiresOutputBeforeRecipePostfix();
-    VerifyFullVisualPrefixDefersExactRecipeSwitch();
-    VerifyFullVisualPrefixRejectsSwitchOwnershipDrift();
-    VerifyFullVisualPrefixCarriesResetReceiptIntoRecipePostfix();
-    VerifyNestedFullVisualScopesReleaseLifo();
-    VerifyFullVisualResetReceiptRejectsFreshOutputAba();
+    // 这六组直接安装Harmony补丁，与末尾注入契约一起由显式开关控制；其余组仍执行正式状态机。
+    if (!withoutHarmony)
+    {
+        VerifyNativeFullVisualExceptionRetiresOutputBeforeRecipePostfix();
+        VerifyFullVisualPrefixDefersExactRecipeSwitch();
+        VerifyFullVisualPrefixRejectsSwitchOwnershipDrift();
+        VerifyFullVisualPrefixCarriesResetReceiptIntoRecipePostfix();
+        VerifyNestedFullVisualScopesReleaseLifo();
+        VerifyFullVisualResetReceiptRejectsFreshOutputAba();
+    }
     VerifyOutputBindingReentrancyAndAba();
     VerifySameActivationOutputClosure();
     VerifyExactOutputClosureGate();
@@ -41,8 +50,10 @@ try
     VerifyPartialInsertionKeepsNativeBaseUsable();
     VerifyLogGenerationBudget();
     VerifyProductionSourceContract();
-    HarmonyContractSmoke.Verify();
-    Console.WriteLine("PASS: explicit target recipe variants route exact rows through one-shot native transactions.");
+    // 普通离线回归可显式跳过真实Harmony注入；默认入口仍执行原来的注入契约，不静默降级。
+    if (!withoutHarmony) HarmonyContractSmoke.Verify();
+    else Console.WriteLine("SKIP: 六组FullVisual Harmony回归及HarmonyContractSmoke（显式--without-harmony；其余正式服务与运行时替身回归全部执行）。");
+    Console.WriteLine($"PASS: explicit target recipe variants route exact rows through one-shot native transactions; {RecipeVariantAssertionCounter.Count} assertions.");
     return 0;
 }
 catch (Exception ex)
@@ -78,6 +89,42 @@ static void VerifyPlansAndIdentity()
         Target(RuntimeUiTargetKind.Rare, 10, new[] { 1, 2 }, new[] { 2 }, "rare-c"),
         Target(RuntimeUiTargetKind.Normal, 10, new[] { 1, 2, 9 }, new[] { 2 }, "normal-c"))),
         "same variant with disagreeing target ingredient sets did not fail closed");
+}
+
+static void VerifyEightOrderPlansAndClaims()
+{
+    // 同一配方及完全相同的有序加料可共享合成行；客人类别不再限定声明数量。
+    foreach (var mixed in new[] { false, true })
+    {
+        var targets = Enumerable.Range(0, 8).Select(slot => Target(
+            mixed && slot % 2 == 1 ? RuntimeUiTargetKind.Normal : RuntimeUiTargetKind.Rare,
+            10, new[] { 1, 2, 3 }, new[] { 2, 3 }, $"eight:{slot}", slot)).ToArray();
+        var plans = RuntimeTargetRecipeVariantService.BuildPlansForTests(Set(700, targets));
+        Equal(1, plans.Count, "八个相同变体应只保留一个合成行");
+        Equal(255, (int)plans[0].Claims, "合成行丢失第三至第八单声明");
+        var retained = RuntimeTargetRecipeVariantService.BuildPlansForTests(Set(701,
+            targets.Where(target => target.ColorSlot != 3).ToArray()));
+        Equal(247, (int)retained[0].Claims, "释放一单清除了别的订单声明");
+        // 指纹还绑定参与订单的目标修订；撤回一单后旧合成行回调必须失效。
+        False(plans[0].RevisionFingerprint == retained[0].RevisionFingerprint,
+            "订单集合变化必须废弃旧变体回调的修订指纹");
+        targets[7] = Target(RuntimeUiTargetKind.Normal, 10, new[] { 1, 2, 3 },
+            new[] { 3, 2 }, "reordered-extras", 7);
+        var split = RuntimeTargetRecipeVariantService.BuildPlansForTests(Set(702, targets));
+        Equal(2, split.Count, "加料顺序不同不能混为一条变体");
+        Equal(128, (int)split.Single(plan => plan.ExtraIngredientIds.SequenceEqual(new[] { 3, 2 })).Claims,
+            "有序加料的独立行获得了其他订单声明");
+        Equal(127, (int)split.Single(plan => plan.ExtraIngredientIds.SequenceEqual(new[] { 2, 3 })).Claims,
+            "其余七单的合并行丢失声明");
+        targets[7] = Target(RuntimeUiTargetKind.Normal, 11, new[] { 1, 2, 3 },
+            new[] { 2, 3 }, "different-recipe", 7);
+        Equal(2, RuntimeTargetRecipeVariantService.BuildPlansForTests(Set(703, targets)).Count,
+            "不同基础料理不得仅因加料相同而合并");
+        targets[7] = Target(RuntimeUiTargetKind.Normal, 10, new[] { 1, 2, 3, 9 },
+            new[] { 2, 3 }, "inconsistent-full-recipe", 7);
+        Throws(() => RuntimeTargetRecipeVariantService.BuildPlansForTests(Set(704, targets)),
+            "同一基础料理和加料却有不同完整配方时必须拒绝发布");
+    }
 }
 
 static void VerifyStableInsertionOrderAndExactClaims()
@@ -126,6 +173,91 @@ static void VerifyStableInsertionOrderAndExactClaims()
         "adjacent-base insertion failed");
     Sequence(new[] { 11, 11, 12, 12, 13 }, neighborRuntime.Recipes.Select(recipe => recipe.Id),
         "descending group insertion split an adjacent base/variant pair");
+}
+
+static void VerifyChronologicalPlansAndPreBindingOrderClaims()
+{
+    var baseRecipe = new FakeRecipe(0x1501, 10, new[] { 1 }, 4);
+    var ordinary = new FakeRecipe(0x1502, 20, new[] { 5 }, 3);
+    var runtime = Install(baseRecipe, ordinary);
+    var earlyNormal = Target(RuntimeUiTargetKind.Normal, 10, new[] { 1, 3 }, new[] { 3 }, "early-normal", 3, 10);
+    var laterRare = Target(RuntimeUiTargetKind.Rare, 10, new[] { 1, 2 }, new[] { 2 }, "later-rare", 0, 20);
+    var plain = Target(RuntimeUiTargetKind.Normal, 20, new[] { 5 }, Array.Empty<int>(), "plain", 5, 30);
+    var baseOrder = Target(RuntimeUiTargetKind.Rare, 10, new[] { 1 }, Array.Empty<int>(), "base", 6, 40);
+    var target = Set(800, laterRare, plain, baseOrder, earlyNormal);
+    var plans = RuntimeTargetRecipeVariantService.BuildPlansForTests(target);
+    Equal(earlyNormal.Claim, plans[0].Claims, "较早点单的普客方案未排在稀客方案之前");
+    Equal(laterRare.Claim, plans[1].Claims, "较晚稀客方案顺序错误");
+    var reversed = RuntimeTargetRecipeVariantService.BuildPlansForTests(Set(801, earlyNormal, baseOrder, plain, laterRare));
+    Sequence(plans.Select(plan => plan.Identity), reversed.Select(plan => plan.Identity), "输入重排改变了变体排序或身份");
+
+    // 无变体发布可以在按钮和变体面板状态均未建立时排序已验证的原生行。
+    var nativeOnly = Set(802, plain);
+    Publish(nativeOnly);
+    True(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        nativeOnly, ordinary.Pointer, ordinary.Id, out var nativeClaims), "无变体原生行被错误拒绝");
+    Equal(plain.Claim, nativeClaims, "无变体原生行未保留基础声明");
+    True(RuntimeTargetRecipeVariantService.InjectForTests(runtime.Panel, nativeOnly, 9), "无变体空映射的正常注入被拒绝");
+    True(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        nativeOnly, ordinary.Pointer, ordinary.Id, out nativeClaims), "完整空映射错误拒绝原生行排序");
+    Equal(plain.Claim, nativeClaims, "完整空映射丢失原生基础声明");
+    Publish(target);
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, baseRecipe.Pointer, baseRecipe.Id, out _), "有变体但映射尚未建立时仍允许排序");
+    True(RuntimeTargetRecipeVariantService.InjectForTests(runtime.Panel, target, 9), "排序测试的变体注入失败");
+    Sequence(new[] { baseRecipe.Pointer, runtime.Created[0].Pointer, runtime.Created[1].Pointer, ordinary.Pointer },
+        runtime.Recipes.Select(recipe => recipe.Pointer), "新增排序声明查询破坏原有邻接插入契约");
+    Sequence(new[] { 1, 3 }, runtime.Created[0].Ingredients, "首个合成行不是早点单普客的加料方案");
+
+    // 这些查询均发生于Bind之前，不得依赖按钮租约或把相同RecipeId的两个变体混为一条。
+    var readsBefore = runtime.InventoryReadCalls;
+    var insertsBefore = runtime.InsertCalls;
+    True(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, runtime.Created[0].Pointer, 10, out var firstClaims), "第一合成行排序声明缺失");
+    Equal(earlyNormal.Claim, firstClaims, "第一合成行取得了其他加料方案的声明");
+    True(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, runtime.Created[1].Pointer, 10, out var secondClaims), "第二合成行排序声明缺失");
+    Equal(laterRare.Claim, secondClaims, "第二合成行取得了其他加料方案的声明");
+    True(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, baseRecipe.Pointer, 10, out var baseClaims), "权威基础行排序声明缺失");
+    Equal(baseOrder.Claim, baseClaims, "权威基础行错误获得变体订单的聚合声明");
+    True(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, ordinary.Pointer, 20, out var otherClaims), "非受控原生行被错误拒绝");
+    Equal(plain.Claim, otherClaims, "非受控原生行的声明不正确");
+    Equal(readsBefore, runtime.InventoryReadCalls, "只读排序查询读取了库存");
+    Equal(insertsBefore, runtime.InsertCalls, "只读排序查询重新插入了变体");
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, (nint)0x1503, 10, out _), "未知指针冒充同ID的已登记料理");
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, runtime.Created[0].Pointer, 20, out _), "合成行指针与ID不一致仍参与排序");
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel,
+        new FakeRecipeList(0x1504, runtime.Recipes), target, baseRecipe.Pointer, 10, out _), "其他列表身份取得当前变体声明");
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        nativeOnly, ordinary.Pointer, 20, out _), "旧发布仍取得排序声明");
+    var replacement = Set(803, laterRare, earlyNormal, plain, baseOrder);
+    Publish(replacement);
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        replacement, baseRecipe.Pointer, 10, out _), "新发布借用了尚未刷新的旧epoch映射");
+    Publish(target);
+    RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessSnapshot(true, 10);
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, baseRecipe.Pointer, 10, out _), "其他经营代次借用了旧列表映射");
+
+    // 插入写入不确定时，即便基础行仍可由游戏操作，也不能以不完整映射对整表重新排序。
+    runtime = Install(new FakeRecipe(0x1511, 10, new[] { 1 }, 4));
+    Publish(target);
+    runtime.ThrowAfterInsert = true;
+    False(RuntimeTargetRecipeVariantService.InjectForTests(runtime.Panel, target, 9), "不确定插入没有被拒绝");
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, runtime.Authoritative[0].Pointer, 10, out _), "不完整注入仍提供排序声明");
+
+    // 失败发生在首个controlled项创建之前，集合虽为空也不能被All(Complete)误判为验收通过。
+    runtime = Install(new FakeRecipe(0x1521, 10, new[] { 1 }, 4),
+        new FakeRecipe(0x1522, 10, new[] { 1 }, 4), new FakeRecipe(0x1523, 20, new[] { 5 }, 3));
+    Publish(target);
+    False(RuntimeTargetRecipeVariantService.InjectForTests(runtime.Panel, target, 9), "歧义权威基础行未拒绝注入");
+    False(RuntimeTargetRecipeVariantService.TryGetRecipeListOrderClaims(runtime.Panel, runtime.RecipeList,
+        target, runtime.Authoritative[2].Pointer, 20, out _), "创建前失败的空映射被误认为完整原生表");
 }
 
 static void VerifyApplicableRecipeFiltering()
@@ -4007,11 +4139,14 @@ static RuntimeUiTargetSnapshot Target(
     int recipeId,
     int[] ingredients,
     int[] extras,
-    string revision) =>
-    new(kind, true, true, recipeId, ingredients, extras, revision);
+    string revision,
+    int colorSlot = -1,
+    long orderLifecycleSequence = 1) =>
+    new(kind, true, true, recipeId, ingredients, extras, revision, colorSlot, orderLifecycleSequence);
 
 static void True(bool value, string message)
 {
+    RecipeVariantAssertionCounter.Count++;
     if (!value) throw new InvalidOperationException(message);
 }
 
@@ -4019,23 +4154,27 @@ static void False(bool value, string message) => True(!value, message);
 
 static void Equal<T>(T expected, T actual, string message)
 {
+    RecipeVariantAssertionCounter.Count++;
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
         throw new InvalidOperationException($"{message}; expected={expected}; actual={actual}");
 }
 
 static void Same(object expected, object actual, string message)
 {
+    RecipeVariantAssertionCounter.Count++;
     if (!ReferenceEquals(expected, actual)) throw new InvalidOperationException(message);
 }
 
 static void Sequence<T>(IEnumerable<T> expected, IEnumerable<T> actual, string message)
 {
+    RecipeVariantAssertionCounter.Count++;
     if (!expected.SequenceEqual(actual))
         throw new InvalidOperationException($"{message}; expected=[{string.Join(',', expected)}]; actual=[{string.Join(',', actual)}]");
 }
 
 static void Throws(Action action, string message)
 {
+    RecipeVariantAssertionCounter.Count++;
     try { action(); }
     catch { return; }
     throw new InvalidOperationException(message);
@@ -4043,6 +4182,9 @@ static void Throws(Action action, string message)
 
 namespace MystiaStewardCompanion.Save
 {
+    // 统计实际执行的断言；显式跳过的Harmony组不会计入，避免将未运行的覆盖记为通过。
+    internal static class RecipeVariantAssertionCounter { public static int Count; }
+
     internal enum RuntimeUiTargetKind { Rare, Normal }
 
     [Flags]
@@ -4057,9 +4199,13 @@ namespace MystiaStewardCompanion.Save
             int recipeId,
             IReadOnlyList<int> ingredientIds,
             IReadOnlyList<int> extraIngredientIds,
-            string targetRevision)
+            string targetRevision,
+            int colorSlot = -1,
+            long orderLifecycleSequence = 1)
         {
             Kind = kind;
+            ColorSlot = colorSlot < 0 ? (kind == RuntimeUiTargetKind.Rare ? 0 : 1) : colorSlot;
+            OrderLifecycleSequence = orderLifecycleSequence;
             ListPinningEnabled = listPinningEnabled;
             RecipeVariantEnabled = recipeVariantEnabled;
             RecipeId = recipeId;
@@ -4069,7 +4215,11 @@ namespace MystiaStewardCompanion.Save
         }
 
         public RuntimeUiTargetKind Kind { get; }
-        public RuntimeUiTargetKinds Claim => Kind == RuntimeUiTargetKind.Rare ? RuntimeUiTargetKinds.Rare : RuntimeUiTargetKinds.Normal;
+        // 与生产 DTO 相同：每个精确订单独占一个槽位，同种客人之间不能共用一位。
+        public int ColorSlot { get; }
+        // 与生产目标相同的跨客类点单序号；旧夹具默认并列，仍由色槽确定稳定次序。
+        public long OrderLifecycleSequence { get; }
+        public RuntimeUiTargetKinds Claim => (RuntimeUiTargetKinds)(1 << ColorSlot);
         public bool ListPinningEnabled { get; }
         public bool RecipeVariantEnabled { get; }
         public int RecipeId { get; }
@@ -4084,7 +4234,7 @@ namespace MystiaStewardCompanion.Save
         {
             Generation = generation;
             SessionGeneration = sessionGeneration;
-            Targets = targets.OrderBy(target => target.Kind).ToArray();
+            Targets = targets.OrderBy(target => target.ColorSlot).ToArray();
         }
 
         public long Generation { get; }

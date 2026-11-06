@@ -75,7 +75,9 @@ public static class BusinessQueries
     }
 
     public static JsonObject BuildOrderPayload(JsonObject snapshot, JsonObject data, JsonObject preferences,
-        JsonObject favorites, JsonObject customRecipes, JsonArray rejectedRecipeKeys) => Object(
+        JsonObject favorites, JsonObject customRecipes, JsonArray rejectedRecipeKeys)
+    {
+        var payload = Object(
         ("orders", Obj(snapshot["nightBusiness"])["orders"] ?? new JsonArray()),
         ("normalOrders", Obj(snapshot["normalBusiness"])["orders"] ?? new JsonArray()),
         ("activeRareGuests", Obj(snapshot["nightBusiness"])["activeRareGuests"] ?? new JsonArray()),
@@ -83,6 +85,12 @@ public static class BusinessQueries
         ("favorites", favorites), ("customRecipes", customRecipes), ("preferences", preferences), ("data", data),
         ("specialBusinessRejectedRecipeKeys", rejectedRecipeKeys),
         ("includeNormalOrderDetails", true), ("includeNormalExecutionTargets", true), ("usage", "display"));
+        // 等待条是不断变化的只读观察，不影响料理/酒水需求或候选资格。Object已创建独立树，
+        // 在此剔除而不修改原始快照，使宿主完整payload缓存继续命中；自动恢复仍读取最新现场值。
+        foreach (var field in new[] { "orders", "normalOrders" })
+            foreach (var order in Objects(payload[field])) order.Remove("patienceRemainingRatio");
+        return payload;
+    }
 
     /// <summary>在服务端权威上下文中执行只读页面查询，缺失输入时返回明确空结果。</summary>
     public static JsonObject EvaluatePage(JsonObject query, JsonObject snapshot, JsonObject data, JsonObject preferences,

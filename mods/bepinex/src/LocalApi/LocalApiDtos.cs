@@ -226,14 +226,6 @@ internal sealed class LocalApiRareGuestInvitationErrorDto
     public IReadOnlyList<object> Skipped { get; init; } = Array.Empty<object>();
 }
 
-internal sealed class LocalApiRareOrderDismissDto
-{
-    public bool Ok { get; init; }
-    public int Removed { get; init; }
-    public string Status { get; init; } = "";
-    public string? Error { get; init; }
-}
-
 internal sealed class LocalApiStatusDto
 {
     public bool Ok { get; init; }

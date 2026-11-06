@@ -157,7 +157,17 @@ void main() {
             },
           },
         };
-        await tester.pumpWidget(host(ServicePage(model), height: height));
+        await tester.pumpWidget(
+          host(
+            Column(
+              children: [
+                // 自动化信息属于壳层页头，正文高度预算只约束实际经营内容。
+                ServiceAutomationHeader(model),
+                SizedBox(height: height, child: ServicePage(model)),
+              ],
+            ),
+          ),
+        );
         await tester.pumpAndSettle();
         final controlFinder = find.byKey(const ValueKey('service-controls'));
         final resultFinder = find.byType(DenseListDetail);
@@ -168,7 +178,7 @@ void main() {
         expect(resultRect.height, greaterThanOrEqualTo(height * .4));
         expect(resultRect.top, greaterThanOrEqualTo(controlRect.bottom));
 
-        // 屏障入口随导航保持紧凑；打开后仍能访问完整说明与原确认操作。
+        // 屏障入口位于页头；打开后仍能访问完整说明与原确认操作。
         final entry = find.widgetWithText(StewardButton, '待确认 1');
         await tester.ensureVisible(entry);
         await tester.pumpAndSettle();

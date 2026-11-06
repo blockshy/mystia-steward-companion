@@ -365,7 +365,13 @@ class _RecommendationsPageState extends State<RecommendationsPage>
       _queryError.isNotEmpty ? _queryError : model.recommendationError;
 
   PageActivity? get _queryActivity {
-    if (!widget.active || (tab != 'normal' && tab != 'rare')) return null;
+    if (!widget.active) return null;
+    if (tab == 'favorites') {
+      return model.favoritesConfirmed
+          ? null
+          : const PageActivity(message: '等待确认收藏', details: '收藏状态未确认，刷新后可继续修改。');
+    }
+    if (tab != 'normal' && tab != 'rare') return null;
     if (!model.connected) return const PageActivity(message: '连接断开，恢复后自动更新推荐。');
     if (_desiredQuery == null) {
       if (tab == 'normal')
@@ -594,7 +600,7 @@ class _RecommendationsPageState extends State<RecommendationsPage>
                             ),
                             onFavorite:
                                 tab == 'rare' &&
-                                    model.canEdit &&
+                                    model.canEditFavorites &&
                                     customerId != null
                                 ? _favoriteCallback
                                 : null,
@@ -633,6 +639,7 @@ class _RecommendationsPageState extends State<RecommendationsPage>
     model.authority['currentDeviceId'],
     model.authority['primaryDeviceId'],
     model.authority['authorityRevision'],
+    model.favoritesConfirmed,
     // 轮询可能先更新模型、下一帧才重绘按钮。此时不能把用户看到的“加入收藏”
     // 偷换成“取消收藏”；只比较本类别内容，忽略另一类别及读取时间的变化。
     jsonEncode(model.resources['/favorites']?[category]),
@@ -649,7 +656,7 @@ class _RecommendationsPageState extends State<RecommendationsPage>
         !widget.active ||
         !TickerMode.valuesOf(context).enabled ||
         tab != 'rare' ||
-        !model.canEdit ||
+        !model.canEditFavorites ||
         _favoriteBusy ||
         boundary != _favoriteBoundary)
       return;
@@ -689,10 +696,35 @@ class _RecommendationsPageState extends State<RecommendationsPage>
     }
   }
 
+  /// 收藏列表的移除也绑定渲染时身份，防止断线恢复或新列表到达后旧闭包删除新状态。
+  Future<void> _removeFavorite(DataMap item, Object boundary) async {
+    if (!mounted ||
+        !widget.active ||
+        tab != 'favorites' ||
+        !TickerMode.valuesOf(context).enabled ||
+        !model.canEditFavorites ||
+        boundary != _favoriteBoundary)
+      return;
+    final id = item['id'];
+    if (id is! String || id.isEmpty) return;
+    final matches = records(model.resources['/favorites']?[category])
+        .where((entry) => entry['id'] == id)
+        .toList();
+    if (matches.length != 1 || jsonEncode(matches.single) != jsonEncode(item))
+      return;
+    await model.mutate(
+      category == 'recipes'
+          ? '/favorites/remove-recipe'
+          : '/favorites/remove-beverage',
+      query: {'id': id},
+    );
+  }
+
   Widget _details(BuildContext context, DataMap item) {
     final view = _itemView(item);
     final favorite = _favoriteState(item);
     final toggleFavorite = _favoriteCallback;
+    final favoriteBoundary = _favoriteBoundary;
     return Section(
       _name(item),
       [
@@ -710,7 +742,7 @@ class _RecommendationsPageState extends State<RecommendationsPage>
               primary: favorite.id != null,
               onPressed:
                   widget.active &&
-                      model.canEdit &&
+                      model.canEditFavorites &&
                       customerId != null &&
                       favorite.known &&
                       !_favoriteBusy
@@ -720,13 +752,8 @@ class _RecommendationsPageState extends State<RecommendationsPage>
           if (tab == 'favorites')
             StewardButton(
               '移除收藏',
-              onPressed: model.canEdit
-                  ? () => model.mutate(
-                      category == 'recipes'
-                          ? '/favorites/remove-recipe'
-                          : '/favorites/remove-beverage',
-                      query: {'id': label(item['id'], '')},
-                    )
+              onPressed: model.canEditFavorites
+                  ? () => _removeFavorite(item, favoriteBoundary)
                   : null,
             ),
         ]),

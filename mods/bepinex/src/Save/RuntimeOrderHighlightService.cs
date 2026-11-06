@@ -3,6 +3,7 @@ using System.Reflection;
 using BepInEx.Logging;
 using HarmonyLib;
 using Il2CppInterop.Runtime;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using UnityEngine;
 
 namespace MystiaStewardCompanion.Save;
@@ -16,9 +17,11 @@ internal static class RuntimeOrderHighlightService
     private const string OrderControllerTypeName = "Night.UI.HUD.Ordering.OrderController";
     private const string OrderBaseTypeName = "NightScene.GuestManagementUtility.GuestsManager+OrderBase";
     private const string ImageTypeName = "UnityEngine.UI.Image";
+    private const string DeskLabelTypeName = "TMPro.TextMeshProUGUI";
     private const string RectTransformTypeName = "UnityEngine.RectTransform";
     private const string CanvasRendererTypeName = "UnityEngine.CanvasRenderer";
     private const string LayoutGroupTypeName = "UnityEngine.UI.LayoutGroup";
+    private const string RectMaskTypeName = "UnityEngine.UI.RectMask2D";
     private const string Il2CppActionTypeName = "Il2CppSystem.Action";
     private const int MaxTrackedElements = 64;
     private const int MaxWarningLogs = 4;
@@ -48,15 +51,17 @@ internal static class RuntimeOrderHighlightService
     private static PropertyInfo? _activeOrderProperty;
     private static PropertyInfo? _deskCodeProperty;
     private static PropertyInfo? _currentBorderImageProperty;
+    private static PropertyInfo? _deskLabelProperty;
     private static Type? _rectTransformType;
     private static Type? _canvasRendererType;
     private static Type? _layoutGroupType;
+    private static Type? _rectMaskType;
     private static RuntimeUiTargetSetSnapshot _desiredTargetSet = RuntimeUiTargetSetSnapshot.Disabled;
     private static long _appliedTargetGeneration;
     private static bool _suspended = true;
     private static string _suspendReason = "night business inactive";
-    private static readonly Dictionary<RuntimeUiTargetKind, ActiveOrderVisual> ActiveVisuals = new();
-    private static readonly Dictionary<RuntimeUiTargetKind, float> NextAttemptAt = new();
+    private static readonly Dictionary<string, ActiveOrderVisual> ActiveVisuals = new();
+    private static readonly Dictionary<string, float> NextAttemptAt = new();
     private static string _state = "disabled";
     private static string _lastFailure = "";
     private static long _registrationCallbacks;
@@ -198,19 +203,19 @@ internal static class RuntimeOrderHighlightService
                     active.NextHealthCheckAt = now + HealthCheckIntervalSeconds;
                 }
 
-                if (TryApplyPulseLocked(active, desired.Palette, out var pulseFailure)) continue;
+                if (TryApplyColorLocked(active, desired.Palette, out var pulseFailure)) continue;
 
                 _visualErrors++;
                 DestroyActiveVisualLocked(kind);
                 NextAttemptAt[kind] = now + RetryIntervalSeconds;
-                SetFailureLocked($"{kind} pulse failed: {pulseFailure}");
+                SetFailureLocked($"{kind} color update failed: {pulseFailure}");
             }
 
             var resolved = new List<ResolvedTargetElement>();
             foreach (var target in orderTargets)
             {
-                if (ActiveVisuals.ContainsKey(target.Kind)
-                    || NextAttemptAt.TryGetValue(target.Kind, out var retryAt) && now < retryAt)
+                if (ActiveVisuals.ContainsKey(target.IdentityKey)
+                    || NextAttemptAt.TryGetValue(target.IdentityKey, out var retryAt) && now < retryAt)
                 {
                     continue;
                 }
@@ -222,30 +227,30 @@ internal static class RuntimeOrderHighlightService
                         out var binding,
                         out var resolutionFailure))
                 {
-                    NextAttemptAt[target.Kind] = now + RetryIntervalSeconds;
-                    SetFailureLocked($"{target.Kind}: {resolutionFailure}");
+                    NextAttemptAt[target.IdentityKey] = now + RetryIntervalSeconds;
+                    SetFailureLocked($"{target.IdentityKey}: {resolutionFailure}");
                     continue;
                 }
 
                 resolved.Add(new ResolvedTargetElement(target, registration, binding));
             }
 
-            var conflictingKinds = new HashSet<RuntimeUiTargetKind>();
+            var conflictingKinds = new HashSet<string>();
             foreach (var candidate in resolved)
             {
                 foreach (var active in ActiveVisuals.Values.Where(active =>
-                             active.Target.Kind != candidate.Target.Kind
+                             active.Target.IdentityKey != candidate.Target.IdentityKey
                              && active.OrderPointer == candidate.Binding.OrderPointer))
                 {
-                    conflictingKinds.Add(candidate.Target.Kind);
-                    conflictingKinds.Add(active.Target.Kind);
+                    conflictingKinds.Add(candidate.Target.IdentityKey);
+                    conflictingKinds.Add(active.Target.IdentityKey);
                 }
                 foreach (var other in resolved.Where(other =>
-                             other.Target.Kind != candidate.Target.Kind
+                             other.Target.IdentityKey != candidate.Target.IdentityKey
                              && other.Binding.OrderPointer == candidate.Binding.OrderPointer))
                 {
-                    conflictingKinds.Add(candidate.Target.Kind);
-                    conflictingKinds.Add(other.Target.Kind);
+                    conflictingKinds.Add(candidate.Target.IdentityKey);
+                    conflictingKinds.Add(other.Target.IdentityKey);
                 }
             }
             foreach (var kind in conflictingKinds)
@@ -255,7 +260,7 @@ internal static class RuntimeOrderHighlightService
                 SetFailureLocked($"{kind}: exact native order is claimed by both target kinds");
             }
 
-            foreach (var candidate in resolved.Where(candidate => !conflictingKinds.Contains(candidate.Target.Kind)))
+            foreach (var candidate in resolved.Where(candidate => !conflictingKinds.Contains(candidate.Target.IdentityKey)))
             {
                 if (!TryCreateActiveVisualLocked(
                         desired,
@@ -265,8 +270,8 @@ internal static class RuntimeOrderHighlightService
                         out var creationFailure))
                 {
                     _visualErrors++;
-                    NextAttemptAt[candidate.Target.Kind] = now + RetryIntervalSeconds;
-                    SetFailureLocked($"{candidate.Target.Kind}: {creationFailure}");
+                    NextAttemptAt[candidate.Target.IdentityKey] = now + RetryIntervalSeconds;
+                    SetFailureLocked($"{candidate.Target.IdentityKey}: {creationFailure}");
                 }
             }
 
@@ -392,12 +397,23 @@ internal static class RuntimeOrderHighlightService
                 SetAttachFailure(memberFailure, force);
                 return;
             }
+            // 原生 Initialize(0x544400)只把 deskCode+1 写入此精确字段；不能用文字或对象名称搜桌号。
+            var deskLabel = elementType.GetProperty("text",
+                BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+            if (deskLabel?.PropertyType.FullName != DeskLabelTypeName
+                || deskLabel.GetMethod?.IsStatic != false || deskLabel.GetIndexParameters().Length != 0)
+            {
+                SetAttachFailure("OrderingElement.text does not match the verified desk label declaration", force);
+                return;
+            }
             var rectTransformType = typeof(RectTransform);
             var canvasRendererType = RuntimeReflectionUtility.FindType(CanvasRendererTypeName);
             var layoutGroupType = currentBorder.PropertyType.Assembly.GetType(LayoutGroupTypeName, throwOnError: false);
+            var rectMaskType = currentBorder.PropertyType.Assembly.GetType(RectMaskTypeName, throwOnError: false);
             if (!IsExactComponentType(rectTransformType, RectTransformTypeName)
                 || !IsExactComponentType(canvasRendererType, CanvasRendererTypeName)
-                || !IsExactComponentType(layoutGroupType, LayoutGroupTypeName))
+                || !IsExactComponentType(layoutGroupType, LayoutGroupTypeName)
+                || !IsExactComponentType(rectMaskType, RectMaskTypeName))
             {
                 SetAttachFailure("Unity UI visual component types do not match the verified Component declarations", force);
                 return;
@@ -422,9 +438,11 @@ internal static class RuntimeOrderHighlightService
                 _activeOrderProperty = activeOrder;
                 _deskCodeProperty = deskCode;
                 _currentBorderImageProperty = currentBorder;
+                _deskLabelProperty = deskLabel;
                 _rectTransformType = rectTransformType;
                 _canvasRendererType = canvasRendererType;
                 _layoutGroupType = layoutGroupType;
+                _rectMaskType = rectMaskType;
                 if (_firstCoveredBusinessGeneration == long.MaxValue
                     && RequiredPatchKeys.All(PatchedMethods.Contains))
                 {
@@ -869,21 +887,33 @@ internal static class RuntimeOrderHighlightService
             }
             if (!HasNoNativeLayoutGroup(parent, layoutGroupType, out failure)) return false;
 
-            clone = UnityEngine.Object.Instantiate(sourceObject, parent);
+            // 原背景是九宫格，缩小它会把桌号形状重新排到正文顶部。独立矩形裁剪容器
+            // 只截取正文；其子图保留原尺寸、位置和九宫格纹理，不重新压缩原图。
+            Type? maskType;
+            lock (PatchRoot) maskType = _rectMaskType;
+            if (maskType == null) { failure = "verified RectMask2D is unavailable"; return false; }
+            var componentTypes = new Il2CppReferenceArray<Il2CppSystem.Type>(2);
+            componentTypes[0] = Il2CppType.From(rectTransformType);
+            componentTypes[1] = Il2CppType.From(maskType);
+            clone = new GameObject("MystiaStewardCompanion.TargetOrderHighlight", componentTypes);
             if (clone == null || !IsLiveUnityObject(clone))
             {
-                failure = "failed to instantiate the private order border image";
+                failure = "failed to create the private order body clipper";
                 return false;
             }
 
             clone.name = "MystiaStewardCompanion.TargetOrderHighlight";
+            clone.SetActive(false);
+            clone.layer = sourceObject.layer;
             var cloneTransform = clone.transform;
+            cloneTransform.SetParent(parent, false);
             cloneTransform.localPosition = sourceTransform.localPosition;
             cloneTransform.localRotation = sourceTransform.localRotation;
             cloneTransform.localScale = Vector3.one;
             cloneTransform.SetSiblingIndex(Math.Min(sourceTransform.GetSiblingIndex() + 1, parent.childCount - 1));
-
-            var clonedImageComponent = clone.GetComponent(Il2CppType.From(borderProperty.PropertyType));
+            var imageObject = UnityEngine.Object.Instantiate(sourceObject, cloneTransform);
+            imageObject.name = "MystiaStewardCompanion.TargetOrderHighlight.Image";
+            var clonedImageComponent = imageObject.GetComponent(Il2CppType.From(borderProperty.PropertyType));
             var clonedImage = RuntimeReflectionUtility.TryCastRuntimeObject(
                 clonedImageComponent,
                 ImageTypeName);
@@ -894,8 +924,8 @@ internal static class RuntimeOrderHighlightService
                 return false;
             }
             if (!HasExactSafeImageComponents(
-                    clone,
-                    cloneTransform,
+                    imageObject,
+                    imageObject.transform,
                     clonedImageWrapper,
                     rectTransformType,
                     canvasRendererType,
@@ -914,7 +944,10 @@ internal static class RuntimeOrderHighlightService
             }
 
             imageAccessors.SetRaycastTarget!.Invoke(clonedImage, new object?[] { false });
+            imageAccessors.SetMaskable!.Invoke(clonedImage, new object?[] { true });
             imageAccessors.SetEnabled!.Invoke(clonedImage, new object?[] { true });
+            if (!TryConstrainOverlayToBody(registration, clone, clonedImageWrapper, out failure)) return false;
+            imageObject.SetActive(true);
             clone.SetActive(true);
             if (!clone.activeInHierarchy
                 || imageAccessors.GetEnabled!.Invoke(clonedImage, null) is not true
@@ -925,7 +958,7 @@ internal static class RuntimeOrderHighlightService
                 return false;
             }
 
-            var color = RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor(
+            var color = RuntimeTargetHighlightStyle.BuildOrderHighlightColor(
                 target.Claim,
                 targetSet.Palette,
                 Time.realtimeSinceStartup);
@@ -934,14 +967,14 @@ internal static class RuntimeOrderHighlightService
             {
                 var latest = Volatile.Read(ref _desiredTargetSet);
                 if (latest.Generation != targetSet.Generation
-                    || !latest.TryGetTarget(target.Kind, out var latestTarget)
+                    || !latest.TryGetTarget(target.IdentityKey, out var latestTarget)
                     || !latestTarget.HasSameValues(target))
                 {
                     failure = "target changed while creating order visual";
                     return false;
                 }
 
-                ActiveVisuals[target.Kind] = new ActiveOrderVisual(
+                ActiveVisuals[target.IdentityKey] = new ActiveOrderVisual(
                     targetSet.Generation,
                     targetSet.SessionGeneration,
                     target,
@@ -1002,6 +1035,126 @@ internal static class RuntimeOrderHighlightService
             return false;
         }
 
+        // 字号/模板尺寸可能在原卡复用后改变，健康检查重新读取精确桌号区域；不累积裁剪量。
+        return TryConstrainOverlayToBody(active.Element, active.Overlay, (Component)active.Image, out failure);
+    }
+
+    /// <summary>
+    /// 只缩小Mod自有矩形裁剪容器，把上沿限制在原生桌号RectTransform的下沿。
+    /// Work订单模板的背景与text是同父级的独立节点；背景覆盖整张卡片，不能整张染色。
+    /// 用实时矩形和锚点计算正文，不使用桌号内容、对象名、固定像素或材质替换。
+    /// 原生当前边框会以scale=0隐藏（ChangeBorderStyle），因此只读取其逻辑rect/位置，
+    /// 不能用它的世界矩阵反算坐标；覆盖层始终沿既有规则保持单位缩放。
+    /// </summary>
+    private static bool TryConstrainOverlayToBody(RegisteredElement registration, GameObject overlay,
+        Component image, out string failure)
+    {
+        failure = "";
+        try
+        {
+            PropertyInfo? borderProperty, labelProperty;
+            lock (PatchRoot) { borderProperty = _currentBorderImageProperty; labelProperty = _deskLabelProperty; }
+            if (borderProperty?.GetValue(registration.Element) is not Component border
+                || labelProperty?.GetValue(registration.Element) is not Component label
+                || registration.Element is not Component element
+                || !IsLiveUnityObject(border) || !IsLiveUnityObject(label))
+            {
+                failure = "exact order body/desk label is unavailable";
+                return false;
+            }
+            var source = RuntimeReflectionUtility.TryCastRuntimeObject(border.transform, RectTransformTypeName) as RectTransform;
+            var header = RuntimeReflectionUtility.TryCastRuntimeObject(label.transform, RectTransformTypeName) as RectTransform;
+            var body = RuntimeReflectionUtility.TryCastRuntimeObject(overlay.transform, RectTransformTypeName) as RectTransform;
+            var picture = RuntimeReflectionUtility.TryCastRuntimeObject(image.transform, RectTransformTypeName) as RectTransform;
+            if (source == null || header == null || body == null
+                || picture == null || !IsLiveUnityObject(picture)
+                || !IsLiveUnityObject(source) || !IsLiveUnityObject(header) || !IsLiveUnityObject(body)
+                || !source.IsChildOf(element.transform) || !header.IsChildOf(element.transform)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(source.parent, out var parent)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(header.parent, out var headerParent)
+                || !RuntimeReflectionUtility.TryReadNativeObjectPointer(body.parent, out var bodyParent)
+                || parent != headerParent || parent != bodyParent || source.Pointer == header.Pointer
+                || !source.localRotation.Equals(Quaternion.identity) || !header.localRotation.Equals(Quaternion.identity))
+            {
+                failure = "order body and desk label do not share the verified axis-aligned parent";
+                return false;
+            }
+            if (!TryValidateBodyClipper(overlay, image, out failure)) return false;
+            var sourceRect = source.rect;
+            var headerRect = header.rect;
+            var sourcePosition = source.localPosition;
+            var headerBottom = header.localPosition.y + headerRect.yMin * header.localScale.y;
+            var bottom = sourcePosition.y + sourceRect.yMin;
+            var top = sourcePosition.y + sourceRect.yMax;
+            var removed = top - headerBottom;
+            if (!float.IsFinite(headerBottom) || !float.IsFinite(bottom) || !float.IsFinite(top)
+                || !float.IsFinite(sourceRect.width) || sourceRect.width <= 0
+                || !float.IsFinite(header.localScale.y) || header.localScale.y <= 0
+                || headerRect.height <= 0 || removed <= 0 || headerBottom <= bottom)
+            {
+                failure = "order body/desk label bounds are incomplete or do not form a header";
+                return false;
+            }
+            // 保留原图宽度、底边和锚点；仅私有裁剪容器的高度/中心改变。每次从source计算，
+            // 可在字号或卡片尺寸变化后恢复正确高度，且不改变原背景、桌号或用户输入区域。
+            var size = new Vector2(source.sizeDelta.x, source.sizeDelta.y - removed);
+            var position = new Vector2(source.anchoredPosition.x,
+                source.anchoredPosition.y - removed * source.pivot.y);
+            if (!body.anchorMin.Equals(source.anchorMin)) body.anchorMin = source.anchorMin;
+            if (!body.anchorMax.Equals(source.anchorMax)) body.anchorMax = source.anchorMax;
+            if (!body.pivot.Equals(source.pivot)) body.pivot = source.pivot;
+            if (!body.sizeDelta.Equals(size)) body.sizeDelta = size;
+            if (!body.anchoredPosition.Equals(position)) body.anchoredPosition = position;
+            // 子图锚到容器轴心，坐标仍与原背景完全重合。特别保留拉伸布局计算后的
+            // 实际rect尺寸，不能复制sizeDelta到新父级，否则九宫格会再次被压缩。
+            if (!picture.anchorMin.Equals(body.pivot)) picture.anchorMin = body.pivot;
+            if (!picture.anchorMax.Equals(body.pivot)) picture.anchorMax = body.pivot;
+            if (!picture.pivot.Equals(source.pivot)) picture.pivot = source.pivot;
+            var fullSize = new Vector2(sourceRect.width, sourceRect.height);
+            var fullPosition = new Vector3(sourcePosition.x - body.localPosition.x,
+                sourcePosition.y - body.localPosition.y, sourcePosition.z - body.localPosition.z);
+            if (!picture.sizeDelta.Equals(fullSize)) picture.sizeDelta = fullSize;
+            if (!picture.localPosition.Equals(fullPosition)) picture.localPosition = fullPosition;
+            if (!picture.localScale.Equals(Vector3.one)) picture.localScale = Vector3.one;
+            if (!picture.localRotation.Equals(Quaternion.identity)) picture.localRotation = Quaternion.identity;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            failure = "order body bounds failed: " + ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 容器只包含RectTransform和原生RectMask2D；它不复制Image、文字或交互行为。
+    /// 子图必须仍受此唯一私有容器约束，失配时撤回整组，避免留下未裁剪的桌号纹理。
+    /// 原生RectMask2D会与祖先裁剪范围相交，不修改或扩大游戏既有裁剪区。
+    /// </summary>
+    private static bool TryValidateBodyClipper(GameObject overlay, Component image, out string failure)
+    {
+        Type? maskType;
+        lock (PatchRoot) maskType = _rectMaskType;
+        var maskObject = maskType == null ? null : overlay.GetComponent(Il2CppType.From(maskType));
+        var mask = RuntimeReflectionUtility.TryCastRuntimeObject(maskObject, RectMaskTypeName);
+        if (mask is not Component component || !IsLiveUnityObject(component)
+            || maskType == null || maskType.GetProperty("enabled")?.GetValue(mask) is not true
+            || maskType.GetProperty("padding")?.GetValue(mask) is not Vector4 padding
+            || !padding.Equals(new Vector4(0, 0, 0, 0))
+            || maskType.GetProperty("softness")?.GetValue(mask) is not Vector2Int softness
+            || !softness.Equals(new Vector2Int(0, 0))
+            || overlay.GetComponents<Component>().Length != 2 || overlay.transform.childCount != 1
+            || !overlay.transform.localScale.Equals(Vector3.one)
+            || !overlay.transform.localRotation.Equals(Quaternion.identity)
+            || !RuntimeReflectionUtility.TryReadNativeObjectPointer(image.transform.parent, out var imageParent)
+            || imageParent != overlay.transform.Pointer
+            || image.transform.childCount != 0
+            || GetImageAccessors(image.GetType()).GetRaycastTarget?.Invoke(image, null) is not false
+            || GetImageAccessors(image.GetType()).GetMaskable?.Invoke(image, null) is not true)
+        {
+            failure = "private order body clipper no longer owns the exact maskable image";
+            return false;
+        }
         failure = "";
         return true;
     }
@@ -1041,7 +1194,7 @@ internal static class RuntimeOrderHighlightService
         return true;
     }
 
-    private static bool TryApplyPulseLocked(
+    private static bool TryApplyColorLocked(
         ActiveOrderVisual active,
         RuntimeTargetHighlightPalette palette,
         out string failure)
@@ -1054,13 +1207,17 @@ internal static class RuntimeOrderHighlightService
                 return false;
             }
 
-            var color = RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor(
+            var color = RuntimeTargetHighlightStyle.BuildOrderHighlightColor(
                 active.Target.Claim,
                 palette,
                 Time.realtimeSinceStartup);
+            // 固定颜色在绝大多数帧不变，避免每帧跨IL2CPP反射写色并重复使UI网格变脏。
+            if (active.LastAppliedColor.HasValue && active.LastAppliedColor.Value.Equals(color))
+            { failure = ""; return true; }
             active.ImageAccessors.SetColor.Invoke(
                 active.Image,
                 new object?[] { color });
+            active.LastAppliedColor = color;
             failure = "";
             return true;
         }
@@ -1250,9 +1407,12 @@ internal static class RuntimeOrderHighlightService
             var getSprite = SingleMethod(methods, "get_sprite", Type.EmptyTypes, expectedReturnTypeName: "UnityEngine.Sprite");
             var setColor = SingleMethod(methods, "set_color", new[] { typeof(Color) }, expectedReturnTypeName: "System.Void");
             var setRaycastTarget = SingleMethod(methods, "set_raycastTarget", new[] { typeof(bool) }, expectedReturnTypeName: "System.Void");
+            var getRaycastTarget = SingleMethod(methods, "get_raycastTarget", Type.EmptyTypes, expectedReturnTypeName: "System.Boolean");
             var getEnabled = SingleMethod(methods, "get_enabled", Type.EmptyTypes, expectedReturnTypeName: "System.Boolean");
             var setEnabled = SingleMethod(methods, "set_enabled", new[] { typeof(bool) }, expectedReturnTypeName: "System.Void");
-            return new ImageAccessors(getSprite, setColor, setRaycastTarget, getEnabled, setEnabled);
+            var getMaskable = SingleMethod(methods, "get_maskable", Type.EmptyTypes, expectedReturnTypeName: "System.Boolean");
+            var setMaskable = SingleMethod(methods, "set_maskable", new[] { typeof(bool) }, expectedReturnTypeName: "System.Void");
+            return new ImageAccessors(getSprite, setColor, setRaycastTarget, getEnabled, setEnabled, getMaskable, setMaskable, getRaycastTarget);
         });
     }
 
@@ -1286,11 +1446,9 @@ internal static class RuntimeOrderHighlightService
     {
         // 活动项由 Tick 的逐帧路径独立核验、撤销并记录失效原因；批量维护不能先移除它，
         // 否则虽已销毁旧视觉，却会跳过该原因和重试门闩，让诊断退化为“没有候选”。
-        var rare = ActiveVisuals.TryGetValue(RuntimeUiTargetKind.Rare, out var rareVisual) ? rareVisual.Element : null;
-        var normal = ActiveVisuals.TryGetValue(RuntimeUiTargetKind.Normal, out var normalVisual) ? normalVisual.Element : null;
         foreach (var registration in RegisteredElements.Values.ToList())
         {
-            if (ReferenceEquals(registration, rare) || ReferenceEquals(registration, normal)) continue;
+            if (ActiveVisuals.Values.Any(active => ReferenceEquals(registration, active.Element))) continue;
             if (TryValidateRegisteredElementLocked(registration, out _)) continue;
             RemoveRegisteredElementLocked(registration.ElementPointer, destroyActiveVisual: true);
         }
@@ -1349,7 +1507,7 @@ internal static class RuntimeOrderHighlightService
         }
         foreach (var target in targetSet.Targets.Where(target => target.OrderHighlightEnabled))
         {
-            if (!ActiveVisuals.ContainsKey(target.Kind)) NextAttemptAt[target.Kind] = 0f;
+            if (!ActiveVisuals.ContainsKey(target.IdentityKey)) NextAttemptAt[target.IdentityKey] = 0f;
         }
     }
 
@@ -1383,13 +1541,13 @@ internal static class RuntimeOrderHighlightService
         return targetSet.Targets.Any(target => target.OrderHighlightEnabled);
     }
 
-    private static void DestroyActiveVisualLocked(RuntimeUiTargetKind kind)
+    private static void DestroyActiveVisualLocked(string kind)
     {
         if (!ActiveVisuals.Remove(kind, out var active)) return;
         SafeDestroyOverlay(active.Overlay);
     }
 
-    private static void AbandonActiveVisualLocked(RuntimeUiTargetKind kind)
+    private static void AbandonActiveVisualLocked(string kind)
     {
         ActiveVisuals.Remove(kind);
     }
@@ -1571,6 +1729,7 @@ internal static class RuntimeOrderHighlightService
         public nint ControllerPointer { get; }
         public long OrderLifecycleSequence { get; }
         public float NextHealthCheckAt { get; set; }
+        public Color? LastAppliedColor { get; set; }
     }
 
     private sealed record ResolvedTargetElement(
@@ -1591,12 +1750,18 @@ internal static class RuntimeOrderHighlightService
         MethodInfo? SetColor,
         MethodInfo? SetRaycastTarget,
         MethodInfo? GetEnabled,
-        MethodInfo? SetEnabled)
+        MethodInfo? SetEnabled,
+        MethodInfo? GetMaskable,
+        MethodInfo? SetMaskable,
+        MethodInfo? GetRaycastTarget)
     {
         public bool IsExact => GetSprite != null
             && SetColor != null
             && SetRaycastTarget != null
             && GetEnabled != null
-            && SetEnabled != null;
+            && SetEnabled != null
+            && GetMaskable != null
+            && SetMaskable != null
+            && GetRaycastTarget != null;
     }
 }

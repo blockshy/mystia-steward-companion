@@ -66,6 +66,8 @@ internal static partial class RuntimeOrderPreparationService
         public const string CookingStartUnowned = "cooking-start-unowned";
         public const string CookingPending = "cooking-pending";
         public const string CookingCookerWaiting = "cooking-cooker-waiting";
+        // 只表示扣料前的库存检查拒绝；已扣料/提交结果不明不得使用此可恢复等待码。
+        public const string CookingIngredientsWaiting = "ingredients-unavailable-before-cooking";
         public const string CookingMismatchStored = "cooking-mismatch-stored";
         public const string CookingTagsUnreadableStored = "cooking-tags-unreadable-stored";
         public const string CookingOwnershipLost = "cooking-ownership-lost";
@@ -88,6 +90,7 @@ internal static partial class RuntimeOrderPreparationService
         public const string OrderEvaluationCommitUncertain = "order-evaluation-commit-uncertain";
         public const string OrderEvaluationTargetMismatch = "order-evaluation-target-mismatch";
         public const string OrderEvaluationCloseoutUnresolved = "order-evaluation-closeout-unresolved";
+        public const string OrderTerminatedBeforeDelivery = "order-terminated-before-delivery";
         public const string OrderTerminatedBeforeEvaluation = "order-terminated-before-evaluation";
         public const string MizuchiContractMismatch = "mizuchi-contract-mismatch";
         public const string CookingCancelled = "cooking-cancelled";
@@ -264,7 +267,7 @@ internal static partial class RuntimeOrderPreparationService
             return runtimeOrderCache;
         }
         CookingCollectionTarget? actionTarget = null;
-        var plannedFoodId = request.FoodId >= 0
+        var plannedFoodId = RequestsDarkCuisine(request) || request.FoodId >= 0
             ? request.FoodId
             : request.RecipeId >= 0
                 ? ResolveFoodIdFromRecipeId(request.RecipeId)
@@ -450,6 +453,15 @@ internal static partial class RuntimeOrderPreparationService
         if (request.AutoStartCooking)
         {
             result.Automation.Stage = "cooking-start";
+            // 现成特殊产物不需要厨具或新配方；先在当前主线程精确绑定后尝试取餐。
+            // 库存候选失效时等待重算，不能使用缺失的配方 ID 直接进入开锅路径。
+            if (RequestsDarkCuisine(request))
+            {
+                var storedOrder = GetRuntimeOrder();
+                if (!TryBindActionTargetAndApplyBarrier(storedOrder, "绑定任务料理订单")) return Finish(result);
+                if (TryUseStoredDarkCuisine(request, result, actionTarget!, storedOrder, request.FoodSupplySource == "stored"))
+                    return Finish(result);
+            }
             if (request.RecipeId < 0)
             {
                 AddFailure(result, "自动开始料理", "没有可用的推荐料理。");
@@ -457,7 +469,7 @@ internal static partial class RuntimeOrderPreparationService
             }
             else
             {
-                var expectedFoodId = request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
+                var expectedFoodId = RequestsDarkCuisine(request) || request.FoodId >= 0 ? request.FoodId : ResolveFoodIdFromRecipeId(request.RecipeId);
                 var runtimeOrder = GetRuntimeOrder();
                 if (runtimeOrder.Order == null || runtimeOrder.Controller == null || runtimeOrder.Manager == null)
                 {
@@ -2118,6 +2130,19 @@ internal static partial class RuntimeOrderPreparationService
             return false;
         }
 
+        // 普通订单不受稀客调度约束。启用名单时，原生绑定只能补充给同一个公开身份，
+        // 禁止桌号复用、旧生命周期或绑定 ABA 把暂停授权转移到另一笔订单。
+        if (target.Kind == CookingCollectionTargetKind.RareOrder
+            && RuntimeAutomationControlState.SnapshotManagedRareGuestIds().Count > 0)
+        {
+            var identity = new RuntimeRareGuestParticipationOrderIdentity(
+                token.BusinessGeneration, target.TraceId, token.LifecycleSequence, target.GuestId ?? -1);
+            if (!RuntimeRareGuestParticipationState.TryEnrichCurrentBinding(identity, token, out var decision))
+            {
+                diagnostic = "稀客调度绑定不可用：" + decision.Message;
+                return false;
+            }
+        }
         diagnostic = $"generation={token.BusinessGeneration}; kind={token.OrderKind}; "
             + $"order=0x{(long)token.OrderPointer:X}; controller=0x{(long)token.ControllerPointer:X}; "
             + $"orderLifecycle={token.LifecycleSequence}";
@@ -2685,6 +2710,20 @@ internal static partial class RuntimeOrderPreparationService
             return;
         }
 
+        // 新鲜库存可能在推荐计算后被其他订单消耗。只有本命令没有失败、没有开锅/任务
+        // 证据，且确实走了扣料前缺料分支，才等待下一轮重规划，不累计开锅失败次数。
+        // 已成功送酒的步骤和ServedBeverage事实仍保留；不能把整个命令说成没有副作用。
+        if (codes.Contains(OrderPreparationStepCodes.CookingIngredientsWaiting)
+            && !codes.Contains(OrderPreparationStepCodes.CookingStarted)
+            && string.IsNullOrEmpty(result.Automation.JobId))
+        {
+            result.Automation.Outcome = "waiting";
+            result.Automation.Stage = "cooking-start";
+            result.Automation.ReasonCode = OrderPreparationStepCodes.CookingIngredientsWaiting;
+            result.Automation.RetryAfterMs = 1000;
+            return;
+        }
+
         if (codes.Contains(OrderPreparationStepCodes.CookingStarted)
             || codes.Contains(OrderPreparationStepCodes.BeverageDelivered))
         {
@@ -2866,6 +2905,7 @@ internal static partial class RuntimeOrderPreparationService
         public string ControllerLeaseReleaseReason => ControllerLease.ReleaseReason switch
         {
             AutomationCookingControllerLeaseReleaseReason.None => "",
+            AutomationCookingControllerLeaseReleaseReason.OrderTerminatedBeforeDelivery => "order-terminated-before-delivery",
             AutomationCookingControllerLeaseReleaseReason.ManualHandoff => "manual-handoff",
             AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupCompleted => "delivery-cleanup-completed",
             AutomationCookingControllerLeaseReleaseReason.DeliveryCleanupTerminated => "delivery-cleanup-terminated",
@@ -3022,6 +3062,9 @@ internal static partial class RuntimeOrderPreparationService
         public int MatchFoodId { get; private init; } = -1;
         public int MatchBeverageId { get; private init; } = -1;
         public int FoodId { get; private init; } = -1;
+        /// <summary>目标产物与实际配方分离；仅精确黑暗料理任务可使用 Food -1。</summary>
+        public string FoodProductionKind { get; private init; } = "";
+        public long MissionGeneration { get; private init; }
         public string FoodName { get; private init; } = "";
         public int BeverageId { get; private init; } = -1;
         public string BeverageName { get; private init; } = "";
@@ -3059,6 +3102,8 @@ internal static partial class RuntimeOrderPreparationService
                 BeverageTag = request.BeverageTag,
                 FoodId = foodId,
                 FoodName = request.RecipeName,
+                FoodProductionKind = request.FoodProductionKind,
+                MissionGeneration = request.MissionGeneration,
                 BeverageId = request.BeverageId,
                 BeverageName = request.BeverageName,
                 RecipeId = request.RecipeId,
@@ -3234,6 +3279,14 @@ internal static partial class RuntimeOrderPreparationService
                 Code = OrderPreparationStepCodes.CookingCookerWaiting,
             };
         }
+
+        /// <summary>仅供尚未扣料的材料核对分支使用；其他开锅错误继续保留原来的失败/人工检查语义。</summary>
+        public static CookingStartResult WaitForIngredients(string message) => new()
+        {
+            Waiting = true,
+            Message = message,
+            Code = OrderPreparationStepCodes.CookingIngredientsWaiting,
+        };
     }
 
 }

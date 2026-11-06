@@ -147,6 +147,9 @@ public sealed class RuntimeReflectionRecommendationStateProvider
         if (_includePlacedCookers)
         {
             Measure("cookerSnapshot", () => RuntimeCookerSnapshotService.ApplyTo(state));
+            // 仅存在明确黑暗料理任务时读取保温箱，避免普通经营快照额外遍历库存。
+            if (RuntimeServeInWorkMissionDiagnosticCapture.Snapshot().Signals.Any(signal => signal.FoodId == -1))
+                state.StoredDarkCuisineCount = Measure("storage.darkCuisine", RuntimeOrderPreparationService.CountStoredDarkCuisine);
         }
         else
         {

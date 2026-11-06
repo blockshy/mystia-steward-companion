@@ -72,6 +72,55 @@ void main() {
     );
   }
 
+  // 特殊成品没有可伪造的普通配方；必须明确区分现场制作基底和保温箱成品。
+  for (final stored in [false, true]) {
+    testWidgets('黑暗料理${stored ? '使用保温箱' : '显示真实制作基底'}，不冒用成品配方图标', (
+      tester,
+    ) async {
+      final model = FixtureModel();
+      addTearDown(model.dispose);
+      final item = serviceFoodView(model, {
+        'productKind': 'dark-cuisine',
+        'supplySource': stored ? 'stored' : 'production',
+        'recipe': {
+          'id': -1,
+          'name': '黑暗料理',
+          'recipeId': stored ? null : 201,
+          'ingredients': ['豆腐'],
+          'cooker': '煮锅',
+        },
+        'productionRecipe': stored
+            ? null
+            : {'id': 101, 'recipeId': 201, 'name': '豆腐汤'},
+        'extraIngredients': [
+          {'id': 2, 'name': '禁忌食材'},
+        ],
+      });
+      expect(item.entityId, isNull);
+      expect(item.preparedSupply, stored);
+      expect(item.productionRecipeId, stored ? null : 101);
+      await tester.pumpWidget(
+        fixture(
+          SingleChildScrollView(child: MenuItemContent(item)),
+          dark: true,
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('黑暗料理'), findsOneWidget);
+      if (stored) {
+        expect(find.text('保温箱成品'), findsOneWidget);
+        for (final prefix in ['厨具', '配方', '加料', '制作']) {
+          expect(find.text(prefix), findsNothing);
+        }
+      } else {
+        expect(find.text('基底 · 豆腐汤'), findsOneWidget);
+        expect(find.text('任务成品'), findsOneWidget);
+        expect(find.text('加料'), findsOneWidget);
+      }
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   for (final width in [1280.0, 640.0, 390.0]) {
     for (final dark in [false, true]) {
       testWidgets('共享料理酒水 ${dark ? '深色' : '浅色'} $width / 150%外显且可滚动', (

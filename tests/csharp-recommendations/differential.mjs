@@ -17,6 +17,23 @@ try {
   const setKeys = new Set(['availableRecipeIds', 'availableIngredientIds', 'availableBeverageIds', 'disabledIngredientIds', 'excludedIngredientIds', 'excludedBeverageIds', 'placedCookerNames', 'favoriteRecipeKeys', 'favoriteBeverageIds', 'specialTargetFoodTags', 'specialTargetBeverageTags', 'recipeIds', 'ingredientIds', 'beverageIds', 'unavailableIngredientIds', 'usableCookerNames', 'runtimeUnavailableCookerNames']);
   const hydrate = (value, key = '') => setKeys.has(key) ? new Set(value ?? []) : Array.isArray(value) ? value.map(item => hydrate(item)) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).map(([name, item]) => [name, hydrate(item, name)])) : value;
   const encode = value => JSON.parse(JSON.stringify(value, (_key, item) => item instanceof Set ? [...item] : item instanceof Map ? Object.fromEntries(item) : item));
+  // schema5 明确移除了 cookerAvailable 评分目标。冻结 main oracle 不作修改；
+  // 这里只适配两个返回评分配置的入口，其他字段、八个目标的顺序/权重/方向仍完整比较。
+  // 如果旧 oracle 的契约也发生漂移（重复或缺失目标），立即失败，禁止用宽泛过滤掩盖差异。
+  const currentSortProfile = profile => {
+    assert.equal(profile.objectives.length, 9, '冻结评分配置必须仍有九个目标。');
+    assert.equal(profile.objectives.filter(item => item.key === 'cookerAvailable').length, 1,
+      '冻结评分配置应恰好包含一个已移除目标。');
+    return { ...profile, objectives: profile.objectives.filter(item => item.key !== 'cookerAvailable') };
+  };
+  // 候选排序也必须采用八目标语义：仅在传给旧 oracle 的参数中关闭已删除目标。
+  // 旧实现仍执行完整排序，其余权重/候选/硬条件不变；C# 收到的原始测试输入不改。
+  const legacyRankingProfile = profile => {
+    const legacy = modules.normalizeRecommendationSortProfile(profile);
+    currentSortProfile(legacy); // 保留九项冻结契约的断言，避免 oracle 漂移被忽略。
+    return { ...legacy, objectives: legacy.objectives.map(item => item.key === 'cookerAvailable'
+      ? { ...item, enabled: false, weight: 0 } : item) };
+  };
   const invoke = (operation, raw) => {
     const a = hydrate(structuredClone(raw));
     if (operation.startsWith('support.')) {
@@ -37,7 +54,12 @@ try {
       if (name === 'buildRecommendationCookerNameSet') return fn(a.runtimeSets, a.filterMissingCookers);
       if (name === 'findAvailableAutomationCookerSlot') return fn(raw.pool, raw.cookerKey, new Set(raw.unavailableControllerIndexes));
       if (name === 'resolveCookerTypeId') return fn(raw.value);
-      if (name === 'buildRecommendationRuntimeContext') return fn(raw.runtime, a.runtimeSets, raw.preferences, raw.data, raw.options);
+      if (name === 'buildRecommendationRuntimeContext') {
+        // 新契约只增加保温箱黑暗料理计数的只读透传，缺省为 unknown(null)。
+        // 旧运行时上下文其余字段照旧逐项比较，不从实际 C# 输出推导期望值。
+        return { ...fn(raw.runtime, a.runtimeSets, raw.preferences, raw.data, raw.options),
+          storedDarkCuisineCount: raw.runtime?.storedDarkCuisineCount ?? null };
+      }
       if (name === 'buildRecommendationPlanSortContext') return fn(raw.favorites, raw.customerId, raw.foodTag, raw.beverageTag, raw.preferences);
       if (name === 'buildPrimaryExecutionPlanPolicy') return fn(raw.preferences, raw.automationAllowed);
       if (name === 'normalizePrimaryExecutionPlans') return fn(raw.plans, a.sortContext, raw.policy);
@@ -53,11 +75,21 @@ try {
     if (operation === 'buildRareFoodCandidates') return fn(a.data, a.demand, a.context, a.options);
     if (operation === 'buildRareBeverageCandidates' || operation === 'diagnoseRareBeverageCandidateSearch') return fn(a.data, a.demand, a.context);
     if (operation === 'diagnoseRareFoodCandidateSearch') return fn(a.data, a.demand, a.context, a.generatedCandidates);
-    if (operation === 'sortRareOrderPlans') return fn(a.plans, a.sortProfile, a.sortContext);
+    if (operation === 'sortRareOrderPlans') return fn(a.plans, legacyRankingProfile(a.sortProfile), a.sortContext);
+    if (operation === 'buildRareOrderPlansFromCandidates' || operation === 'buildRareOrderPlans')
+      return fn({ ...a, sortProfile: legacyRankingProfile(a.sortProfile) });
     if (operation.startsWith('compare')) return Math.sign(fn(a.left, a.right));
+    if (operation === 'getVerifiedMissionRecipeSortContext') {
+      // 冻结 main 仅认识普通任务配方，此矩阵只比较旧输入；新特殊产物由 C# 专项独立验证。
+      assert.equal(a.missionRecipePriority?.productKind, undefined,
+        '特殊产物输入不能交给不支持该功能的冻结 oracle。');
+      const legacy = fn(a);
+      return legacy == null ? legacy : { ...legacy, missionProductKind: null };
+    }
     if (operation === 'isMissionRecipeFoodCandidate') return fn(a.food, a.sortContext);
     if (operation === 'isMissionRecipeExecutionPlan') return fn(a.plan, a.sortContext);
-    if (operation === 'buildDefaultRecommendationSortProfile') return fn(a.preset);
+    if (operation === 'buildDefaultRecommendationSortProfile') return currentSortProfile(fn(a.preset));
+    if (operation === 'normalizeRecommendationSortProfile') return currentSortProfile(fn(a));
     return fn(a);
   };
   const fixtures = [];
@@ -152,6 +184,12 @@ try {
   const runtime = { ...context, placedCookerTypeIds: [1, 2, 3], placedCookers: [cooker(0, [1]), cooker(1, [1, 2]), cooker(2, [3])], placedCookerSnapshotComplete: true, placedCookerControllerCount: 3, placedCookerEmptyControllerCount: 0, placedCookerLockedControllerCount: 0, placedCookerReadFailureCount: 0, placedCookerStatus: 'test' };
   const preferences = { filterMissingCookers: true, recommendationBudgetPolicy: 'block', recommendationExclusions: { excludedIngredientIds: [2], excludedBeverageIds: [22] }, pinFavoriteRecipeEnabled: true, pinFavoriteBeverageEnabled: true };
   const runtimeVariants = [runtime, { ...runtime, placedCookerSnapshotComplete: false, placedCookers: [], placedCookerTypeIds: [], placedCookerReadFailureCount: 3 }, { ...runtime, placedCookerLockedControllerCount: 1, placedCookerControllerCount: 4 }, { ...runtime, availableRecipeIds: [11, 11, 12], availableBeverageIds: [21, 21], ownedIngredientQty: { '01': 9, '2': -1 } }];
+  for (const storedDarkCuisineCount of [null, 0, 3]) {
+    const value = { ...runtime, storedDarkCuisineCount };
+    add('support.buildRecommendationRuntimeContext', { runtime: value,
+      runtimeSets: encode(invoke('support.buildRuntimeSets', { runtime: value, data })), preferences, data,
+      options: { budget: context.budget } }, `runtime-dark-cuisine-count-${storedDarkCuisineCount}`);
+  }
   for (const value of runtimeVariants) {
     const sets = add('support.buildRuntimeSets', { runtime: value, data });
     add('support.validateRecommendationCookerSnapshot', { runtime: value });

@@ -319,6 +319,15 @@ static void VerifyCommittedDeliveryEvaluationBoundary()
         && resolveEvaluation.IndexOf("get_IsFullfilled", StringComparison.Ordinal)
             < resolveEvaluation.IndexOf("TryEvaluateMatchedAutomationOrderRuntimeIfReady", StringComparison.Ordinal),
         "The job does not acquire the current completion-stage permit before fresh fulfilled state and evaluation.");
+    // 暂停/控制权丢失不应阻止纯值终态清理；真正的原生评价仍在当前许可内。
+    AssertTrue(resolveEvaluation.IndexOf("RuntimeOrderTerminalReceiptStore.TryFind(", StringComparison.Ordinal)
+        < resolveEvaluation.IndexOf("AcquireAutomationCookingJobControlPermit(", StringComparison.Ordinal),
+        "已确认的终态必须先于暂停许可判断，避免暂停订单永久保留料理预约。");
+    var processCooking = ExtractSourceBlock(cooking,
+        "private static (bool Remove, string Message, string Code) TryProcessAutomationCookingJob(");
+    AssertTrue(processCooking.IndexOf("AutomationCookingTerminalReceiptPolicy.TryFindOrderTerminatedBeforeDelivery(", StringComparison.Ordinal)
+        < processCooking.IndexOf("ObserveAutomationCookingJobControl(", StringComparison.Ordinal),
+        "未送达订单的终态必须先于控制权及厨具对象读取。");
     AssertDoesNotContain(resolveEvaluation, "job.AutoCompleteOrder",
         "Committed delivery evaluation still uses the job's creation-time completion switch.");
     AssertContains(resolveEvaluation, "OrderPreparationStepCodes.OrderEvaluationCommitUncertain",

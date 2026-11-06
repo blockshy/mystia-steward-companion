@@ -362,7 +362,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
                 return false;
             }
 
-            if (foodId < 0)
+            if (foodId < -1)
             {
                 IncrementInvalidFoodLocked(observedAtUtc);
                 ClearSignalLocked(rawGuestId, canonicalGuestId);
@@ -396,7 +396,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
 
             if (definitionStatus == RuntimeServeInWorkMissionDefinitionStatus.Mismatch
                 || expectedFoodId is null
-                || expectedFoodId.Value < 0
+                || expectedFoodId.Value < -1
                 || expectedFoodId.Value != foodId)
             {
                 IncrementDefinitionMismatchLocked(observedAtUtc);
@@ -545,7 +545,7 @@ internal sealed class RuntimeServeInWorkMissionDiagnosticState
         ArgumentNullException.ThrowIfNull(activeSignals);
         if (activeSignals.Any(signal =>
                 signal.CanonicalGuestId < 0
-                || signal.FoodId < 0))
+                || signal.FoodId < -1))
         {
             throw new ArgumentException(
                 "Active ServeInWork signal identities must be non-negative.",

@@ -1,6 +1,6 @@
 # 项目事实与决策索引
 
-复核日期：2026-10-23
+复核日期：2026-11-06
 
 本文保存需要跨会话快速确认、但不属于具体操作步骤的稳定项目决策。它不是功能流水账，也不复制专题契约；细节以链接文档和测试源码为准。
 
@@ -8,7 +8,7 @@
 
 - `mystia-steward-companion` 由纯 C# 业务类库、BepInEx IL2CPP 游戏适配层、Flutter/Forui 伴随窗口和独立 Rust 更新程序组成。
 - Mod 在游戏电脑上读取运行时状态并提供本地 API；伴随窗口可以同机运行，也可以作为局域网内的另一台 Windows/Android 设备连接。
-- 伴随窗口是唯一用户界面。游戏内不提供备用 IMGUI 或嵌入式菜单页面。
+- 伴随窗口承担配置和操作；可选游戏内专注面板只读镜像订单制作信息，内容与外观仍从伴随窗口设置。游戏内不提供备用 IMGUI 或嵌入式操作菜单。
 - 当前产品版本、支持平台和用户操作以两份用户 README 与内置帮助为准；本文不保存发布版本快照。
 
 组件关系见[项目架构](architecture.md)。
@@ -36,8 +36,11 @@
 | 运行时数据 | 静态目录、玩家状态和业务快照分层；完整目录按内容签名独立获取 | [运行时数据 Provider](runtime-provider.md) |
 | 订单 | 普客与稀客都以成功原生创建边界形成的精确捕获为权威；HUD 只补展示，不证明所有权 | [订单捕获与生命周期](runtime-order-lifecycle.md) |
 | 自动化 | 每次副作用受当前主设备 profile、authority revision、automation lease、经营 generation 和订单 lifecycle 共同约束 | [自动化运行时](automation-runtime.md) |
+| 稀客调度 | 名单与等待条规则属于共享配置；精确订单参与队列独立控制执行，暂停订单继续显示；自动启用不代替自动化许可 | [稀客调度](rare-order-participation.md) |
 | 推荐 | C# 候选管线先执行硬过滤，再组合和排序；客户端读取同一主方案，只有完整计划为空才生成阻断诊断 | [推荐引擎](recommendation-engine.md) |
 | 游戏 UI | 后台只发布 immutable target；Unity 主线程按精确 ownership 应用 Mod-owned 视觉和加料事务 | [游戏 UI 集成](game-ui-integration.md) |
+| 多订单高亮 | 普客、稀客各自启停并配置最多三色；颜色按订单生命周期保留，共享资源按点单顺序左右分区 | [多订单高亮](multi-order-highlights.md) |
+| 游戏内专注 | 沿用主设备专注内容与主题，仅独立保存游戏内布局外观；永久输入穿透，启用后的有效经营空态保持显示 | [游戏内专注显示](game-focus-overlay.md) |
 | 设备配置 | 设备注册表中只有一个主设备；主设备 profile 是生效配置，非主设备可显式同步；历史配置迁移与当前在线协议校验分开 | [本地 API](local-api.md) |
 | 任务 | tracked 与 available 是两条只读业务链，不用存档 bool 或副作用查询补全状态 | [任务系统](missions.md) |
 | 特殊经营 | 游戏原生规则与 Mod 执行策略分开记录，未验证事实不能进入自动化 | [游戏规则](special-business-scenes-notes.md) / [Mod 实现](special-business-implementation.md) |

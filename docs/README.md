@@ -1,6 +1,6 @@
 # 开发文档索引
 
-复核日期：2026-10-23
+复核日期：2026-11-06
 
 本目录面向维护者，记录项目架构、开发流程和已经由代码、测试或游戏分析资料确认的实现边界。用户安装与操作说明仍以根目录 `README.md`、`mods/bepinex/README.md` 和伴随窗口内置帮助为准。
 
@@ -41,13 +41,17 @@
 | --- | --- |
 | [运行时数据 Provider](runtime-provider.md) | 游戏静态目录、玩家状态、readiness、快照和失败状态 |
 | [订单捕获与生命周期](runtime-order-lifecycle.md) | 夜间经营、普客/稀客捕获、强身份和终态回执 |
+| [稀客调度](rare-order-participation.md) | 名单、精确订单队列、等待条自动启用、暂停许可与展示边界 |
 | [自动化运行时](automation-runtime.md) | 控制租约、阶段门禁、CookingJob、暂停恢复和安全栅栏 |
 | [本地 API](local-api.md) | listener、鉴权、请求限制、规范路由和设备配置权威 |
 | [游戏 UI 集成](game-ui-integration.md) | 置顶、加料变体、厨具/桌位/订单高亮及 Unity ownership |
+| [多订单高亮](multi-order-highlights.md) | 两类独立调色板、稳定配色、点单顺序与共享资源分区 |
+| [游戏内专注显示](game-focus-overlay.md) | 专注内容镜像、外部布局设置、精确图片与订单底色 |
 | [伴随窗口 UI](companion-ui.md) | 导航、响应式布局、设计系统、手柄焦点和前端状态边界 |
 | [运行时图像资源](game-media.md) | 首次提取、图鉴头像、缓存代次、认证分发与初始化门禁 |
 | [推荐引擎](recommendation-engine.md) | 候选生成、硬过滤、排序、执行计划和阻断诊断 |
 | [任务系统](missions.md) | tracked、available、调度来源与 ServeInWork 的只读边界 |
+| [黑暗料理任务与供给](dark-cuisine-task-priority.md) | 特殊任务产物身份、真实基底生产、保温箱事务与验证边界 |
 | [更新系统](update-system.md) | 检查调度、catalog/manifest、更新页面与 Windows updater |
 | [日志与诊断](observability.md) | 总日志、控制台、诊断包和日志生命周期 |
 

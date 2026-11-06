@@ -192,12 +192,17 @@ internal static partial class RuntimeOrderPreparationService
                 $"成品身份在送达前无法安全复核，本轮未执行送达、入箱或厨具复位：{cookedFoodIdentityDiagnostic}");
         }
 
-        if (target.FoodId < 0)
+        if (target.FoodId < 0 && !IsDarkCuisineTarget(target))
         {
             return ContinueOrBlockAutomationDelivery(
                 job,
                 $"目标料理 ID 无效（{target.FoodId}），本轮未执行送达、入箱或厨具复位。");
         }
+
+        // 黑暗料理是明确的期望成品时直接进入正常送达事务，不能误判为制作失败并反复入箱。
+        // 任务已结束/改变则保留成品等待处理；不能把过时任务优先级转成当前点单的送达许可。
+        if (IsDarkCuisineTarget(target) && !TryValidateDarkCuisineTaskTarget(target, out var missionDiagnostic))
+            return ContinueOrBlockAutomationDelivery(job, missionDiagnostic);
 
         if (cookedFoodIdentity.FoodId != target.FoodId)
         {
@@ -921,18 +926,6 @@ internal static partial class RuntimeOrderPreparationService
             return true;
         }
 
-        using var permit = AcquireAutomationCookingJobControlPermit(
-            job,
-            RuntimeAutomationControlStage.OrderEvaluation,
-            DateTime.UtcNow);
-        if (!permit.Allowed)
-        {
-            job.FoodDeliveryEvaluationCloseoutTracker?.Suspend(DateTime.UtcNow);
-            message = permit.Decision.Message;
-            code = OrderPreparationStepCodes.CookingPending;
-            return false;
-        }
-
         if (!job.Target.OrderBinding.HasValue)
         {
             return ContinueOrCloseCommittedFoodDeliveryEvaluation(
@@ -967,6 +960,19 @@ internal static partial class RuntimeOrderPreparationService
             message = job.FoodDeliveryEvaluationMessage;
             code = job.FoodDeliveryEvaluationCode;
             return true;
+        }
+
+        // 已确认的终态优先于调度暂停，只有仍需原生评价的路径才申请副作用许可。
+        using var permit = AcquireAutomationCookingJobControlPermit(
+            job,
+            RuntimeAutomationControlStage.OrderEvaluation,
+            DateTime.UtcNow);
+        if (!permit.Allowed)
+        {
+            job.FoodDeliveryEvaluationCloseoutTracker?.Suspend(DateTime.UtcNow);
+            message = permit.Decision.Message;
+            code = OrderPreparationStepCodes.CookingPending;
+            return false;
         }
 
         var target = job.Target;
@@ -2185,6 +2191,8 @@ internal static partial class RuntimeOrderPreparationService
             FoodId = target.FoodId,
             RecipeId = target.RecipeId,
             RecipeName = target.FoodName,
+            FoodProductionKind = target.FoodProductionKind,
+            MissionGeneration = target.MissionGeneration,
             ExtraIngredientIds = target.ExtraIngredientIds,
             PredictedFoodTags = target.PredictedFoodTags,
             PredictedFoodTagsProvided = true,

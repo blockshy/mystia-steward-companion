@@ -30,6 +30,9 @@ internal static class WarmPipelineTests
         {
             var settings = J.Obj(JsonNode.Parse(profile.GetRawText()));
             settings["automationEnabled"] = true; settings["gameUiEnabled"] = true;
+            // 压力输入仍保留八笔订单，但游戏辅助按当前三色上限选取子集；
+            // 显式使用最大合法调色板，避免默认两色变化或旧八目标规则影响性能对照。
+            settings["rareOrderHighlightPalette"] = new JsonArray("#F2CA5C", "#EF856D", "#EF76AF");
             foreach (var kind in new[] { "rare", "normal" })
                 foreach (var suffix in new[] { "GameUiPinningEnabled", "RecipeVariantEnabled", "CookerHighlightEnabled", "SeatHighlightEnabled", "OrderHighlightEnabled" })
                     settings[kind + suffix] = true;
@@ -54,8 +57,12 @@ internal static class WarmPipelineTests
             var actual = J.Obj(JsonNode.Parse(host.ProbeWarmPipeline(false)));
             Check(expected["recommendations"]!.ToJsonString() == actual["recommendations"]!.ToJsonString(), "新旧整链推荐/当前目标不一致。");
             Check(J.Arr(actual["recommendations"]?["recommendations"]).Count == 8, "压力夹具未形成八种需求。");
-            foreach (var field in expected)
+            foreach (var field in expected.Where(field => field.Key != "gameUiTargets"))
                 Check(field.Value?.ToJsonString() == actual[field.Key]?.ToJsonString(), "发布字段变化：" + field.Key);
+            Check(J.Arr(actual["gameUiTargets"]?["rare"]).Count == 3,
+                "八单推荐保持完整，游戏辅助必须按显式三色调色板只投影三个稀客。");
+            Check(J.Arr(actual["gameUiTargets"]?["orderColors"]).Count == 3,
+                "辅助目标与订单底色应使用相同的三个有效声明，不能向未辅助订单分配颜色。");
             var immutableBefore = actual["recommendations"]!.ToJsonString();
             actual["recommendations"] = new JsonObject();
             Check(host.Status()["recommendations"]!.ToJsonString() == immutableBefore, "读取方修改污染冻结发布。");
@@ -183,7 +190,7 @@ namespace MystiaStewardCompanion.LocalApi
                     ("recipeVariantEnabled", preferences[kind + "RecipeVariantEnabled"]), ("cookerHighlightEnabled", preferences[kind + "CookerHighlightEnabled"]),
                     ("seatHighlightEnabled", preferences[kind + "SeatHighlightEnabled"]), ("orderHighlightEnabled", preferences[kind + "OrderHighlightEnabled"]));
                 var input = J.Object(("operation", kind), ("data", frame.Data), ("recommendations", result["recommendations"]),
-                    ("color", preferences[kind + "TargetHighlightColor"]), ("features", features),
+                    ("color", preferences[kind + "OrderHighlightPalette"]?[0]), ("features", features),
                     ("orders", frame.Snapshot["normalBusiness"]?["orders"]), ("executionTargets", result["normalExecutionTargets"]), ("executionTargetsCurrent", true),
                     ("specialBusiness", frame.Snapshot["specialBusiness"]), ("businessGeneration", frame.Snapshot["nightBusinessGeneration"]),
                     ("options", J.Object(("prioritizeMissionRecipe", J.Bool(preferences["missionRecipePriorityEnabled"]) && !J.Bool(frame.Snapshot["specialBusiness"]?["active"])),

@@ -46,12 +46,28 @@ public sealed class Beverage
     public int Price { get; set; }
 }
 
+/// <summary>
+/// 没有独立配方的原生成品。与 Recipes 分开，避免将特殊 Food -1 误当作配方或普通图片目录 ID。
+/// 所有数值来自已验证的原生 Food 元数据，缺失时不影响普通料理目录的可用性。
+/// </summary>
+public sealed class SpecialFoodProduct
+{
+    public int Id { get; init; }
+    public string ProductKind { get; init; } = "";
+    public string Name { get; init; } = "";
+    public List<string> PositiveTags { get; init; } = new();
+    public int Level { get; init; }
+    public int Price { get; init; }
+}
+
 public sealed class RuntimeDataCatalog
 {
     public bool IsComplete { get; init; }
     public string Source { get; init; } = "";
     public string Status { get; init; } = "";
     public List<Recipe> Recipes { get; init; } = new();
+    /// <summary>单独保存已确认的特殊产物；空集合表示当前无法确认，不等于伪造免费或无材料配方。</summary>
+    public List<SpecialFoodProduct> SpecialProducts { get; init; } = new();
     public List<Ingredient> Ingredients { get; init; } = new();
     public List<Beverage> Beverages { get; init; } = new();
     public List<NormalCustomer> NormalCustomers { get; init; } = new();
@@ -133,7 +149,10 @@ public sealed class MissionRecipePriority
     public int GuestId { get; init; }
     public int RuntimeGuestId { get; init; }
     public int FoodId { get; init; }
-    public int RecipeId { get; init; }
+    /// <summary>普通料理对应唯一配方；特殊产物没有目录配方，必须为 null，禁止伪造负配方 ID。</summary>
+    public int? RecipeId { get; init; }
+    /// <summary>由已验证任务定义派生的目标种类；dark-cuisine 专指 Food -1，不用于解释缺失数据。</summary>
+    public string ProductKind { get; init; } = "recipe";
     public long MissionGeneration { get; init; }
     public long BusinessGeneration { get; init; }
 }
@@ -166,6 +185,11 @@ public sealed class NightBusinessOrder
     public int? RemainingOrderCount { get; init; }
     public bool HasServedFood { get; init; }
     public bool HasServedBeverage { get; init; }
+    /// <summary>
+    /// 当前精确订单对应桌位等待条的剩余比例，范围0–1；未确认倒计时/身份、已送齐或读取失败为null。
+    /// 这是现场观察值，不是剩余秒数，不参与点单身份、推荐需求或配色分配。
+    /// </summary>
+    public double? PatienceRemainingRatio { get; init; }
     public MissionRecipePriority? MissionRecipePriority { get; init; }
 }
 
@@ -192,6 +216,8 @@ public sealed class NightBusinessContext
     /// false 时 ActiveRareGuests 仍可包含已确认的部分名单，空列表不能解释为没有稀客。
     /// </summary>
     public bool ActiveRareGuestsReadComplete { get; init; }
+    /// <summary>订单 Hook 已就绪且本轮全部捕获均成功解析；false 时空数组不代表订单结束。</summary>
+    public bool OrdersReadComplete { get; init; }
     public List<NightBusinessOrder> Orders { get; init; } = new();
     public string Source { get; init; } = "";
     public string? Error { get; init; }
@@ -264,6 +290,8 @@ public sealed class NormalBusinessOrder
     public bool HasServedBeverage { get; init; }
     public bool ReadyToEvaluate { get; init; }
     public bool HasEvaluated { get; init; }
+    /// <summary>精确当前订单的等待条剩余比例0–1；无有效原生倒计时证据时为null，不推算剩余秒数。</summary>
+    public double? PatienceRemainingRatio { get; init; }
     public bool ControllerAvailable { get; init; }
     public bool CanAutomate { get; init; } = true;
     public string ActionBlockReason { get; init; } = "";
@@ -273,6 +301,8 @@ public sealed class NormalBusinessOrder
 
 public sealed class NormalBusinessContext
 {
+    /// <summary>权威订单捕获已完整读取；HUD 部分显示和解析失败不能用于撤销其他订单的颜色身份。</summary>
+    public bool OrdersReadComplete { get; init; }
     public List<NormalBusinessOrder> Orders { get; init; } = new();
     public string Source { get; init; } = "";
     public string? Error { get; init; }
@@ -290,6 +320,8 @@ public sealed class ParsedSaveData
 
 public sealed class RecommendationState
 {
+    /// <summary>保温箱中已完整核验的黑暗料理数；null 表示未知，不能当作零或自动取餐许可。</summary>
+    public int? StoredDarkCuisineCount { get; set; }
     public HashSet<int> AvailableRecipeIds { get; } = new();
     public HashSet<int> AvailableBeverageIds { get; } = new();
     /// <summary>

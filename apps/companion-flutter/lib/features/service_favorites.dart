@@ -66,6 +66,9 @@ class _ServiceFavoriteActionsState extends State<ServiceFavoriteActions> {
         Builder(
           builder: (context) {
             final row = object(widget.plan[food ? 'food' : 'beverage']);
+            // 特殊成品不是普通目录配方，不能持久化为普通料理收藏；酒水仍可独立收藏。
+            if (food && row['productKind'] == 'dark-cuisine')
+              return const SizedBox.shrink();
             final tag = label(order[food ? 'foodTag' : 'beverageTag'], '');
             final match = recommendationFavorite(
               favorites,
@@ -83,14 +86,14 @@ class _ServiceFavoriteActionsState extends State<ServiceFavoriteActions> {
               text,
               onPressed:
                   !_pending &&
-                      widget.model.canEdit &&
+                      widget.model.canEditFavorites &&
                       match.known &&
                       orderIdentity != null &&
                       widget.item['presentationPending'] != true
                   ? () async {
                       if (!mounted ||
                           _pending ||
-                          !widget.model.canEdit ||
+                          !widget.model.canEditFavorites ||
                           !TickerMode.valuesOf(context).enabled ||
                           boundary != _boundary ||
                           orderIdentity != _orderIdentity(widget.item) ||

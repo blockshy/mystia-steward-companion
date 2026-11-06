@@ -15,6 +15,7 @@ import 'service_plan_placeholder.dart';
 import 'service_order_highlight.dart';
 import 'service_plan_activity.dart';
 import 'service_statistics.dart';
+import 'rare_guest_scheduling.dart';
 
 /// 经营工作区只展示 C# 提供的主方案、执行诊断和资源占用，绝不从候选重建执行计划。
 class ServicePage extends StatefulWidget {
@@ -38,8 +39,10 @@ class _ServicePageState extends State<ServicePage>
   String kind = 'rare';
   bool focusMode = false;
   bool statisticsMode = false;
+  bool schedulingMode = false;
   bool diagnostics = false;
   bool _resetPending = false;
+  int _serviceResourceGeneration = 0;
   // 搜索状态归页面控制器所有；窄宽重排、切换方案/状态时不丢选择区或输入法组合文本。
   final searchInput = TextEditingController();
   String get search => searchInput.text;
@@ -51,9 +54,26 @@ class _ServicePageState extends State<ServicePage>
   @override
   WorkbenchModel get resourceModel => model;
   @override
-  void loadActiveResource() {
+  void loadActiveResource() async {
     // 与所有资源页统一在旧页面撤销之后订阅，不在壳层切页时抢先读取收藏。
-    if (widget.active && model.connected) model.readResource('/favorites');
+    if (!widget.active || !model.connected) return;
+    final generation = ++_serviceResourceGeneration;
+    final resourceOwner = model;
+    final connection = model.connectionVersion;
+    final readFocus = focusMode;
+    await resourceOwner.readResource('/favorites');
+    // 专注设置与收藏属于同一经营资源组。仅在专注页仍活动时追加订阅，防止
+    // 隐藏页的迟到回调重新接上读取，或切换专注页后撤销收藏的定时刷新。
+    if (mounted &&
+        widget.active &&
+        readFocus &&
+        focusMode &&
+        generation == _serviceResourceGeneration &&
+        identical(resourceOwner, model) &&
+        model.connected &&
+        model.connectionVersion == connection) {
+      await resourceOwner.readResource('/ui/focus-overlay');
+    }
   }
 
   @override
@@ -65,49 +85,38 @@ class _ServicePageState extends State<ServicePage>
 
   /// 专注页只改变查看方式，不覆盖原先选择的客人类型、搜索草稿或执行诊断页签。
   /// 订单与专注各保留自己的导航实例；切换统计时也保持原列表、详情与筛选状态。
-  Widget _navigation() => Row(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Expanded(
-        child: WorkspaceTabs(
-          horizontalScroll: !model.desktop,
-          items: const {
-            'rare': '稀客',
-            'normal': '普客',
-            'focus': '专注',
-            'statistics': '统计信息',
-          },
-          value: statisticsMode
-              ? 'statistics'
-              : focusMode
-              ? 'focus'
-              : kind,
-          onChanged: (value) {
-            setState(() {
-              focusMode = value == 'focus';
-              statisticsMode = value == 'statistics';
-              if (!focusMode && !statisticsMode) kind = value;
-            });
-            widget.onFocusModeChanged?.call(focusMode);
-          },
-        ),
-      ),
-      const SizedBox(width: 8),
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          // 配置状态不等于正在执行；共享总开关仍统一在扩展自动化页维护。
-          StatusBadge(
-            model.profile['automationEnabled'] == true ? '自动化已开启' : '自动化已关闭',
-          ),
-          if (records(model.automation['safetyBarriers']).isNotEmpty)
-            StewardButton(
-              '待确认 ${records(model.automation['safetyBarriers']).length}',
-              onPressed: _showBarriers,
-            ),
-        ],
-      ),
-    ],
+  Widget _navigation() => WorkspaceTabs(
+    horizontalScroll: !model.desktop,
+    items: const {
+      'rare': '稀客',
+      'normal': '普客',
+      'focus': '专注',
+      'scheduling': '稀客调度',
+      'statistics': '统计信息',
+    },
+    value: schedulingMode
+        ? 'scheduling'
+        : statisticsMode
+        ? 'statistics'
+        : focusMode
+        ? 'focus'
+        : kind,
+    onChanged: (value) {
+      final wasFocus = focusMode;
+      setState(() {
+        focusMode = value == 'focus';
+        statisticsMode = value == 'statistics';
+        schedulingMode = value == 'scheduling';
+        if (!focusMode && !statisticsMode && !schedulingMode) kind = value;
+      });
+      if (wasFocus != focusMode && widget.active) {
+        // 离开专注即撤销游戏内设置订阅，再恢复当前经营所需资源；实际
+        // 游戏内显示仍由游戏电脑持有，不因客户端切换页签而被关闭。
+        model.clearResourceSubscription();
+        loadActiveResource();
+      }
+      widget.onFocusModeChanged?.call(focusMode);
+    },
   );
 
   @override
@@ -173,7 +182,13 @@ class _ServicePageState extends State<ServicePage>
       key: ValueKey('service-$kind-$diagnostics'),
       // 现场事实当次重建立即显示，方案等待只由卡片内等结构占位承担。
       items: items,
-      itemTint: (_) => serviceOrderHighlight(model, rare: kind == 'rare'),
+      itemTint: (item) => serviceOrderHighlight(
+        model,
+        rare: kind == 'rare',
+        order: diagnostics
+            ? object(item['colorOrderIdentity'])
+            : object(item['order']),
+      ),
       richSummary: !diagnostics,
       identity: (item) => diagnostics
           ? label(item['orderKey'])
@@ -215,7 +230,7 @@ class _ServicePageState extends State<ServicePage>
           : '连接后查看经营订单',
     );
     return PageActivityReporter(
-      activity: focusMode || statisticsMode
+      activity: focusMode || statisticsMode || schedulingMode
           ? null
           : PageActivity(
               message: messages.join(' · '),
@@ -235,7 +250,9 @@ class _ServicePageState extends State<ServicePage>
               ].join('\n'),
             ),
       child: IndexedStack(
-        index: statisticsMode
+        index: schedulingMode
+            ? 3
+            : statisticsMode
             ? 2
             : focusMode
             ? 1
@@ -245,9 +262,9 @@ class _ServicePageState extends State<ServicePage>
           // 禁用 ticker，让窄屏详情的 PopScope 放行返回；排除焦点则避免隐藏输入框
           // 继续接收键盘或手柄输入。两层包装始终存在，原列表和控制器 State 不销毁。
           TickerMode(
-            enabled: !focusMode && !statisticsMode,
+            enabled: !focusMode && !statisticsMode && !schedulingMode,
             child: ExcludeFocus(
-              excluding: focusMode || statisticsMode,
+              excluding: focusMode || statisticsMode || schedulingMode,
               child: LayoutBuilder(
                 builder: (context, constraints) => Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -317,114 +334,28 @@ class _ServicePageState extends State<ServicePage>
                     child: ServiceStatisticsPage(
                       model,
                       // 统计中的入口复用现有弹窗和会话/代次检查，不另建确认写入通道。
-                      onReviewBarriers: _showBarriers,
+                      onReviewBarriers: () =>
+                          showServiceBarriers(context, model),
                     ),
                   ),
                 ],
               ),
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  /// 人工屏障移到标题旁的明确入口，完整说明与原确认动作仍可滚动访问。
-  /// 弹窗固定游戏会话和经营代次；重连或换局后只允许关闭重开，不能确认新一局的同序号。
-  Future<void> _showBarriers() async {
-    final expectedConnection = model.connectionVersion;
-    final expectedSessionId = label(model.snapshot['automationSessionId'], '');
-    final expectedGeneration = model.snapshot['nightBusinessGeneration'];
-    bool sameScope() =>
-        model.connected &&
-        model.connectionVersion == expectedConnection &&
-        label(model.snapshot['automationSessionId'], '') == expectedSessionId &&
-        model.snapshot['nightBusinessGeneration'] == expectedGeneration;
-    await showFDialog<void>(
-      context: context,
-      builder: (context, style, animation) => FDialog(
-        animation: MediaQuery.disableAnimationsOf(context) ? null : animation,
-        builder: (context, _) => ListenableBuilder(
-          listenable: model,
-          builder: (context, _) {
-            final current = sameScope();
-            final entries = current
-                ? records(model.automation['safetyBarriers'])
-                : const <DataMap>[];
-            final media = MediaQuery.of(context);
-            return SizedBox(
-              width: 560,
-              height: math.min(
-                520.0,
-                math.max(
-                  0.0,
-                  (media.size.height -
-                          media.viewInsets.bottom -
-                          media.padding.vertical) *
-                      .75,
-                ),
-              ),
+          TickerMode(
+            enabled: schedulingMode,
+            child: ExcludeFocus(
+              excluding: !schedulingMode,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const Text('人工确认事项'),
-                  const SizedBox(height: 8),
-                  Expanded(
-                    child: ListView(
-                      children: [
-                        if (!current)
-                          const Text('连接或经营场次已变化，请关闭后重新打开。')
-                        else if (entries.isEmpty)
-                          const Text('当前没有待确认事项。'),
-                        for (final barrier in entries)
-                          Section(label(barrier['title']), [
-                            Text(label(barrier['message'])),
-                            ToolRow([
-                              StewardButton(
-                                '已人工处理',
-                                onPressed:
-                                    !model.canExecute ||
-                                        barrier['sequence'] is! int ||
-                                        expectedGeneration is! int ||
-                                        expectedSessionId.isEmpty
-                                    ? null
-                                    : () async {
-                                        if (!sameScope() || !model.canExecute)
-                                          return;
-                                        if (await confirmCurrentAction(
-                                          context,
-                                          model,
-                                          '确认已人工处理',
-                                          label(barrier['message']),
-                                        )) {
-                                          if (!sameScope() || !model.canExecute)
-                                            return;
-                                          await model.acknowledgeBarrier(
-                                            barrier['sequence'] as int,
-                                            expectedSessionId:
-                                                expectedSessionId,
-                                            expectedGeneration:
-                                                expectedGeneration,
-                                          );
-                                        }
-                                      },
-                              ),
-                            ]),
-                          ]),
-                      ],
-                    ),
-                  ),
-                  ToolRow([
-                    StewardButton(
-                      '关闭',
-                      onPressed: () => Navigator.pop(context),
-                    ),
-                  ]),
+                  _navigation(),
+                  Expanded(child: RareGuestSchedulingPage(model)),
                 ],
               ),
-            );
-          },
-        ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -511,45 +442,6 @@ class _ServicePageState extends State<ServicePage>
           CollapsibleSection('备选搭配 · ${plans.length - 1} 项', [
             for (final plan in plans.skip(1)) _plan(plan, item: item),
           ]),
-        CollapsibleSection('高级诊断 · 订单捕获', [
-          Fact('追踪标识', order['traceId']),
-          const Text('仅当订单已结束但此处仍显示旧记录时清除。此操作不会在游戏中完成或取消订单。'),
-          ToolRow([
-            StewardButton(
-              '清除此捕获缓存',
-              onPressed:
-                  model.canEdit &&
-                      const [
-                        'deskCode',
-                        'runtimeGuestId',
-                        'foodTagId',
-                        'beverageTagId',
-                      ].every((key) => order[key] is int)
-                  ? () async {
-                      if (await confirmCurrentAction(
-                        context,
-                        model,
-                        '清除稀客捕获缓存',
-                        '${_displayDesk(order['deskCode'])} 桌 · ${label(order['guestName'])}。确认游戏现场与此残留记录不一致后再清除。',
-                      )) {
-                        await model.mutate(
-                          '/orders/rare/dismiss',
-                          query: {
-                            for (final key in [
-                              'deskCode',
-                              'runtimeGuestId',
-                              'foodTagId',
-                              'beverageTagId',
-                            ])
-                              key: '${order[key]}',
-                          },
-                        );
-                      }
-                    }
-                  : null,
-            ),
-          ]),
-        ]),
       ],
     );
   }
@@ -707,5 +599,131 @@ class _ServicePageState extends State<ServicePage>
     } finally {
       if (mounted) setState(() => _resetPending = false);
     }
+  }
+}
+
+/// 人工屏障移到标题旁的明确入口，完整说明与原确认动作仍可滚动访问。
+/// 弹窗固定游戏会话和经营代次；重连或换局后只允许关闭重开，不能确认新一局的同序号。
+Future<void> showServiceBarriers(
+  BuildContext context,
+  WorkbenchModel model,
+) async {
+  final expectedConnection = model.connectionVersion;
+  final expectedSessionId = label(model.snapshot['automationSessionId'], '');
+  final expectedGeneration = model.snapshot['nightBusinessGeneration'];
+  bool sameScope() =>
+      model.connected &&
+      model.connectionVersion == expectedConnection &&
+      label(model.snapshot['automationSessionId'], '') == expectedSessionId &&
+      model.snapshot['nightBusinessGeneration'] == expectedGeneration;
+  await showFDialog<void>(
+    context: context,
+    builder: (context, style, animation) => FDialog(
+      animation: MediaQuery.disableAnimationsOf(context) ? null : animation,
+      builder: (context, _) => ListenableBuilder(
+        listenable: model,
+        builder: (context, _) {
+          final current = sameScope();
+          final entries = current
+              ? records(model.automation['safetyBarriers'])
+              : const <DataMap>[];
+          final media = MediaQuery.of(context);
+          return SizedBox(
+            width: 560,
+            height: math.min(
+              520.0,
+              math.max(
+                0.0,
+                (media.size.height -
+                        media.viewInsets.bottom -
+                        media.padding.vertical) *
+                    .75,
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Text('人工确认事项'),
+                const SizedBox(height: 8),
+                Expanded(
+                  child: ListView(
+                    children: [
+                      if (!current)
+                        const Text('连接或经营场次已变化，请关闭后重新打开。')
+                      else if (entries.isEmpty)
+                        const Text('当前没有待确认事项。'),
+                      for (final barrier in entries)
+                        Section(label(barrier['title']), [
+                          Text(label(barrier['message'])),
+                          ToolRow([
+                            StewardButton(
+                              '已人工处理',
+                              onPressed:
+                                  !model.canExecute ||
+                                      barrier['sequence'] is! int ||
+                                      expectedGeneration is! int ||
+                                      expectedSessionId.isEmpty
+                                  ? null
+                                  : () async {
+                                      if (!sameScope() || !model.canExecute)
+                                        return;
+                                      if (await confirmCurrentAction(
+                                        context,
+                                        model,
+                                        '确认已人工处理',
+                                        label(barrier['message']),
+                                      )) {
+                                        if (!sameScope() || !model.canExecute)
+                                          return;
+                                        await model.acknowledgeBarrier(
+                                          barrier['sequence'] as int,
+                                          expectedSessionId: expectedSessionId,
+                                          expectedGeneration:
+                                              expectedGeneration,
+                                        );
+                                      }
+                                    },
+                            ),
+                          ]),
+                        ]),
+                    ],
+                  ),
+                ),
+                ToolRow([
+                  StewardButton('关闭', onPressed: () => Navigator.pop(context)),
+                ]),
+              ],
+            ),
+          );
+        },
+      ),
+    ),
+  );
+}
+
+/// 自动化配置与人工确认属于页头信息。这里不占用横向 Tab 的可用宽度，
+/// 点击确认入口仍使用同一个现场弹窗，不把业务动作塞入通用只读提示通道。
+class ServiceAutomationHeader extends StatelessWidget {
+  const ServiceAutomationHeader(this.model, {super.key});
+  final WorkbenchModel model;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = records(model.automation['safetyBarriers']).length;
+    return Wrap(
+      spacing: 4,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        StatusBadge(
+          model.profile['automationEnabled'] == true ? '自动化已开启' : '自动化已关闭',
+        ),
+        if (count > 0)
+          StewardButton(
+            '待确认 $count',
+            onPressed: () => showServiceBarriers(context, model),
+          ),
+      ],
+    );
   }
 }

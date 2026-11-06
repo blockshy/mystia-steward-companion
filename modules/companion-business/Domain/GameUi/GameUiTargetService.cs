@@ -46,33 +46,67 @@ public static class GameUiTargetService
             PrioritizeMissionRecipe: Bool(options["prioritizeMissionRecipe"])));
     }
 
-    private static JsonObject? BuildRare(FrozenGameUiTargetInput input)
+    private static JsonObject? BuildRare(FrozenGameUiTargetInput input) => BuildRareTargets(input).FirstOrDefault();
+
+    /// <summary>批量目标仅复用已计算的主方案；不提高自动化并发，也不重新计算推荐。</summary>
+    public static IReadOnlyList<JsonObject> EvaluateAll(FrozenGameUiTargetInput input) => input.Operation switch
     {
-        var rows = Objects(input.Recommendations).ToList(); var data = input.Data;
-        var ordered = OrderIdentityAndSorting.SortRareForExecution(rows.Select(x => Obj(x["order"])), input.SpecialBusiness);
+        "rare" => BuildRareTargets(input), "normal" => BuildNormalTargets(input),
+        _ => throw new ArgumentException("游戏辅助目标操作无效。", nameof(input)),
+    };
+
+    private static IReadOnlyList<JsonObject> BuildRareTargets(FrozenGameUiTargetInput input)
+    {
+        var rows = Objects(input.Recommendations).ToList();
+        var orders = rows.Select(x => Obj(x["order"]));
+        var ordered = input.Snapshot != null && input.Preferences != null
+            ? RareOrderParticipationProjection.SortForExecution(orders, input.Snapshot, input.Preferences)
+            : OrderIdentityAndSorting.SortRareForExecution(orders, input.SpecialBusiness);
         var candidates = new List<(JsonObject Recommendation, JsonObject? Food, JsonObject? Beverage)>();
         foreach (var order in ordered)
         {
             if (!StrongIdentity(order, false)) continue;
-            var recommendation = rows.First(x => ReferenceEquals(x["order"], order)); var plan = Objects(recommendation["executionPlans"]).FirstOrDefault();
+            var recommendation = rows.First(x => ReferenceEquals(x["order"], order));
+            var plan = Objects(recommendation["executionPlans"]).FirstOrDefault();
             if (plan == null) continue;
-            var food = Bool(order["hasServedFood"]) ? null : plan["food"] as JsonObject; var beverage = Bool(order["hasServedBeverage"]) ? null : plan["beverage"] as JsonObject;
+            var food = Bool(order["hasServedFood"]) ? null : plan["food"] as JsonObject;
+            var beverage = Bool(order["hasServedBeverage"]) ? null : plan["beverage"] as JsonObject;
             if (food != null || beverage != null) candidates.Add((recommendation, food, beverage));
         }
-        if (candidates.Count == 0) return null;
-        var selected = candidates[0];
         if (input.PrioritizeMissionRecipe)
         {
-            foreach (var c in candidates)
+            var index = candidates.FindIndex(candidate =>
             {
-                var context = RecommendationEngine.GetVerifiedMissionRecipeSortContext(Obj(c.Recommendation["order"]));
-                if (c.Food != null && context != null && RecommendationEngine.IsMissionRecipeExecutionPlan(Objects(c.Recommendation["executionPlans"]).First(), context)) { selected = c; break; }
-            }
+                var context = RecommendationEngine.GetVerifiedMissionRecipeSortContext(Obj(candidate.Recommendation["order"]));
+                return candidate.Food != null && context != null && RecommendationEngine.IsMissionRecipeExecutionPlan(
+                    Objects(candidate.Recommendation["executionPlans"]).First(), context);
+            });
+            if (index > 0) { var first = candidates[index]; candidates.RemoveAt(index); candidates.Insert(0, first); }
         }
-        var o = Obj(selected.Recommendation["order"]); var recipe = Obj(selected.Food?["recipe"]); var drink = Obj(selected.Beverage?["beverage"]);
-        var basis = ResolveIngredients(recipe["ingredients"], data); if (basis == null) return null;
-        var extras = selected.Food == null ? new JsonArray() : Array(Objects(selected.Food["extraIngredients"]).Select(x => x["id"])); if (!ValidIds(extras)) return null;
-        return Target("rare", o, input.Color, input.Features, recipe, drink, basis, extras, selected.Food == null ? -1 : Num(recipe["recipeId"]), selected.Beverage == null ? -1 : Num(drink["id"]), "");
+        var targets = new List<JsonObject>();
+        var duplicateKeys = candidates.GroupBy(candidate => RareKey(Obj(candidate.Recommendation["order"])))
+            .Where(group => group.Count() != 1).Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+        foreach (var selected in candidates)
+        {
+            var order = Obj(selected.Recommendation["order"]);
+            if (duplicateKeys.Contains(RareKey(order))) continue;
+            var recipe = Obj(selected.Food?["recipe"]); var drink = Obj(selected.Beverage?["beverage"]);
+            var basis = ResolveIngredients(recipe["ingredients"], input.Data); if (basis == null) continue;
+            var extras = selected.Food == null ? new JsonArray() : Array(Objects(selected.Food["extraIngredients"]).Select(x => x["id"]));
+            if (!ValidIds(extras)) continue;
+            var target = Target("rare", order, input.Color, input.Features, recipe, drink, basis, extras,
+                selected.Food == null || recipe["recipeId"] == null ? -1 : Num(recipe["recipeId"]), selected.Beverage == null ? -1 : Num(drink["id"]), "");
+            // 保温箱成品没有配方 ID，但仍有待送餐的订单/座位。显式成品来源仅用于显示，
+            // 不授予取餐或送达许可；协调时必须由精确来源的已送餐事实撤销。
+            if (Str(selected.Food?["productKind"]) == "dark-cuisine"
+                && Str(selected.Food?["supplySource"]) == "stored" && recipe["recipeId"] == null)
+            {
+                target["storedFoodPending"] = true;
+                target["targetRevision"] = Revision(target);
+            }
+            targets.Add(target);
+        }
+        return targets;
     }
 
     /// <summary>
@@ -88,12 +122,17 @@ public static class GameUiTargetService
             BusinessGeneration: Num(args["businessGeneration"])));
     }
 
-    private static JsonObject? BuildNormal(FrozenGameUiTargetInput input)
+    private static JsonObject? BuildNormal(FrozenGameUiTargetInput input) => BuildNormalTargets(input).FirstOrDefault();
+
+    private static IReadOnlyList<JsonObject> BuildNormalTargets(FrozenGameUiTargetInput input)
     {
+        var targets = new List<JsonObject>();
+        var duplicateKeys = Objects(input.Orders).GroupBy(OrderIdentityAndSorting.NormalKey)
+            .Where(group => group.Count() != 1).Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
         var data = input.Data; var special = input.SpecialBusiness; var selections = input.ExecutionTargetsCurrent ? Objects(input.ExecutionTargets).GroupBy(x => Str(x["orderKey"])).ToDictionary(x => x.Key, x => x.Last()) : new Dictionary<string, JsonObject>();
         foreach (var order in OrderIdentityAndSorting.SortNormalForExecution(Objects(input.Orders)))
         {
-            if (!StrongIdentity(order, true) || Bool(order["hasEvaluated"]) || Bool(order["hasServedFood"]) && Bool(order["hasServedBeverage"])) continue;
+            if (duplicateKeys.Contains(OrderIdentityAndSorting.NormalKey(order)) || !StrongIdentity(order, true) || Bool(order["hasEvaluated"]) || Bool(order["hasServedFood"]) && Bool(order["hasServedBeverage"])) continue;
             var required = SpecialBusinessRules.RequiresNormalTarget(special, Str(order["specialBusinessRole"]));
             selections.TryGetValue(OrderIdentityAndSorting.NormalKey(order), out var selection);
             var target = required && selection?["target"] is JsonObject candidate && IsCurrentNormalTarget(order, candidate, special, input.BusinessGeneration) ? candidate : null;
@@ -113,9 +152,9 @@ public static class GameUiTargetService
             var result = Target("normal", order, input.Color, input.Features, recipe ?? new JsonObject(), drink, basis, extras, recipe == null ? -1 : Num(recipe["recipeId"]), beverageId, Str(order["orderKey"]));
             result["recipeName"] = SpecialBusinessRules.TextOr(Str(target?["recipeName"]), SpecialBusinessRules.TextOr(Str(recipe?["name"]), Str(order["foodName"])));
             result["beverageName"] = beverageId < 0 ? "" : SpecialBusinessRules.TextOr(Str(target?["beverageName"]), SpecialBusinessRules.TextOr(Str(drink["name"]), Str(order["beverageName"])));
-            return result;
+            targets.Add(result);
         }
-        return null;
+        return targets;
     }
     public static bool IsCurrentNormalTarget(JsonObject order, JsonObject target, JsonNode? special, double generation)
     {
@@ -130,9 +169,9 @@ public static class GameUiTargetService
         var matches = sources.Where(x => Str(x["kind"]) == Str(target["kind"]) && Str(x["sourceOrderKey"]) == Str(target["sourceOrderKey"]) && Str(x["sourceOrderSignature"]) == Str(target["sourceOrderSignature"])).ToArray();
         if (matches.Length != 1 || Bool(matches[0]["terminal"])) return null;
         var next = Obj(Clone(target));
-        if (Bool(matches[0]["hasServedFood"])) { next["recipeId"] = -1; next["recipeName"] = ""; next["ingredientIds"] = new JsonArray(); next["extraIngredientIds"] = new JsonArray(); next["cookerTypeId"] = -1; next["cookerName"] = ""; }
+        if (Bool(matches[0]["hasServedFood"])) { next.Remove("storedFoodPending"); next["recipeId"] = -1; next["recipeName"] = ""; next["ingredientIds"] = new JsonArray(); next["extraIngredientIds"] = new JsonArray(); next["cookerTypeId"] = -1; next["cookerName"] = ""; }
         if (Bool(matches[0]["hasServedBeverage"])) { next["beverageId"] = -1; next["beverageName"] = ""; }
-        if (Num(next["recipeId"]) < 0 && Num(next["beverageId"]) < 0) return null;
+        if (Num(next["recipeId"]) < 0 && Num(next["beverageId"]) < 0 && !Bool(next["storedFoodPending"])) return null;
         next["targetRevision"] = Revision(next); return next;
     }
     private static JsonObject Target(string kind, JsonObject order, string color, JsonNode? features, JsonObject recipe, JsonObject beverage, double[] basis, JsonArray extras, double recipeId, double beverageId, string orderKey)
@@ -143,7 +182,7 @@ public static class GameUiTargetService
             ("beverageId", beverageId), ("beverageName", Str(beverage["name"])), ("cookerTypeId", CookerType(Str(recipe["cooker"]))), ("cookerName", Str(recipe["cooker"])));
         result["targetRevision"] = Revision(result); return result;
     }
-    private static string Revision(JsonObject t) => string.Join("|", Str(t["kind"]), Str(t["sourceOrderKey"]), Str(t["sourceOrderSignature"]), Str(t["traceId"]), Str(t["orderKey"]), Key(Num(t["orderLifecycleSequence"])), Key(Num(t["recipeId"])), string.Join(",", Numbers(t["ingredientIds"]).Select(Key)), string.Join(",", Numbers(t["extraIngredientIds"]).Select(Key)), Key(Num(t["beverageId"])), Key(Num(t["cookerTypeId"])), Key(Num(t["deskCode"])));
+    private static string Revision(JsonObject t) => string.Join("|", Str(t["kind"]), Str(t["sourceOrderKey"]), Str(t["sourceOrderSignature"]), Str(t["traceId"]), Str(t["orderKey"]), Key(Num(t["orderLifecycleSequence"])), Key(Num(t["recipeId"])), string.Join(",", Numbers(t["ingredientIds"]).Select(Key)), string.Join(",", Numbers(t["extraIngredientIds"]).Select(Key)), Key(Num(t["beverageId"])), Key(Num(t["cookerTypeId"])), Key(Num(t["deskCode"]))) + (Bool(t["storedFoodPending"]) ? "|stored-food-pending" : "");
     private static string RareKey(JsonObject o) => $"{Str(o["traceId"])}|lifecycle:{Key(Num(o["orderLifecycleSequence"]))}";
     private static string SourceSignature(JsonObject o, bool normal)
     {

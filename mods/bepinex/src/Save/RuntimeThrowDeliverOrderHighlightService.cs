@@ -66,8 +66,8 @@ internal static class RuntimeThrowDeliverOrderHighlightService
     private static long _firstCoveredBusinessGeneration = long.MaxValue;
     private static RuntimeUiTargetSetSnapshot _desiredTargetSet = RuntimeUiTargetSetSnapshot.Disabled;
     private static ActivePanelRegistration? _activePanel;
-    private static readonly Dictionary<RuntimeUiTargetKind, ActiveTargetBinding> ActiveBindings = new();
-    private static readonly Dictionary<RuntimeUiTargetKind, float> NextBindAttemptAt = new();
+    private static readonly Dictionary<string, ActiveTargetBinding> ActiveBindings = new();
+    private static readonly Dictionary<string, float> NextBindAttemptAt = new();
     private static bool _suspended = true;
     private static string _suspendReason = "night business inactive";
     private static string _state = "disabled";
@@ -278,9 +278,9 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         {
             lock (BindingRoot)
             {
-                if (!ActiveBindings.TryGetValue(target.Kind, out var active))
+                if (!ActiveBindings.TryGetValue(target.IdentityKey, out var active))
                 {
-                    if (NextBindAttemptAt.TryGetValue(target.Kind, out var retryAt) && now < retryAt) continue;
+                    if (NextBindAttemptAt.TryGetValue(target.IdentityKey, out var retryAt) && now < retryAt) continue;
                     pending.Add((target, null));
                     continue;
                 }
@@ -291,7 +291,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                         out var abandonOwnedVisual))
                 {
                     HandleActiveVisualFailureLocked(
-                        target.Kind,
+                        target.IdentityKey,
                         $"active throw-delivery pulse failed: {pulseFailure}",
                         abandonOwnedVisual);
                     continue;
@@ -349,7 +349,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         lock (BindingRoot)
         {
             if (!ReferenceEquals(_activePanel, panel)
-                || !ActiveBindings.TryGetValue(target.Kind, out var currentBinding)
+                || !ActiveBindings.TryGetValue(target.IdentityKey, out var currentBinding)
                 || !ReferenceEquals(currentBinding, active)) return false;
         }
 
@@ -360,7 +360,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 out var captureFailure)
             || capture == null)
         {
-            NoteBindingFailure(target.Kind, $"active throw-delivery capture changed: {captureFailure}");
+            NoteBindingFailure(target.IdentityKey, $"active throw-delivery capture changed: {captureFailure}");
             return false;
         }
         if (capture.Value.OrderPointer != active.OrderPointer
@@ -368,33 +368,33 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             || capture.Value.OrderLifecycleSequence != active.OrderLifecycleSequence)
         {
             NoteBindingFailure(
-                target.Kind,
+                target.IdentityKey,
                 "active throw-delivery capture changed exact order, controller, or lifecycle identity");
             return false;
         }
         if (!TryReadTargetPanelEvidence(directory, target, out var current, out var evidenceFailure))
         {
-            NoteBindingFailure(target.Kind, $"active throw-delivery identity changed: {evidenceFailure}");
+            NoteBindingFailure(target.IdentityKey, $"active throw-delivery identity changed: {evidenceFailure}");
             return false;
         }
         if (!active.HasSameIdentity(current))
         {
             NoteBindingFailure(
-                target.Kind,
+                target.IdentityKey,
                 "active throw-delivery panel identity no longer matches the bound target");
             return false;
         }
         if (!TryReadVisualSourceEvidence(current, active.OwnedVisual?.OwnerPointer ?? 0, out var visualSource, out var sourceFailure))
         {
             var ownedDead = active.OwnedVisual == null || !IsLiveUnityObject(active.OwnedVisual.Owner);
-            HandleActiveVisualFailure(target.Kind, $"active throw-delivery visual source changed: {sourceFailure}", ownedDead);
+            HandleActiveVisualFailure(target.IdentityKey, $"active throw-delivery visual source changed: {sourceFailure}", ownedDead);
             return false;
         }
 
         lock (BindingRoot)
         {
             if (!ReferenceEquals(_activePanel, panel)
-                || !ActiveBindings.TryGetValue(target.Kind, out var currentBinding)
+                || !ActiveBindings.TryGetValue(target.IdentityKey, out var currentBinding)
                 || !ReferenceEquals(currentBinding, active)
                 || Volatile.Read(ref _desiredTargetSet).Generation != targetSet.Generation)
             {
@@ -402,18 +402,18 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             }
             if (!active.HasSameVisualSourceIdentity(visualSource))
             {
-                HandleActiveVisualFailureLocked(target.Kind, "active throw-delivery selection or background identity changed", false);
+                HandleActiveVisualFailureLocked(target.IdentityKey, "active throw-delivery selection or background identity changed", false);
                 return false;
             }
             if (active.ActiveBackgroundImagePointer != visualSource.ActiveBackgroundImagePointer
                 && !TryRebuildOwnedVisualLocked(active, visualSource, targetSet.Palette, out var rebuildFailure))
             {
-                HandleActiveVisualFailureLocked(target.Kind, $"active throw-delivery background switch rebuild failed: {rebuildFailure}", active.OwnedVisual == null || !IsLiveUnityObject(active.OwnedVisual.Owner));
+                HandleActiveVisualFailureLocked(target.IdentityKey, $"active throw-delivery background switch rebuild failed: {rebuildFailure}", active.OwnedVisual == null || !IsLiveUnityObject(active.OwnedVisual.Owner));
                 return false;
             }
             if (!TryValidateOwnedVisual(active, visualSource, out var ownedFailure, out var abandonOwnedVisual))
             {
-                HandleActiveVisualFailureLocked(target.Kind, $"active throw-delivery owned fill failed validation: {ownedFailure}", abandonOwnedVisual);
+                HandleActiveVisualFailureLocked(target.IdentityKey, $"active throw-delivery owned fill failed validation: {ownedFailure}", abandonOwnedVisual);
                 return false;
             }
         }
@@ -1598,22 +1598,22 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 out var captureFailure)
             || capture == null)
         {
-            NoteBindingFailure(target.Kind, $"target capture was unavailable: {captureFailure}");
+            NoteBindingFailure(target.IdentityKey, $"target capture was unavailable: {captureFailure}");
             return;
         }
         if (!TryReadTargetPanelEvidence(directory, target, out var evidence, out var evidenceFailure))
         {
-            NoteBindingFailure(target.Kind, $"target throw-delivery button was unavailable: {evidenceFailure}");
+            NoteBindingFailure(target.IdentityKey, $"target throw-delivery button was unavailable: {evidenceFailure}");
             return;
         }
         if (capture.Value.OrderPointer != evidence.OrderPointer)
         {
-            SetBindingWaiting(target.Kind, "target desk contains a different native order");
+            SetBindingWaiting(target.IdentityKey, "target desk contains a different native order");
             return;
         }
         if (capture.Value.ControllerPointer != evidence.ControllerPointer)
         {
-            NoteBindingFailure(target.Kind, "target order is associated with a different native controller");
+            NoteBindingFailure(target.IdentityKey, "target order is associated with a different native controller");
             return;
         }
         var expectedKind = target.Kind == RuntimeUiTargetKind.Rare
@@ -1623,7 +1623,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             || target.DeskCode != evidence.DeskCode
             || evidence.OrderKind != expectedKind)
         {
-            NoteBindingFailure(target.Kind, "target order has a conflicting exact desk code or order kind");
+            NoteBindingFailure(target.IdentityKey, "target order has a conflicting exact desk code or order kind");
             return;
         }
 
@@ -1633,7 +1633,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 out var visualSource,
                 out var visualSourceFailure))
         {
-            NoteBindingFailure(target.Kind,
+            NoteBindingFailure(target.IdentityKey,
                 $"exact throw-delivery visual source was unavailable: {visualSourceFailure}");
             return;
         }
@@ -1645,7 +1645,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             || !latestLifecycle.IsActive
             || Environment.CurrentManagedThreadId != latestLifecycle.ThreadId)
         {
-            SetBindingWaiting(target.Kind, "target or business changed while resolving throw-delivery visual source");
+            SetBindingWaiting(target.IdentityKey, "target or business changed while resolving throw-delivery visual source");
             return;
         }
 
@@ -1657,7 +1657,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 out var creationFailure))
         {
             Interlocked.Increment(ref _visualErrors);
-            NoteBindingFailure(target.Kind, $"exact throw-delivery target fill creation failed: {creationFailure}");
+            NoteBindingFailure(target.IdentityKey, $"exact throw-delivery target fill creation failed: {creationFailure}");
             return;
         }
 
@@ -1672,7 +1672,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 ownedVisual,
                 "target changed during fill creation",
                 logRetirement: false);
-            SetBindingWaiting(target.Kind, "target or business changed while creating throw-delivery target fill");
+            SetBindingWaiting(target.IdentityKey, "target or business changed while creating throw-delivery target fill");
             return;
         }
 
@@ -1701,7 +1701,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         lock (BindingRoot)
         {
             var buttonClaimedByOtherKind = ActiveBindings.Values.Any(active =>
-                active.TargetKind != target.Kind
+                active.TargetKind != target.IdentityKey
                 && active.ButtonPointer == evidence.ButtonPointer);
             if (_suspended
                 || !ReferenceEquals(_activePanel, panel)
@@ -1716,22 +1716,22 @@ internal static class RuntimeThrowDeliverOrderHighlightService
                 {
                     const string collision =
                         "one throw-delivery button is claimed by both target kinds";
-                    NextBindAttemptAt[target.Kind] =
+                    NextBindAttemptAt[target.IdentityKey] =
                         Time.realtimeSinceStartup + HealthCheckIntervalSeconds;
                     _bindingErrors++;
                     _lastFailure = collision;
                     _state = $"unavailable: {collision}";
-                    TryLogBoundedFailure($"binding-{target.Kind}", collision);
+                    TryLogBoundedFailure($"binding-{target.IdentityKey}", collision);
                 }
                 return;
             }
 
-            ClearActiveBindingLocked(target.Kind, destroyOwnedVisual: true, "publishing fresh target fill");
-            ActiveBindings[target.Kind] = binding;
-            NextBindAttemptAt[target.Kind] = 0f;
+            ClearActiveBindingLocked(target.IdentityKey, destroyOwnedVisual: true, "publishing fresh target fill");
+            ActiveBindings[target.IdentityKey] = binding;
+            NextBindAttemptAt[target.IdentityKey] = 0f;
             _createdVisuals++;
             TryLogVisualInfo(
-                $"Runtime throw-delivery target fill bound: reason=initial; business={lifecycle.Generation}; target={targetSet.Generation}; kind={target.Kind}; panel={FormatPointer(evidence.PanelPointer)}; button={FormatPointer(evidence.ButtonPointer)}; selection={FormatPointer(visualSource.SelectionImagePointer)}; backgrounds={FormatPointer(visualSource.BackgroundImagePointer1)},{FormatPointer(visualSource.BackgroundImagePointer2)}; activeBackground={FormatPointer(visualSource.ActiveBackgroundImagePointer)}; fill={FormatPointer(ownedVisual.OwnerPointer)}; image={FormatPointer(ownedVisual.ImagePointer)}; geometry={visualSource.SelectionGeometryFingerprint}.");
+                $"Runtime throw-delivery target fill bound: reason=initial; business={lifecycle.Generation}; target={targetSet.Generation}; kind={target.IdentityKey}; panel={FormatPointer(evidence.PanelPointer)}; button={FormatPointer(evidence.ButtonPointer)}; selection={FormatPointer(visualSource.SelectionImagePointer)}; backgrounds={FormatPointer(visualSource.BackgroundImagePointer1)},{FormatPointer(visualSource.BackgroundImagePointer2)}; activeBackground={FormatPointer(visualSource.ActiveBackgroundImagePointer)}; fill={FormatPointer(ownedVisual.OwnerPointer)}; image={FormatPointer(ownedVisual.ImagePointer)}; geometry={visualSource.SelectionGeometryFingerprint}.");
         }
     }
 
@@ -2942,7 +2942,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
     }
 
     private static void ClearActiveBindingLocked(
-        RuntimeUiTargetKind kind,
+        string kind,
         bool destroyOwnedVisual,
         string reason)
     {
@@ -2981,7 +2981,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         }
     }
 
-    private static void SetBindingWaiting(RuntimeUiTargetKind kind, string state)
+    private static void SetBindingWaiting(string kind, string state)
     {
         lock (BindingRoot)
         {
@@ -2996,7 +2996,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
     }
 
     private static void HandleActiveVisualFailure(
-        RuntimeUiTargetKind kind,
+        string kind,
         string failure,
         bool abandonOwnedVisual)
     {
@@ -3007,7 +3007,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
     }
 
     private static void HandleActiveVisualFailureLocked(
-        RuntimeUiTargetKind kind,
+        string kind,
         string failure,
         bool abandonOwnedVisual)
     {
@@ -3174,7 +3174,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
         TryLogBoundedFailure("panel", normalized);
     }
 
-    private static void NoteBindingFailure(RuntimeUiTargetKind kind, string failure)
+    private static void NoteBindingFailure(string kind, string failure)
     {
         var normalized = NormalizeStatus(failure);
         var lifecycle = RuntimeNightBusinessLifecycle.Snapshot;
@@ -3369,7 +3369,7 @@ internal static class RuntimeThrowDeliverOrderHighlightService
 
         public long TargetGeneration { get; private set; }
         public RuntimeUiTargetSnapshot Target { get; private set; }
-        public RuntimeUiTargetKind TargetKind => Target.Kind;
+        public string TargetKind => Target.IdentityKey;
         public long BusinessGeneration { get; }
         public nint PanelPointer { get; }
         public nint OrderPointer { get; }
@@ -3394,8 +3394,11 @@ internal static class RuntimeThrowDeliverOrderHighlightService
             RuntimeUiTargetSetSnapshot targetSet,
             RuntimeUiTargetSnapshot target)
         {
+            // 配方、送达状态及颜色更新不改变投掷送餐按钮的几何；精确订单身份仍须一致。
+            // 发布时重新核验原生 panel/button 绑定，每帧继续沿用既有身份与健康检查。
             if (targetSet.SessionGeneration != BusinessGeneration
-                || !Target.HasSameValues(target))
+                || Target.IdentityKey != target.IdentityKey || Target.DeskCode != target.DeskCode
+                || !target.OrderHighlightEnabled)
             {
                 return false;
             }

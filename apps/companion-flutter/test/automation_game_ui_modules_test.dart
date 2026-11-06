@@ -266,6 +266,49 @@ void main() {
     expect(model.writes, isEmpty);
   });
 
+  for (final width in [640.0, 390.0]) {
+    testWidgets('两类辅助总开关在${width.toInt()}px／150%独立保存并保留偏好', (tester) async {
+      final model = _ConfigurationModel();
+      model.profile = {...model.profile, 'gameUiEnabled': true};
+      await open(tester, model, gameUi: true, width: width, scale: 1.5);
+      for (final prefix in ['normal', 'rare']) {
+        final field = '${prefix}GameUiEnabled';
+        final before = Map.of(model.profile);
+        await setToggle(tester, field);
+        expect(model.changes.last, {field: false});
+        expect(model.profile, {...before, field: false});
+        expect(tester.widget<FSwitch>(toggle(field)).value, isFalse);
+        final label = find.text(prefix == 'normal' ? '普客辅助' : '稀客辅助');
+        // 标题和总开关同处一行，窄屏和大字号都不能挤出分区或产生多余开关行。
+        expect(
+          tester.getRect(label).right,
+          lessThan(tester.getRect(toggle(field)).left),
+        );
+        expect(
+          (tester.getCenter(label).dy - tester.getCenter(toggle(field)).dy)
+              .abs(),
+          lessThan(3),
+        );
+        final headerRight = tester.getRect(toggle(field)).right;
+        await reveal(tester, toggle('${prefix}OrderHighlightEnabled'));
+        expect(
+          tester.getRect(toggle('${prefix}OrderHighlightEnabled')).right,
+          closeTo(headerRight, .1),
+        );
+        // 关闭该类后仍可预先编辑偏好，但任何分项写入都不能隐式恢复总开关。
+        await setToggle(tester, '${prefix}OrderHighlightEnabled');
+        expect(model.profile[field], isFalse);
+        final saved = Map.of(model.profile);
+        await setToggle(tester, field);
+        expect(model.changes.last, {field: true});
+        expect(model.profile, {...saved, field: true});
+      }
+      expect(model.localChanges, isEmpty);
+      expect(model.writes, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
   for (final gameUi in [false, true]) {
     testWidgets('${gameUi ? '游戏辅助' : '自动化'}查看设备、断线与忙碌时不可写共享配置', (tester) async {
       final model = _ConfigurationModel();
@@ -283,14 +326,21 @@ void main() {
         await tester.tap(master);
         await tester.pumpAndSettle();
         if (gameUi) {
+          for (final kind in ['normal', 'rare']) {
+            final kindSwitch = toggle('${kind}GameUiEnabled');
+            await reveal(tester, kindSwitch);
+            expect(tester.widget<FSwitch>(kindSwitch).enabled, isFalse);
+            await tester.tap(kindSwitch);
+            await tester.pumpAndSettle();
+          }
           await reveal(
             tester,
-            find.byKey(const ValueKey('normal-highlight-color')),
+            find.byKey(const ValueKey('rare-order-highlight-color-1')),
           );
           expect(
             tester
                 .widget<ColorSetting>(
-                  find.byKey(const ValueKey('normal-highlight-color')),
+                  find.byKey(const ValueKey('rare-order-highlight-color-1')),
                 )
                 .onSave,
             isNull,
@@ -314,6 +364,73 @@ void main() {
     });
   }
 
+  testWidgets('普客冷色稀客暖色默认两组，缩减扩充分别保存且不超过三组', (tester) async {
+    final model = _ConfigurationModel();
+    final rareBefore = List<Object?>.of(
+      model.profile['rareOrderHighlightPalette'] as List,
+    );
+    final normalBefore = List<Object?>.of(
+      model.profile['normalOrderHighlightPalette'] as List,
+    );
+    expect(rareBefore, ['#F2CA5C', '#EF856D']);
+    expect(normalBefore, ['#5AA9E6', '#57C7B6']);
+    await open(tester, model, gameUi: true);
+    // 使用真实键盘操作滑块，验证组件上限及提交补丁，而非直接调用保存回调。
+    await saveNumber(tester, 'normal-highlight-color-count', '1');
+    expect(model.profile['normalOrderHighlightPalette'], normalBefore.take(1));
+    await saveNumber(tester, 'normal-highlight-color-count', '3');
+    expect(model.changes.last.keys, ['normalOrderHighlightPalette']);
+    expect(model.profile['normalOrderHighlightPalette'], [
+      '#5AA9E6',
+      '#57C7B6',
+      '#9A8FE8',
+    ]);
+    expect(model.profile['rareOrderHighlightPalette'], rareBefore);
+    final writes = model.changes.length;
+    await saveNumber(tester, 'normal-highlight-color-count', '4');
+    expect(model.changes.length, writes);
+    await saveNumber(tester, 'rare-highlight-color-count', '1');
+    expect(model.changes.last, {
+      'rareOrderHighlightPalette': [rareBefore.first],
+    });
+    expect(model.profile['normalOrderHighlightPalette'] as List, hasLength(3));
+    await saveNumber(tester, 'rare-highlight-color-count', '3');
+    expect(model.profile['rareOrderHighlightPalette'], [
+      '#F2CA5C',
+      '#EF856D',
+      '#E785B4',
+    ]);
+    // 同一数量入口同时确定颜色及辅助上限，不能再提交被删除的独立数量字段。
+    expect(model.profile.containsKey('rareHighlightOrderCount'), isFalse);
+    expect(model.profile.containsKey('normalHighlightOrderCount'), isFalse);
+    expect(find.byKey(const ValueKey('normal-highlight-count')), findsNothing);
+    expect(find.byKey(const ValueKey('rare-highlight-count')), findsNothing);
+    expect(find.text('同时辅助订单'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('打开辅助设置保留已保存的两色和自定义顺序，不自动扩充为新默认', (tester) async {
+    final model = _ConfigurationModel();
+    final saved = {
+      ...model.profile,
+      'rareOrderHighlightPalette': ['#123456', '#654321'],
+      'normalOrderHighlightPalette': ['#FFFFFF'],
+    };
+    model.profile = saved;
+    await open(tester, model, gameUi: true);
+    await reveal(
+      tester,
+      find.byKey(const ValueKey('rare-order-highlight-color-1')),
+    );
+    expect(model.profile, saved);
+    expect(model.changes, isEmpty);
+    expect(
+      find.byKey(const ValueKey('rare-order-highlight-color-2')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
   for (final width in [1280.0, 640.0, 390.0]) {
     for (final gameUi in [false, true]) {
       testWidgets(
@@ -322,7 +439,14 @@ void main() {
           final model = _ConfigurationModel();
           await open(tester, model, gameUi: gameUi, width: width, scale: 1.5);
           if (gameUi) {
-            final owner = find.byKey(const ValueKey('rare-highlight-color'));
+            // 滚动容器按需构建分区，先记录开关控制列，再检查独立调色板的对齐。
+            await reveal(tester, toggle('rareOrderHighlightEnabled'));
+            final switchRight = tester
+                .getRect(toggle('rareOrderHighlightEnabled'))
+                .right;
+            final owner = find.byKey(
+              const ValueKey('rare-order-highlight-color-0'),
+            );
             await reveal(tester, owner);
             expect(
               find.descendant(of: owner, matching: find.byType(EditableText)),
@@ -330,14 +454,11 @@ void main() {
             );
             // 辅助模块真实 Section 内的颜色入口必须贴齐上一条开关，不能用
             // 全屏空白夹具掩盖 390px 导航、边距和 150% 字号实际占用的宽度。
-            final switchRect = tester.getRect(
-              toggle('rareOrderHighlightEnabled'),
-            );
             final opener = find.descendant(
               of: owner,
               matching: find.byKey(const ValueKey('color-picker-open')),
             );
-            expect(tester.getRect(opener).right, closeTo(switchRect.right, .1));
+            expect(tester.getRect(opener).right, closeTo(switchRight, .1));
             final titleRect = tester.getRect(
               find.descendant(
                 of: owner,
@@ -347,12 +468,15 @@ void main() {
             expect(titleRect.right, lessThan(tester.getRect(opener).left));
             final choice = find.descendant(
               of: owner,
-              matching: find.byKey(const ValueKey('palette-#F97373')),
+              matching: find.byKey(const ValueKey('palette-#E785B4')),
             );
             await tester.ensureVisible(choice);
             await tester.tap(choice);
             await tester.pumpAndSettle();
-            expect(model.changes.last, {'rareTargetHighlightColor': '#F97373'});
+            expect(
+              (model.changes.last['rareOrderHighlightPalette'] as List).first,
+              '#E785B4',
+            );
           } else {
             await saveNumber(tester, 'rare-autoMaxRollbacks', '5');
             expect(model.changes.last, {'autoMaxRollbacks': 5});

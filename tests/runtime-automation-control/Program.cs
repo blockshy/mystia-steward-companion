@@ -9,6 +9,7 @@ try
     VerifyLeaseExpiryAndRevocation();
     VerifyProfileShapeAndRevisionValidation();
     VerifyPermitSerializesAuthorityTransition();
+    AutoResumeProfileTests.Run();
     Console.WriteLine(
         "PASS: runtime automation control requires the exact current authority lease, evaluates "
         + "delivery/completion switches at each future side-effect boundary, preserves the Koishi "

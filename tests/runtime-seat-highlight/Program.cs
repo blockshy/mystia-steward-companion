@@ -145,7 +145,9 @@ static RuntimeUiTargetSnapshot CreateSeatTarget(
     RuntimeUiTargetKind kind,
     int deskCode,
     RuntimeTargetHighlightColor? color = null,
-    string? revision = null) => new(
+    string? revision = null,
+    int colorSlot = -1,
+    long? lifecycle = null) => new(
     kind,
     color ?? (kind == RuntimeUiTargetKind.Rare
         ? RuntimeTargetHighlightColor.DefaultRare
@@ -155,19 +157,20 @@ static RuntimeUiTargetSnapshot CreateSeatTarget(
     cookerHighlightEnabled: false,
     seatHighlightEnabled: true,
     orderHighlightEnabled: false,
-    $"{(kind == RuntimeUiTargetKind.Rare ? 'R' : 'N')}-{deskCode + 1}",
+    $"{(kind == RuntimeUiTargetKind.Rare ? 'R' : 'N')}-{lifecycle ?? deskCode + 1L}",
     kind == RuntimeUiTargetKind.Rare ? "" : $"ptr:{deskCode + 1:x}",
-    deskCode + 1L,
+    lifecycle ?? deskCode + 1L,
     deskCode,
     -1,
     Array.Empty<int>(),
     Array.Empty<int>(),
     -1,
     -1,
-    revision ?? $"seat:{kind}:{deskCode}");
+    revision ?? $"seat:{kind}:{deskCode}",
+    colorSlot);
 
 static Color BuildRareSeatPulse(float time) =>
-    RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+    RuntimeTargetHighlightStyle.BuildSeatFillColor(
         RuntimeUiTargetKinds.Rare,
         new RuntimeTargetHighlightPalette(
             RuntimeTargetHighlightColor.DefaultRare,
@@ -342,8 +345,8 @@ Assert(ReferenceEquals(outline.sharedMaterial, outlineMaterial) && ReferenceEqua
 
 var seatPulseCrest = BuildRareSeatPulse(MathF.PI / (2f * 5.5f));
 var seatPulseTrough = BuildRareSeatPulse(3f * MathF.PI / (2f * 5.5f));
-Assert(MathF.Abs(seatPulseCrest.a - 0.70f) <= 0.0001f && MathF.Abs(seatPulseTrough.a - 0.45f) <= 0.0001f,
-    "The independent fill must retain the 0.45..0.70 alpha yellow pulse.");
+Assert(MathF.Abs(seatPulseCrest.a - 0.575f) <= 0.0001f && seatPulseTrough.a == seatPulseCrest.a,
+    "桌位透明度必须固定为0.575，不再随时钟明暗呼吸。");
 var readsBeforePulse = firstFill.BoundsReadCount;
 Time.realtimeSinceStartup = 0.1f;
 RuntimeSeatHighlightService.Tick();
@@ -353,6 +356,15 @@ var readsAfterHealth = firstFill.BoundsReadCount;
 Time.realtimeSinceStartup = 0.2f;
 RuntimeSeatHighlightService.Tick();
 Assert(firstFill.BoundsReadCount == readsAfterHealth, "Structural checks must stay low frequency while pulse updates every frame.");
+var steadySeatColor = firstFill.color;
+var steadySeatWrites = firstFill.ColorWriteCount;
+for (var frame = 0; frame < 120; frame++)
+{
+    Time.realtimeSinceStartup = .21f + frame * .002f;
+    RuntimeSeatHighlightService.Tick();
+    AssertColor(firstFill.color, steadySeatColor, "单目标桌位颜色和透明度均不得随时间呼吸。");
+}
+Assert(firstFill.ColorWriteCount == steadySeatWrites, "单目标桌位颜色不变时不得每帧重复写入SpriteRenderer。");
 
 // Target switches retire the clone, fill object, owned texture/Sprite, and owned material.
 Time.realtimeSinceStartup = 0.5f;
@@ -436,9 +448,9 @@ GetFillRenderer(pulseFillObject).ThrowOnColorWrite = true;
 var pulseLogStart = log.InfoMessages.Count;
 Time.realtimeSinceStartup = 5.5f;
 RuntimeSeatHighlightService.Tick();
-Assert(RuntimeSeatHighlightService.Status.Contains("seat fill pulse failed", StringComparison.Ordinal), "A pulse write exception must fail closed.");
+Assert(RuntimeSeatHighlightService.Status.Contains("seat fill color update failed", StringComparison.Ordinal), "A pulse write exception must fail closed.");
 Assert(pulseClone.m_CachedPtr == IntPtr.Zero && pulseFillObject.m_CachedPtr == IntPtr.Zero, "Pulse failure must clean the complete owned group.");
-Assert(log.InfoMessages.Skip(pulseLogStart).Count(message => message.Contains("phase=pulse", StringComparison.Ordinal)) == 1, "Pulse failure must emit one phase diagnostic.");
+Assert(log.InfoMessages.Skip(pulseLogStart).Count(message => message.Contains("phase=color", StringComparison.Ordinal)) == 1, "Pulse failure must emit one phase diagnostic.");
 
 SpriteRenderer.DefaultMaterial = null;
 Time.realtimeSinceStartup = 7f;
@@ -933,14 +945,14 @@ var dualRareFill = GetFillRenderer(dualRareFillObject);
 var dualNormalFill = GetFillRenderer(dualNormalFillObject);
 AssertColor(
     dualRareFill.color,
-    RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+    RuntimeTargetHighlightStyle.BuildSeatFillColor(
         RuntimeUiTargetKinds.Rare,
         new RuntimeTargetHighlightPalette(dualRareColor, dualNormalColor),
         Time.realtimeSinceStartup),
     "The rare desk must use its injected color.");
 AssertColor(
     dualNormalFill.color,
-    RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+    RuntimeTargetHighlightStyle.BuildSeatFillColor(
         RuntimeUiTargetKinds.Normal,
         new RuntimeTargetHighlightPalette(dualRareColor, dualNormalColor),
         Time.realtimeSinceStartup),
@@ -993,7 +1005,7 @@ var sharedFillObject = FindLiveFillForClone(sharedClone);
 var sharedFill = GetFillRenderer(sharedFillObject);
 AssertColor(
     sharedFill.color,
-    RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+    RuntimeTargetHighlightStyle.BuildSeatFillColor(
         RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
         new RuntimeTargetHighlightPalette(dualRareColor, dualNormalColor),
         normalColorEndpoint),
@@ -1009,7 +1021,7 @@ Assert(sharedClone.Pointer == sharedClonePointer
     "Shared-desk color travel must not create a second clone.");
 AssertColor(
     sharedFill.color,
-    RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+    RuntimeTargetHighlightStyle.BuildSeatFillColor(
         RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
         new RuntimeTargetHighlightPalette(dualRareColor, dualNormalColor),
         rareColorEndpoint),
@@ -1026,7 +1038,7 @@ Assert(sharedClone.Pointer == sharedClonePointer
     "Removing one shared-desk claim must retain the remaining target's ownership group.");
 AssertColor(
     sharedFill.color,
-    RuntimeTargetHighlightStyle.BuildSeatFillPulseColor(
+    RuntimeTargetHighlightStyle.BuildSeatFillColor(
         RuntimeUiTargetKinds.Normal,
         new RuntimeTargetHighlightPalette(
             RuntimeTargetHighlightColor.DefaultRare,
@@ -1035,6 +1047,83 @@ AssertColor(
     "Removing the rare shared-desk claim must switch the retained fill to the normal color.");
 Assert(RuntimeSeatHighlightService.Status.Contains("claims:Normal", StringComparison.Ordinal),
     "Shared-desk diagnostics must update after one target claim is removed.");
+
+// 八单同时声明同一桌时只保留一个填充；颜色编辑、释放任意一单和同桌新订单
+// 都不能扩大原生资源所有权。这里只替换托管发布，桌对象仍由已有真实形态夹具提供。
+RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100));
+RuntimeSeatHighlightService.Tick();
+var eightColors = Enumerable.Range(0, 8)
+    .Select(slot => new RuntimeTargetHighlightColor((byte)(20 + slot * 25), (byte)(210 - slot * 20), (byte)(40 + slot * 19))).ToArray();
+var eightSeats = Enumerable.Range(0, 8).Select(slot => CreateSeatTarget(
+    slot % 2 == 0 ? RuntimeUiTargetKind.Rare : RuntimeUiTargetKind.Normal,
+    0, eightColors[slot], $"eight-seat:{slot}", slot, 700 + slot)).ToArray();
+var clonesBeforeEight = LiveSeatClones().Select(clone => clone.Pointer).ToHashSet();
+RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100, eightSeats));
+RuntimeSeatHighlightService.Tick();
+var eightClone = LiveSeatClones().Single(clone => !clonesBeforeEight.Contains(clone.Pointer));
+var eightFillObject = FindLiveFillForClone(eightClone);
+var eightFill = GetFillRenderer(eightFillObject);
+var liveCountWithEight = LiveSeatClones().Length;
+for (var slot = 0; slot < 8; slot++)
+{
+    Time.realtimeSinceStartup = slot * 1.5f;
+    RuntimeSeatHighlightService.Tick();
+    var expected = eightColors[slot].ToUnityColor(eightFill.color.a);
+    AssertColor(eightFill.color, expected, "八单共享桌应依次到达每个预设色，不能仅显示前两色。");
+}
+eightColors[4] = new RuntimeTargetHighlightColor(250, 15, 20);
+eightSeats[4] = CreateSeatTarget(RuntimeUiTargetKind.Rare, 0, eightColors[4], "edited-slot-four", 4, 704);
+Time.realtimeSinceStartup = 6f;
+RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100, eightSeats.Reverse().ToArray()));
+RuntimeSeatHighlightService.Tick();
+AssertColor(eightFill.color, eightColors[4].ToUnityColor(eightFill.color.a), "改色须更新现有填充。");
+Assert(LiveSeatClones().Length == liveCountWithEight && !GameObject.Destroyed.Contains(eightFillObject),
+    "颜色编辑或发布顺序变更不得重建桌高亮。");
+for (var remaining = 7; remaining >= 1; remaining--)
+{
+    RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100, eightSeats.Take(remaining).ToArray()));
+    RuntimeSeatHighlightService.Tick();
+    Assert(!GameObject.Destroyed.Contains(eightFillObject) && LiveSeatClones().Length == liveCountWithEight,
+        "释放共享声明须保留其余订单的同一填充。");
+}
+// 最后一单完成后同桌新生命周期仍是独立身份，不得沿用旧订单声明。
+var reusedDesk = CreateSeatTarget(RuntimeUiTargetKind.Normal, 0, eightColors[7], "same-desk-new-order", 7, 900);
+RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100, reusedDesk));
+Time.realtimeSinceStartup = 0f;
+RuntimeSeatHighlightService.Tick();
+AssertColor(eightFill.color, eightColors[7].ToUnityColor(eightFill.color.a), "同桌复用后只应显示新订单色。");
+RuntimeSeatHighlightService.UpdateTargets(CreateSeatTargetSet(100));
+RuntimeSeatHighlightService.Tick();
+Assert(GameObject.Destroyed.Contains(eightFillObject), "最后声明撤销后必须释放共享填充。");
+
+// 列表/厨具查询和颜色计算位于逐帧路径；索引只在发布时建立，热循环不应创建闭包、数组或枚举器。
+var queryTargets = Enumerable.Range(0, 8).Select(slot => new RuntimeUiTargetSnapshot(
+    RuntimeUiTargetKind.Rare, eightColors[slot], true, slot % 2 == 1, true, true, true,
+    $"R-{1000 + slot}", "", 1000 + slot, 0, 10, new[] { 1, 2 },
+    slot % 2 == 1 ? new[] { 2 } : Array.Empty<int>(), 20, 3, $"query:{slot}", slot)).ToArray();
+var querySet = new RuntimeUiTargetSetSnapshot(10000, 100, queryTargets);
+Assert((int)querySet.GetRecipeClaims(10) == 255 && (int)querySet.GetBaseRecipeClaims(10) == 85
+    && (int)querySet.GetRecipeVariantClaims(10) == 170 && (int)querySet.GetIngredientClaims(2) == 255
+    && (int)querySet.GetBeverageClaims(20) == 255 && (int)querySet.GetCookerClaims(3) == 255,
+    "共享资源查询须包含所有八个位，基础行和加料行不能混淆。");
+var releasedSet = new RuntimeUiTargetSetSnapshot(10001, 100, queryTargets.Where(target => target.ColorSlot != 3).ToArray());
+Assert((int)releasedSet.GetIngredientClaims(2) == 247 && (int)querySet.GetIngredientClaims(2) == 255,
+    "释放一单不能修改旧发布或清除其余共享位。");
+var queryKey = queryTargets[7].IdentityKey;
+for (var warm = 0; warm < 100; warm++) ExerciseHotQueries(querySet, queryKey);
+var allocationStart = GC.GetAllocatedBytesForCurrentThread();
+for (var frame = 0; frame < 10000; frame++) ExerciseHotQueries(querySet, queryKey);
+var allocated = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+Assert(allocated == 0, $"一万帧声明/调色查询分配了 {allocated} 字节。");
+Console.WriteLine($"MULTI-CLAIM: eight orders, shared release, reuse, palette edit; hot-query allocation={allocated}.");
+
+static void ExerciseHotQueries(RuntimeUiTargetSetSnapshot targets, string key)
+{
+    targets.TryGetTarget(key, out _);
+    targets.GetRecipeClaims(10); targets.GetBaseRecipeClaims(10); targets.GetRecipeVariantClaims(10);
+    targets.GetIngredientClaims(2); targets.GetBeverageClaims(20); targets.GetCookerClaims(3);
+    RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor((RuntimeUiTargetKinds)255, targets.Palette, 4f);
+}
 
 RuntimeSeatHighlightService.Dispose("dual target seat coverage complete");
 
@@ -1082,7 +1171,7 @@ foreach (var required in new[]
              "fillRenderer.material",
              "defaultMaterialPointer == ownedMaterialPointer",
              "fillRenderer.sprite = fillSprite",
-             "RuntimeTargetHighlightStyle.BuildSeatFillPulseColor",
+             "RuntimeTargetHighlightStyle.BuildSeatFillColor",
              "TryValidateDisabledTemplateRenderer",
              "SafeDestroySprite(fillSprite)",
              "SafeDestroyMaterial(fillMaterial)",
@@ -1145,8 +1234,9 @@ Assert(!bindingLog.Contains(".name", StringComparison.Ordinal)
        && !bindingLog.Contains("TryReadNativeObjectPointer", StringComparison.Ordinal),
     "A successful binding log must use validated managed scalars rather than add Unity diagnostic getters to the visual gate.");
 
-Assert(styleSource.Contains("DefaultRare = new(0xFF, 0xDB, 0x2E)", StringComparison.Ordinal), "The target palette must retain the exact default rare-order RGB.");
-Assert(styleSource.Contains("DefaultNormal = new(0x5F, 0xAC, 0xD3)", StringComparison.Ordinal), "The target palette must retain the exact default normal-order RGB.");
+// 原生缺省首色跟随当前产品默认；实际目标仍由已保存的每订单颜色覆盖。
+Assert(styleSource.Contains("DefaultRare = new(0xF2, 0xCA, 0x5C)", StringComparison.Ordinal), "The target palette must retain the exact warm default rare-order RGB.");
+Assert(styleSource.Contains("DefaultNormal = new(0x5A, 0xA9, 0xE6)", StringComparison.Ordinal), "The target palette must retain the exact cool default normal-order RGB.");
 Console.WriteLine("Runtime seat highlight smoke passed.");
 
 static SpriteRenderer CreateSelectionRenderer(

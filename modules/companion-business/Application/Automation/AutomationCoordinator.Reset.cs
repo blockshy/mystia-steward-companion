@@ -6,7 +6,8 @@ namespace MystiaStewardCompanion.Business.Application.Automation;
 public sealed partial class AutomationCoordinator
 {
     // 传输失败或许可切换时失去回执的订单不能靠“清空状态”消除不确定性。
-    // 本集合只限制人工重置，不改变既有调度、回执对账和人工确认策略；订单退役或换场才清除。
+    // 本集合限制人工重置及把尚未确认的料理换为另一目标；既有原目标对账和人工确认策略不变。
+    // 只有订单退役或换场才清除，不能因推荐/库存刷新就把丢失回执当作“确定尚未开锅”。
     private readonly HashSet<string> _resetUncertainOrders = new(StringComparer.Ordinal);
 
     /// <summary>

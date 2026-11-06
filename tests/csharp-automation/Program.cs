@@ -274,7 +274,11 @@ Check(diagnostic["foodId"] == null && diagnostic["recipeId"] == null && diagnost
 // 同一生产编排器的公开复制入口与宿主冻结组件入口必须保持完整语义一致，并独立计量命中分配。
 AutomationInputViewTests.Run(Check, Input, RareInput);
 AutomationIngredientAdmissionTests.Run(Check, Input, RareInput);
+RareIngredientFallbackTests.Run(Check, RareInput);
 AutomationRecoveryBudgetTests.Run(Check, Input, RareInput);
 AutomationAvailabilityMessageTests.Run(Check, Input);
 AutomationResetSafetyTests.Run(Check, Input);
+RareParticipationTests.Run(Check, RareInput);
+RareParticipationAdmissionWaitTests.Run(Check, RareInput);
+AutomationDarkCuisineTests.Run(Check, RareInput);
 Console.WriteLine($"PASS csharp-automation: {checks} assertions (pure managed; no game execution).");

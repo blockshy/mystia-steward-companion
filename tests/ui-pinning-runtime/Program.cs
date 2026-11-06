@@ -7,13 +7,43 @@ using UnityEngine;
 
 try
 {
+    if (args.Contains("--list-order-context", StringComparer.Ordinal))
+    {
+        ListOrderContextChecks.Run();
+        return 0;
+    }
+    if (args.Contains("--beverage-targets", StringComparer.Ordinal))
+    {
+        BeverageMultiTargetChecks.Run();
+        return 0;
+    }
+    if (args.Contains("--color-blocks-only", StringComparer.Ordinal))
+    {
+        // 本地只验证正式绑定/精确声明/视觉生命周期。没有安装 Harmony，不能宣称原生注入通过。
+        ListColorBlockProbe.DirectCallbacks = true;
+        typeof(RuntimePinnedListHighlightService).GetField("_log", BindingFlags.NonPublic | BindingFlags.Static)!
+            .SetValue(null, new ManualLogSource());
+        VerifyColorBlockLayoutAndNativeOwnership();
+        VerifySharedListItemUsesSingleOwnershipAndBaseline();
+        VerifyEightOrderSharedListOwnership();
+        VerifyReusedColorSlotFollowsOrderLifecycle();
+        VerifyManagedPinnedListHighlighting();
+        VerifyExactRecipeVariantRowHighlighting();
+        VerifyNativeMeshCallbackGuards();
+        VerifyNativeMeshExceptionalWrites();
+        Console.WriteLine($"PASS: direct list-color callbacks; {ListColorBlockProbe.Assertions} assertions; Harmony/native GPU not exercised.");
+        return 0;
+    }
     VerifyPatchTargets();
+    VerifyColorBlockLayoutAndNativeOwnership();
     VerifyDualTargetClaimsAndColorRoundTrip();
     VerifyRuntimeUiTargetPublicationLease();
     VerifyTargetPublicationDiagnosticsDoNotBlockReaders();
     VerifyCookingRefreshHoldsExactTargetPublicationLease();
     VerifyStorageRefreshHoldsExactTargetPublicationLease();
     VerifySharedListItemUsesSingleOwnershipAndBaseline();
+    VerifyEightOrderSharedListOwnership();
+    VerifyReusedColorSlotFollowsOrderLifecycle();
     VerifyOrderHighlightRuntimeWiring();
     VerifyOpenPanelRefreshScheduling();
     VerifyAuthorityTransitionPreservesOpenPanels();
@@ -34,6 +64,7 @@ try
     VerifyEnabledEmptyTargetClearsVisuals();
     VerifyLifecycleGenerationGuards();
     VerifyFinishedOrderRevokesEverySurface();
+    BeverageMultiTargetChecks.Run();
     Console.WriteLine("PASS: scoped pinning and pinned-list highlighting propagate through Harmony without mutating IL2CPP lists.");
     return 0;
 }
@@ -201,8 +232,8 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
     AssertEqual(RuntimeUiTargetKinds.Rare, splitFeatureSet.GetBaseRecipeClaims(90), "A non-variant recipe target did not remain on the base row.");
     AssertFalse(splitFeatureSet.HasRecipeVariants(90), "A disabled variant target made the recipe row-controlled.");
     AssertEqual(RuntimeUiTargetKinds.Normal, splitFeatureSet.GetCookerClaims(3), "Rare cooker highlighting leaked through a disabled rare target feature.");
-    AssertTrue(splitFeatureSet.TryGetTarget(RuntimeUiTargetKind.Rare, out var splitRare), "Split feature set lost its rare target.");
-    AssertTrue(splitFeatureSet.TryGetTarget(RuntimeUiTargetKind.Normal, out var splitNormal), "Split feature set lost its normal target.");
+    AssertTrue(splitFeatureSet.TryGetTarget(splitFeatureSet.Targets.Single(target => target.Kind == RuntimeUiTargetKind.Rare).IdentityKey, out var splitRare), "Split feature set lost its rare target.");
+    AssertTrue(splitFeatureSet.TryGetTarget(splitFeatureSet.Targets.Single(target => target.Kind == RuntimeUiTargetKind.Normal).IdentityKey, out var splitNormal), "Split feature set lost its normal target.");
     AssertTrue(splitRare.SeatHighlightEnabled && !splitNormal.SeatHighlightEnabled, "Seat highlighting was not retained per target kind.");
     AssertTrue(!splitRare.OrderHighlightEnabled && splitNormal.OrderHighlightEnabled, "Order highlighting was not retained per target kind.");
 
@@ -222,8 +253,8 @@ static void VerifyDualTargetClaimsAndColorRoundTrip()
 
     var palette = targetSet.Palette;
     var baseline = new Color(0.2f, 0.3f, 0.4f, 0.7f);
-    var normalEndpointTime = MathF.PI / (2f * 2.75f);
-    var rareEndpointTime = 3f * MathF.PI / (2f * 2.75f);
+    var normalEndpointTime = 1.6f;
+    var rareEndpointTime = 3.1f;
     AssertColor(
         RuntimeTargetHighlightStyle.BuildListItemPulseColor(
             baseline,
@@ -916,13 +947,13 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
     {
         cookingPanel.OnPanelOpen();
         storagePanel.OnPanelOpen();
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(recipeId), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(recipeId), recipeButton.Cluster, recipeButton);
         RuntimePinnedListHighlightService.Tick();
 
         AssertTrue(CookingSelectionPanelProbe.LastRecipeResult == true, "The active recipe target did not use scoped pinning.");
         AssertTrue(StoragePanelProbe.LastResult == true, "The active beverage target did not use scoped pinning.");
         AssertEqual(0, RunTimePlayerDataProbe.NativeCallCount, "The active Mod targets called the native pinned probe.");
-        AssertHighlighted(baseColor, recipeButton.image.get_color(), "The active recipe target was not highlighted.");
+        AssertHighlighted(baseColor, recipeButton.image, "The active recipe target was not highlighted.");
         AssertTrue(RuntimeCookerHighlightService.LastEnabled, "The active cooker target did not enable the cooker stub.");
         AssertEqual(cookerTypeId, RuntimeCookerHighlightService.LastCookerTypeId, "The cooker stub did not retain the active cooker type.");
 
@@ -951,7 +982,7 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         AssertEqual(0, emptyTarget.Targets.Count, "An empty publication retained a featureless target.");
         AssertEqual(activeTargetGeneration + 1, emptyTarget.Generation, "An empty target did not advance the target generation.");
         AssertEqual(setterCountBeforeClear, recipeButton.image.SetterCount, "Publishing an empty target touched Unity color off the main thread.");
-        AssertHighlighted(baseColor, recipeButton.image.get_color(), "Publishing an empty target restored the list highlight off the main thread.");
+        AssertHighlighted(baseColor, recipeButton.image, "Publishing an empty target restored the list highlight off the main thread.");
         AssertFalse(RuntimeCookerHighlightService.LastEnabled, "An empty cooker target left the cooker stub enabled.");
         AssertEqual(-1, RuntimeCookerHighlightService.LastCookerTypeId, "An empty cooker target retained the prior cooker type.");
         AssertEqual(businessGeneration, RuntimeCookerHighlightService.LastSessionGeneration, "An empty cooker target changed the business generation.");
@@ -964,7 +995,7 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         AssertEqual(2, RunTimePlayerDataProbe.NativeCallCount, "The empty target did not execute both native pinned probes.");
 
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(baseColor, recipeButton.image.get_color(), "The empty target did not restore the recipe highlight color.");
+        AssertUnhighlighted(baseColor, recipeButton.image, "The empty target did not restore the recipe highlight color.");
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "The empty target kept the old recipe image tracked.");
 
         RuntimeUiPinningService.Tick();
@@ -977,6 +1008,156 @@ static void VerifyEnabledEmptyTargetClearsVisuals()
         StoragePanelProbe.RefreshAction = null;
         cookingPanel.OnPanelClose();
         storagePanel.OnPanelClose();
+    }
+}
+
+static void VerifyEightOrderSharedListOwnership()
+{
+    const int recipeId = 95;
+    var business = RuntimeNightBusinessLifecycle.Generation;
+    var baseline = new Color(0.31f, 0.43f, 0.57f, 0.68f);
+    var targets = Enumerable.Range(0, 8).Select(slot => new RuntimeUiTargetSnapshot(
+        slot % 2 == 0 ? RuntimeUiTargetKind.Rare : RuntimeUiTargetKind.Normal,
+        new RuntimeTargetHighlightColor((byte)(30 + slot * 20), (byte)(200 - slot * 15), (byte)(50 + slot * 17)),
+        true, false, false, false, false, $"{(slot % 2 == 0 ? 'R' : 'N')}-{800 + slot}",
+        slot % 2 == 0 ? "" : $"ptr:{800 + slot:x}", 800 + slot, slot, recipeId,
+        new[] { 96 }, Array.Empty<int>(), -1, -1, $"eight-list:{slot}", slot)).ToArray();
+    CookingSelectionPanelProbe.RecipeBoundColor = baseline;
+    var panel = new CookingSelectionPanelProbe();
+    var button = new UIButtonSimpleProbe(baseline);
+    try
+    {
+        RuntimeUiPinningService.UpdateTargets(business, targets);
+        panel.OnPanelOpen();
+        panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), button.Cluster, button);
+        var image = button.image;
+        var palette = RuntimeUiPinningService.ReadTargetSet().Palette;
+        // 八单共用一个列表条目时同时显示八段固定颜色，原图颜色始终由游戏保留。
+        for (var slot = 0; slot < 8; slot++)
+        {
+            Time.realtimeSinceStartup = slot * 1.5f;
+            RuntimePinnedListHighlightService.Tick();
+            AssertTrue(ReferenceEquals(image, button.image), "八段颜色替换了原生条目图像。");
+            AssertColorBlocks(baseline, image, (RuntimeUiTargetKinds)255, palette, "共享列表条目没有同时保留全部八单的颜色。");
+            AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:1", "同条目重复登记了图像所有权。");
+        }
+        for (var count = 7; count >= 1; count--)
+        {
+            var remaining = targets.Take(count).ToArray();
+            RuntimeUiPinningService.UpdateTargets(business, remaining);
+            Time.realtimeSinceStartup = 0;
+            RuntimePinnedListHighlightService.Tick();
+            AssertUnhighlighted(baseline, image, "新发布不能沿用上一代原生行绑定。");
+            // 生产路径会重绑已打开面板的原生逻辑组；这里显式提供新代次的当前行回调。
+            panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), button.Cluster, button);
+            RuntimePinnedListHighlightService.Tick();
+            AssertColorBlocks(baseline, image, (RuntimeUiTargetKinds)((1 << count) - 1), new RuntimeTargetHighlightPalette(remaining), "共享条目撤回一单破坏了其余声明或原始基线。");
+            AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:1", "剩余订单丢失同条目所有权。");
+        }
+        RuntimeUiPinningService.UpdateTargets(business, Array.Empty<RuntimeUiTargetSnapshot>());
+        RuntimePinnedListHighlightService.Tick();
+        AssertUnhighlighted(baseline, image, "全部八单释放后没有还原原始颜色。");
+        AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "释放全部订单后仍保留列表图像所有权。");
+    }
+    finally
+    {
+        panel.OnPanelClose();
+        RuntimeUiPinningService.UpdateTargets(business, Array.Empty<RuntimeUiTargetSnapshot>());
+        CookingSelectionPanelProbe.RecipeBoundColor = new Color(0.8f, 0.8f, 0.8f, 0.5f);
+    }
+}
+
+/// <summary>
+/// 通过正式目标发布与料理、食材、酒水绑定回调验证色槽复用：蓝单结束后第五单仍取蓝色，
+/// 但该色必须排到黄红绿之后。预期直接写明，不调用生产调色板排序来生成测试答案。
+/// </summary>
+static void VerifyReusedColorSlotFollowsOrderLifecycle()
+{
+    var business = RuntimeNightBusinessLifecycle.Generation;
+    var baseline = new Color(1f, 1f, 1f, .6f);
+    var blue = new RuntimeTargetHighlightColor(30, 100, 240);
+    var yellow = new RuntimeTargetHighlightColor(240, 210, 30);
+    var red = new RuntimeTargetHighlightColor(240, 50, 40);
+    var green = new RuntimeTargetHighlightColor(40, 190, 70);
+    var initialColors = new[] { blue, yellow, red, green };
+    RuntimeUiTargetSnapshot Target(int slot, long lifecycle) => new(
+        slot % 2 == 0 ? RuntimeUiTargetKind.Rare : RuntimeUiTargetKind.Normal,
+        initialColors[slot], true, false, false, false, false,
+        $"{(slot % 2 == 0 ? 'R' : 'N')}-{lifecycle}", slot % 2 == 0 ? "" : $"ptr:{lifecycle:x}",
+        lifecycle, slot, 95, new[] { 96 }, Array.Empty<int>(), 97, -1, $"display-order:{lifecycle}", slot);
+    var initial = Enumerable.Range(0, 4).Select(slot => Target(slot, 1001 + slot)).ToArray();
+    var next = new[] { Target(0, 1005), initial[1], initial[2], initial[3] };
+    var panel = new CookingSelectionPanelProbe();
+    var storage = new StoragePanelProbe();
+    var recipeButton = new UIButtonSimpleProbe(baseline);
+    var ingredientButton = new UIButtonSimpleProbe(baseline);
+    var beverageButton = new UIButtonSimpleProbe(baseline);
+    var buttons = new[] { recipeButton, ingredientButton, beverageButton };
+    var previousRecipeColor = CookingSelectionPanelProbe.RecipeBoundColor;
+    var previousIngredientColor = CookingSelectionPanelProbe.IngredientBoundColor;
+    var previousIngredientBinding = CookingSelectionPanelProbe.ApplyIngredientBoundColor;
+    var previousBeverageColor = StoragePanelProbe.BoundColor;
+    CookingSelectionPanelProbe.RecipeBoundColor = baseline;
+    CookingSelectionPanelProbe.IngredientBoundColor = baseline;
+    CookingSelectionPanelProbe.ApplyIngredientBoundColor = true;
+    StoragePanelProbe.BoundColor = baseline;
+    void BindCurrentRows()
+    {
+        panel.OnRecipeElementEnabled(new RecipeProbe(95), recipeButton.Cluster, recipeButton);
+        panel.OnIngElementEnabled(new(new IngredientProbe(96), 10), ingredientButton.Cluster, ingredientButton);
+        storage.OnElementEnabled(new(new SellableProbe(97, SellableTypeProbe.Beverage), 10), beverageButton.Cluster, beverageButton);
+        RuntimePinnedListHighlightService.Tick();
+    }
+    void AssertOrder(RuntimeTargetHighlightColor[] expected, string stage)
+    {
+        foreach (var button in buttons)
+        {
+            var mesh = button.image.RebuildIfDirty();
+            var colors = expected.Select(color => TintedVertexColor(baseline, color)).ToArray();
+            AssertEqual(colors.Length, mesh.m_Colors.Distinct().Count(), stage + "：没有完整显示四种颜色。");
+            for (var index = 0; index < mesh.m_Indices.Count; index += 3)
+            {
+                var a = mesh.m_Indices[index]; var b = mesh.m_Indices[index + 1]; var c = mesh.m_Indices[index + 2];
+                // 替身原背景固定为[-1,1]；以三角重心定位实际左右色区，防止仅检查颜色集合漏掉逆序。
+                var center = (mesh.m_Positions[a].x + mesh.m_Positions[b].x + mesh.m_Positions[c].x) / 3;
+                var band = Math.Clamp((int)((center + 1) / 2 * colors.Length), 0, colors.Length - 1);
+                AssertEqual(colors[band], mesh.m_Colors[a], stage + "：色块没有按订单先后显示。");
+                AssertEqual(colors[band], mesh.m_Colors[b], stage + "：色区边界产生了串色。");
+                AssertEqual(colors[band], mesh.m_Colors[c], stage + "：色区边界产生了串色。");
+            }
+        }
+    }
+    try
+    {
+        // 故意乱序提交：输入数组及普客/稀客分类顺序不应改变全局订单先后。
+        RuntimeUiPinningService.UpdateTargets(business, initial.Reverse().ToArray());
+        panel.OnPanelOpen(); storage.OnPanelOpen(); BindCurrentRows();
+        AssertOrder(initialColors, "初始蓝黄红绿");
+        var first = RuntimeUiPinningService.ReadTargetSet();
+        RuntimeUiPinningService.UpdateTargets(business, next);
+        var reused = RuntimeUiPinningService.ReadTargetSet();
+        AssertTrue(reused.Generation > first.Generation, "新订单复用同一色槽没有发布新的目标代次。");
+        AssertEqual(first.GetRecipeClaims(95), reused.GetRecipeClaims(95), "只更换订单身份却改写了精确声明槽。");
+        AssertTrue(initialColors.Select((color, slot) => reused.Palette[slot] == color).All(value => value),
+            "为了调整显示顺序而错误重分配了颜色槽。");
+        BindCurrentRows();
+        AssertOrder(new[] { yellow, red, green, blue }, "蓝色槽被第五单复用后");
+
+        var dirtyCounts = buttons.Select(button => button.image.DirtyCount).ToArray();
+        RuntimeUiPinningService.UpdateTargets(business, next.Reverse().ToArray());
+        RuntimePinnedListHighlightService.Tick();
+        AssertTrue(ReferenceEquals(reused, RuntimeUiPinningService.ReadTargetSet()), "仅输入重排触发了重复目标发布。");
+        AssertSequenceEqual(dirtyCounts, buttons.Select(button => button.image.DirtyCount), "相同目标重复刷新错误重建了原背景。");
+        AssertOrder(new[] { yellow, red, green, blue }, "相同目标刷新后");
+    }
+    finally
+    {
+        panel.OnPanelClose(); storage.OnPanelClose();
+        RuntimeUiPinningService.UpdateTargets(business, Array.Empty<RuntimeUiTargetSnapshot>());
+        CookingSelectionPanelProbe.RecipeBoundColor = previousRecipeColor;
+        CookingSelectionPanelProbe.IngredientBoundColor = previousIngredientColor;
+        CookingSelectionPanelProbe.ApplyIngredientBoundColor = previousIngredientBinding;
+        StoragePanelProbe.BoundColor = previousBeverageColor;
     }
 }
 
@@ -1034,38 +1215,24 @@ static void VerifySharedListItemUsesSingleOwnershipAndBaseline()
     try
     {
         panel.OnPanelOpen();
-        panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), new object(), button);
+        panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), button.Cluster, button);
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:1", "A shared recipe registered more than one Image ownership.");
 
-        var normalEndpointTime = MathF.PI / (2f * 2.75f);
+        var normalEndpointTime = 1.6f;
         Time.realtimeSinceStartup = normalEndpointTime;
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(
-            RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-                baseline,
-                RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
-                palette,
-                normalEndpointTime),
-            button.image.get_color(),
-            "The shared list Image did not reach the normal-color endpoint.");
+        AssertColorBlocks(baseline, button.image, RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, palette, "The shared list Image did not reach the normal-color endpoint.");
 
-        var rareEndpointTime = 3f * MathF.PI / (2f * 2.75f);
+        var rareEndpointTime = 3.1f;
         Time.realtimeSinceStartup = rareEndpointTime;
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(
-            RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-                baseline,
-                RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
-                palette,
-                rareEndpointTime),
-            button.image.get_color(),
-            "The shared list Image did not return to the rare-color endpoint.");
+        AssertColorBlocks(baseline, button.image, RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, palette, "The shared list Image did not return to the rare-color endpoint.");
 
         RuntimeUiPinningService.UpdateTargets(
             businessGeneration,
             Array.Empty<RuntimeUiTargetSnapshot>());
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(baseline, button.image.get_color(), "Disabling a shared list target did not restore its single original baseline.");
+        AssertUnhighlighted(baseline, button.image, "Disabling a shared list target did not restore its single original baseline.");
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "Disabling a shared list target retained Image ownership.");
     }
     finally
@@ -2059,7 +2226,7 @@ static void VerifyPatchTargets()
         typeof(StoragePanelProbe),
     };
     var patchedProbeCount = Harmony.GetAllPatchedMethods().Count(method => method.DeclaringType != null && probeTypes.Contains(method.DeclaringType));
-    AssertEqual(12, patchedProbeCount, "Runtime UI pinning and list highlighting should install exactly twelve safe patches.");
+    AssertEqual(13, patchedProbeCount, "Runtime UI pinning and list highlighting should install exactly thirteen safe patches including direct ingredient refresh.");
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.UpdateAllVisual),
@@ -2069,6 +2236,12 @@ static void VerifyPatchTargets()
     AssertPatch(
         typeof(CookingSelectionPanelProbe),
         nameof(CookingSelectionPanelProbe.UpdateRecipeField),
+        prefix: "OnCookingRefreshStarted",
+        postfix: null,
+        finalizer: "OnCookingRefreshFinalized");
+    AssertPatch(
+        typeof(CookingSelectionPanelProbe),
+        nameof(CookingSelectionPanelProbe.UpdateIngField),
         prefix: "OnCookingRefreshStarted",
         postfix: null,
         finalizer: "OnCookingRefreshFinalized");
@@ -2255,8 +2428,11 @@ static void VerifyPatchTargets()
     AssertContains(RuntimeUiPinningService.Status, "beverageScope:patched", "Beverage scope patch status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "cookingPanel:patched:2/2;destroy=unpatched-shared-native-alias", "Cooking panel safe lifecycle status is missing.");
     AssertContains(RuntimeUiPinningService.Status, "storagePanel:patched:3/3", "Storage panel lifecycle patch status is missing.");
-    AssertContains(RuntimePinnedListHighlightService.Status, "hooks=patched:8/8;cookingDestroy=unpatched-shared-native-alias", "Pinned-list safe hook status is missing.");
-    AssertContains(RuntimeUiPinningService.Status, "listHighlight=hooks=patched:8/8;cookingDestroy=unpatched-shared-native-alias", "Pinned-list safe-hook diagnostics are missing from pinning status.");
+    AssertPatch(typeof(UnityEngine.UI.Image), nameof(UnityEngine.UI.Image.OnPopulateMesh),
+        prefix: null, postfix: "AfterNativeBackgroundMesh", finalizer: null,
+        patchOwner: typeof(RuntimePinnedListHighlightService), postfixPriority: Priority.Last);
+    AssertContains(RuntimePinnedListHighlightService.Status, "hooks=patched:9/9;cookingDestroy=unpatched-shared-native-alias", "Pinned-list safe hook status is missing.");
+    AssertContains(RuntimeUiPinningService.Status, "listHighlight=hooks=patched:9/9;cookingDestroy=unpatched-shared-native-alias", "Pinned-list safe-hook diagnostics are missing from pinning status.");
     AssertContains(RuntimeUiPinningService.Status, "throwDeliveryOrder=", "Throw-delivery order-highlight diagnostics are missing from pinning status.");
 }
 
@@ -2616,7 +2792,7 @@ static void VerifyPinningAndHighlightRemainIndependent()
     AssertTrue(RuntimeSeatHighlightService.LastEnabled, "Seat-only target did not enable seat highlighting.");
     AssertEqual(0, RuntimeSeatHighlightService.LastDeskCode, "Seat-only target changed the zero-based desk code.");
     var seatOnlyPinningTarget = RuntimeUiPinningService.ReadTargetSet();
-    AssertTrue(seatOnlyPinningTarget.TryGetTarget(RuntimeUiTargetKind.Rare, out var seatOnlyTarget), "Seat-only publication lost its rare target.");
+    AssertTrue(seatOnlyPinningTarget.TryGetTarget(seatOnlyPinningTarget.Targets.Single(target => target.Kind == RuntimeUiTargetKind.Rare).IdentityKey, out var seatOnlyTarget), "Seat-only publication lost its rare target.");
     AssertFalse(seatOnlyTarget.ListPinningEnabled, "Seat-only target unexpectedly enabled list pinning.");
     AssertFalse(seatOnlyTarget.RecipeVariantEnabled, "Seat-only target unexpectedly enabled recipe variants.");
     InvokePrivate("OnCookingRefreshStarted", new CookingSelectionPanelProbe());
@@ -2654,7 +2830,7 @@ static void VerifyPinningAndHighlightRemainIndependent()
     AssertEqual(0, RuntimeThrowDeliverOrderHighlightService.LastDeskCode, "Order-only target changed the throw-delivery zero-based desk code.");
     AssertEqual(RuntimeOrderHighlightService.LastSessionGeneration, RuntimeThrowDeliverOrderHighlightService.LastSessionGeneration, "Order-highlight surfaces received different business generations.");
     var orderOnlyPinningTarget = RuntimeUiPinningService.ReadTargetSet();
-    AssertTrue(orderOnlyPinningTarget.TryGetTarget(RuntimeUiTargetKind.Rare, out var orderOnlyTarget), "Order-only publication lost its rare target.");
+    AssertTrue(orderOnlyPinningTarget.TryGetTarget(orderOnlyPinningTarget.Targets.Single(target => target.Kind == RuntimeUiTargetKind.Rare).IdentityKey, out var orderOnlyTarget), "Order-only publication lost its rare target.");
     AssertFalse(orderOnlyTarget.ListPinningEnabled, "Order-only target unexpectedly enabled list pinning.");
     AssertFalse(orderOnlyTarget.RecipeVariantEnabled, "Order-only target unexpectedly enabled recipe variants.");
 }
@@ -2777,51 +2953,52 @@ static void VerifyManagedPinnedListHighlighting()
     try
     {
         var recipeButton = new UIButtonSimpleProbe(new Color(1f, 1f, 1f, 1f));
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(34), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(34), recipeButton.Cluster, recipeButton);
         AssertColor(recipeBase, recipeButton.image.get_color(), "Recipe binding did not preserve the game's base color.");
         RuntimePinnedListHighlightService.Tick();
-        AssertHighlighted(recipeBase, recipeButton.image.get_color(), "Recipe target was not highlighted.");
+        AssertHighlighted(recipeBase, recipeButton.image, "Recipe target was not highlighted.");
 
         CookingSelectionPanelProbe.RecipeBoundColor = recipeRebound;
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(40), new object(), recipeButton);
-        AssertColor(recipeRebound, recipeButton.image.get_color(), "A pooled recipe button kept the previous target highlight.");
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(40), recipeButton.Cluster, recipeButton);
+        AssertUnhighlighted(recipeRebound, recipeButton.image, "A pooled recipe button kept the previous target highlight.");
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(recipeRebound, recipeButton.image.get_color(), "A non-target recipe was highlighted.");
+        AssertUnhighlighted(recipeRebound, recipeButton.image, "A non-target recipe was highlighted.");
 
         var ingredientButton = new UIButtonSimpleProbe(ingredientBase);
         cookingPanel.OnIngElementEnabled(
             new KeyValuePair<IngredientProbe, int>(new IngredientProbe(11), 2),
-            new object(),
+            ingredientButton.Cluster,
             ingredientButton);
         RuntimePinnedListHighlightService.Tick();
-        AssertHighlighted(ingredientBase, ingredientButton.image.get_color(), "Ingredient target was not highlighted.");
+        AssertHighlighted(ingredientBase, ingredientButton.image, "Ingredient target was not highlighted.");
         cookingPanel.OnIngElementEnabled(
             new KeyValuePair<IngredientProbe, int>(new IngredientProbe(12), 2),
-            new object(),
+            ingredientButton.Cluster,
             ingredientButton);
-        AssertColor(ingredientBase, ingredientButton.image.get_color(), "A pooled ingredient button kept the previous target highlight.");
+        AssertUnhighlighted(ingredientBase, ingredientButton.image, "A pooled ingredient button kept the previous target highlight.");
 
         var foodButton = new UIButtonSimpleProbe(storageBase);
         storagePanel.OnElementEnabled(
             new KeyValuePair<SellableProbe, int>(new SellableProbe(16, SellableTypeProbe.Food), 1),
-            new object(),
+            foodButton.Cluster,
             foodButton);
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(storageBase, foodButton.image.get_color(), "A food item with the beverage target ID was highlighted.");
+        AssertUnhighlighted(storageBase, foodButton.image, "A food item with the beverage target ID was highlighted.");
 
         var beverageButton = new UIButtonSimpleProbe(storageBase);
         storagePanel.OnElementEnabled(
             new KeyValuePair<SellableProbe, int>(new SellableProbe(16, SellableTypeProbe.Beverage), 1),
-            new object(),
+            beverageButton.Cluster,
             beverageButton);
         RuntimePinnedListHighlightService.Tick();
-        AssertHighlighted(storageBase, beverageButton.image.get_color(), "Beverage target was not highlighted.");
+        AssertHighlighted(storageBase, beverageButton.image, "Beverage target was not highlighted.");
         storagePanel.OnPanelClose();
-        AssertColor(storageBase, beverageButton.image.get_color(), "Storage panel close did not restore the beverage color.");
+        AssertUnhighlighted(storageBase, beverageButton.image, "Storage panel close did not restore the beverage color.");
 
         CookingSelectionPanelProbe.RecipeBoundColor = recipeBase;
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(34), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(34), recipeButton.Cluster, recipeButton);
         RuntimePinnedListHighlightService.Tick();
+        recipeButton.image.RebuildIfDirty();
         var setterCountBeforeWorkerUpdate = recipeButton.image.SetterCount;
         RunOnWorkerThread(() => PublishRareTarget(
             RuntimeNightBusinessLifecycle.Generation,
@@ -2839,21 +3016,21 @@ static void VerifyManagedPinnedListHighlighting()
             orderTraceId: "",
             targetRevision: "test-target"));
         AssertEqual(setterCountBeforeWorkerUpdate, recipeButton.image.SetterCount, "Background target publication wrote a Unity image color.");
-        AssertHighlighted(recipeBase, recipeButton.image.get_color(), "Target publication touched Unity color off the main visual tick.");
+        AssertHighlighted(recipeBase, recipeButton.image, "Target publication touched Unity color off the main visual tick.");
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(recipeBase, recipeButton.image.get_color(), "Target change did not restore the old recipe color.");
+        AssertUnhighlighted(recipeBase, recipeButton.image, "Target change did not restore the old recipe color.");
         AssertTrue(recipeButton.image.SetterThreadIds.All(threadId => threadId == mainThreadId), "A recipe image setter ran outside the Unity main thread.");
 
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), recipeButton.Cluster, recipeButton);
         RuntimePinnedListHighlightService.Tick();
-        AssertHighlighted(recipeBase, recipeButton.image.get_color(), "New recipe target was not highlighted after rebinding.");
+        AssertHighlighted(recipeBase, recipeButton.image, "New recipe target was not highlighted after rebinding.");
         cookingPanel.OnPanelClose();
-        AssertColor(recipeBase, recipeButton.image.get_color(), "Cooking panel close did not restore the recipe color.");
+        AssertUnhighlighted(recipeBase, recipeButton.image, "Cooking panel close did not restore the recipe color.");
 
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), recipeButton.Cluster, recipeButton);
         RuntimePinnedListHighlightService.Tick();
         RuntimePinnedListHighlightService.Suspend("test scene exit");
-        AssertColor(recipeBase, recipeButton.image.get_color(), "Scene suspension did not restore the recipe color.");
+        AssertUnhighlighted(recipeBase, recipeButton.image, "Scene suspension did not restore the recipe color.");
         AssertContains(RuntimePinnedListHighlightService.Status, "state=suspended: test scene exit", "Scene suspension state was not retained.");
 
         PublishRareTarget(
@@ -2872,11 +3049,11 @@ static void VerifyManagedPinnedListHighlighting()
             orderTraceId: "",
             targetRevision: "test-target");
         AssertContains(RuntimePinnedListHighlightService.Status, "state=suspended: test scene exit", "Publishing the same target resumed a suspended scene.");
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(35), recipeButton.Cluster, recipeButton);
         var setterCountAfterSuspendedBinding = recipeButton.image.SetterCount;
         RuntimePinnedListHighlightService.Tick();
         AssertEqual(setterCountAfterSuspendedBinding, recipeButton.image.SetterCount, "A late element callback was highlighted while the scene was suspended.");
-        AssertColor(recipeBase, recipeButton.image.get_color(), "A late element callback kept a highlight while the scene was suspended.");
+        AssertUnhighlighted(recipeBase, recipeButton.image, "A late element callback kept a highlight while the scene was suspended.");
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "A late element callback was tracked while the scene was suspended.");
 
         RunOnWorkerThread(() => PublishRareTarget(
@@ -2895,30 +3072,31 @@ static void VerifyManagedPinnedListHighlighting()
             orderTraceId: "",
             targetRevision: "test-target"));
         AssertContains(RuntimePinnedListHighlightService.Status, "state=suspended: test scene exit", "Publishing a changed target resumed a suspended scene.");
-        CookingSelectionPanelProbe.OpenAction = () => cookingPanel.OnRecipeElementEnabled(new RecipeProbe(36), new object(), recipeButton);
+        CookingSelectionPanelProbe.OpenAction = () => cookingPanel.OnRecipeElementEnabled(new RecipeProbe(36), recipeButton.Cluster, recipeButton);
         cookingPanel.OnPanelOpen();
         RuntimePinnedListHighlightService.Tick();
-        AssertHighlighted(recipeBase, recipeButton.image.get_color(), "Cooking panel open did not resume highlighting before its first element binding.");
+        AssertHighlighted(recipeBase, recipeButton.image, "Cooking panel open did not resume highlighting before its first element binding.");
         CookingSelectionPanelProbe.OpenAction = null;
 
         RuntimePinnedListHighlightService.Suspend("test storage reopen");
-        AssertColor(recipeBase, recipeButton.image.get_color(), "Second scene suspension did not restore the recipe color.");
+        AssertUnhighlighted(recipeBase, recipeButton.image, "Second scene suspension did not restore the recipe color.");
         var reopenedBeverageButton = new UIButtonSimpleProbe(storageBase);
         StoragePanelProbe.OpenAction = () => storagePanel.OnElementEnabled(
             new KeyValuePair<SellableProbe, int>(new SellableProbe(18, SellableTypeProbe.Beverage), 1),
-            new object(),
+            reopenedBeverageButton.Cluster,
             reopenedBeverageButton);
         storagePanel.OnPanelOpen();
         RuntimePinnedListHighlightService.Tick();
-        AssertHighlighted(storageBase, reopenedBeverageButton.image.get_color(), "Storage panel open did not resume highlighting before its first element binding.");
+        AssertHighlighted(storageBase, reopenedBeverageButton.image, "Storage panel open did not resume highlighting before its first element binding.");
         storagePanel.OnPanelClose();
-        AssertColor(storageBase, reopenedBeverageButton.image.get_color(), "Reopened storage panel did not restore its beverage color on close.");
+        AssertUnhighlighted(storageBase, reopenedBeverageButton.image, "Reopened storage panel did not restore its beverage color on close.");
         StoragePanelProbe.OpenAction = null;
 
         cookingPanel.OnPanelOpen();
         CookingSelectionPanelProbe.RecipeBoundColor = recipeBase;
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(36), new object(), recipeButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(36), recipeButton.Cluster, recipeButton);
         RuntimePinnedListHighlightService.Tick();
+        recipeButton.image.RebuildIfDirty();
         var setterCountBeforeDisable = recipeButton.image.SetterCount;
         PublishRareTarget(
             RuntimeNightBusinessLifecycle.Generation,
@@ -2936,9 +3114,9 @@ static void VerifyManagedPinnedListHighlighting()
             orderTraceId: "",
             targetRevision: "test-target");
         AssertEqual(setterCountBeforeDisable, recipeButton.image.SetterCount, "Disabling list pinning wrote a Unity image color off the main visual tick.");
-        AssertHighlighted(recipeBase, recipeButton.image.get_color(), "Disabling list pinning touched Unity color before LateUpdate.");
+        AssertHighlighted(recipeBase, recipeButton.image, "Disabling list pinning touched Unity color before LateUpdate.");
         RuntimePinnedListHighlightService.Tick();
-        AssertColor(recipeBase, recipeButton.image.get_color(), "Disabling list pinning did not restore the recipe color.");
+        AssertUnhighlighted(recipeBase, recipeButton.image, "Disabling list pinning did not restore the recipe color.");
         AssertTrue(RuntimeCookerHighlightService.LastEnabled, "Cooker-only highlighting was disabled alongside list highlighting.");
 
         PublishRareTarget(
@@ -2957,10 +3135,10 @@ static void VerifyManagedPinnedListHighlighting()
             orderTraceId: "",
             targetRevision: "test-target");
         var setterRaceButton = new UIButtonSimpleProbe(recipeBase);
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(37), new object(), setterRaceButton);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(37), setterRaceButton.Cluster, setterRaceButton);
         using var setterEntered = new ManualResetEventSlim();
         using var setterRelease = new ManualResetEventSlim();
-        setterRaceButton.image.BlockNextSetter(setterEntered, setterRelease);
+        UnityEngine.UI.VertexHelper.BlockNextWrite(setterEntered, setterRelease);
         var visualErrorsBeforeRace = ReadListHighlightCounter("visualErrors");
         Exception? setterRaceFailure = null;
         var setterRaceWorker = new Thread(() =>
@@ -3001,6 +3179,8 @@ static void VerifyManagedPinnedListHighlighting()
         try
         {
             RuntimePinnedListHighlightService.Tick();
+            // 模拟本帧 Canvas 提交：在正式网格写入中让后台发布下一代目标。
+            setterRaceButton.image.RebuildIfDirty();
         }
         finally
         {
@@ -3012,14 +3192,18 @@ static void VerifyManagedPinnedListHighlighting()
         }
 
         if (setterRaceFailure != null) throw new InvalidOperationException("Setter-race target publication failed.", setterRaceFailure);
-        AssertFalse(setterRaceButton.image.BarrierTimedOut, "The highlight setter barrier timed out instead of observing a concurrent target update.");
+        AssertFalse(UnityEngine.UI.VertexHelper.WriteBarrierTimedOut, "The mesh write barrier timed out instead of observing a concurrent target update.");
         AssertEqual(visualErrorsBeforeRace, ReadListHighlightCounter("visualErrors"), "The setter-race path was hidden as a visual error.");
-        AssertColor(recipeBase, setterRaceButton.image.get_color(), "A target change during the first highlight write left an untracked color.");
+        AssertTrue(setterRaceButton.image.Mesh.m_Colors.All(value => value == UnityEngine.UI.VertexHelper.ToBytes(recipeBase)),
+            "目标在写入期间撤回后，本次 Canvas 提交仍包含旧颜色，不能依赖下一帧重建补救。");
+        AssertUnhighlighted(recipeBase, setterRaceButton.image, "A target change during the first highlight write left an untracked color.");
         AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "A stale first highlight remained tracked after its target changed.");
         AssertTrue(setterRaceButton.image.SetterThreadIds.All(threadId => threadId == mainThreadId), "The setter-race image was written outside the Unity main thread.");
+        AssertTrue(UnityEngine.UI.VertexHelper.WriteThreadIds.All(threadId => threadId == mainThreadId), "A native background mesh was written outside the Unity main thread.");
 
         var bindingErrorsBefore = ReadListHighlightCounter("bindingErrors");
-        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(38, throwOnIdRead: true), new object(), new UIButtonSimpleProbe(recipeBase));
+        var failedBindingButton = new UIButtonSimpleProbe(recipeBase);
+        cookingPanel.OnRecipeElementEnabled(new RecipeProbe(38, throwOnIdRead: true), failedBindingButton.Cluster, failedBindingButton);
         AssertEqual(bindingErrorsBefore + 1, ReadListHighlightCounter("bindingErrors"), "Element binding diagnostics did not record a reflection failure.");
     }
     finally
@@ -3093,10 +3277,10 @@ static void VerifyExactRecipeVariantRowHighlighting()
     var priorIdModeRecipe = new RecipeProbe(recipeId);
     var priorIdModeButton = new UIButtonSimpleProbe(baseline);
     panel.OnPanelOpen();
-    panel.OnRecipeElementEnabled(priorIdModeRecipe, new object(), priorIdModeButton);
+    panel.OnRecipeElementEnabled(priorIdModeRecipe, priorIdModeButton.Cluster, priorIdModeButton);
     Time.realtimeSinceStartup = 0.25f;
     RuntimePinnedListHighlightService.Tick();
-    AssertHighlighted(baseline, priorIdModeButton.image.get_color(), "An uncontrolled recipe lost its existing recipe-id highlight.");
+    AssertHighlighted(baseline, priorIdModeButton.image, "An uncontrolled recipe lost its existing recipe-id highlight.");
 
     RuntimeUiPinningService.UpdateTargets(
         businessGeneration,
@@ -3111,7 +3295,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
     AssertEqual(RuntimeUiTargetKinds.Rare, controlledTarget.GetRecipeVariantClaims(recipeId), "The synthetic row did not retain the rare variant claim.");
 
     RuntimePinnedListHighlightService.Tick();
-    AssertColor(baseline, priorIdModeButton.image.get_color(), "An old recipe-id aggregate color survived the transition to exact-only mode.");
+    AssertUnhighlighted(baseline, priorIdModeButton.image, "An old recipe-id aggregate color survived the transition to exact-only mode.");
     AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "An old recipe-id row stayed tracked after becoming variant-controlled.");
 
     var baseRecipe = new RecipeProbe(recipeId);
@@ -3122,7 +3306,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         baseButton,
         RuntimeUiTargetKinds.Normal,
         "normal-base");
-    panel.OnRecipeElementEnabled(baseRecipe, new object(), baseButton);
+    panel.OnRecipeElementEnabled(baseRecipe, baseButton.Cluster, baseButton);
 
     var syntheticRecipe = new RecipeProbe(recipeId);
     var syntheticButton = new UIButtonSimpleProbe(baseline);
@@ -3145,7 +3329,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         RuntimeTargetRecipeVariantService.TryValidateRecipeRowClaims(currentSyntheticLease, out var reboundClaims)
             && reboundClaims == RuntimeUiTargetKinds.Rare,
         "The current exact row plan identity was not retained after a pointer-stable rebind.");
-    panel.OnRecipeElementEnabled(syntheticRecipe, new object(), syntheticButton);
+    panel.OnRecipeElementEnabled(syntheticRecipe, syntheticButton.Cluster, syntheticButton);
 
     var lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
     var boundMessages = lifecycleMessages
@@ -3170,26 +3354,12 @@ static void VerifyExactRecipeVariantRowHighlighting()
         "An exact-row bind log omitted its bounded native identity fields.");
 
     var unboundSameIdButton = new UIButtonSimpleProbe(baseline);
-    panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), new object(), unboundSameIdButton);
+    panel.OnRecipeElementEnabled(new RecipeProbe(recipeId), unboundSameIdButton.Cluster, unboundSameIdButton);
     RuntimePinnedListHighlightService.Tick();
 
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Normal,
-            controlledTarget.Palette,
-            Time.realtimeSinceStartup),
-        baseButton.image.get_color(),
-        "The exact authoritative row did not use only the normal target color.");
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Rare,
-            controlledTarget.Palette,
-            Time.realtimeSinceStartup),
-        syntheticButton.image.get_color(),
-        "The exact synthetic row did not use its rare target color.");
-    AssertColor(baseline, unboundSameIdButton.image.get_color(), "A same-id row without an exact panel/recipe/button binding was highlighted.");
+    AssertColorBlocks(baseline, baseButton.image, RuntimeUiTargetKinds.Normal, controlledTarget.Palette, "The exact authoritative row did not use only the normal target color.");
+    AssertColorBlocks(baseline, syntheticButton.image, RuntimeUiTargetKinds.Rare, controlledTarget.Palette, "The exact synthetic row did not use its rare target color.");
+    AssertUnhighlighted(baseline, unboundSameIdButton.image, "A same-id row without an exact panel/recipe/button binding was highlighted.");
     AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:2", "Exact rows did not retain one Image ownership each.");
 
     lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
@@ -3199,7 +3369,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         "Exact recipe rows did not log their first durable highlight application once.");
 
     var releaseCountBeforePoolRebind = lifecycleMessages.Count(message => message.Contains("event=released;", StringComparison.Ordinal));
-    panel.OnRecipeElementEnabled(baseRecipe, new object(), baseButton);
+    panel.OnRecipeElementEnabled(baseRecipe, baseButton.Cluster, baseButton);
     lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
     AssertEqual(
         releaseCountBeforePoolRebind + 1,
@@ -3219,8 +3389,8 @@ static void VerifyExactRecipeVariantRowHighlighting()
 
     RuntimeTargetRecipeVariantService.AdvancePanelEpoch(panel);
     RuntimePinnedListHighlightService.Tick();
-    AssertColor(baseline, baseButton.image.get_color(), "A stale authoritative row lease kept its highlight after the panel epoch advanced.");
-    AssertColor(baseline, syntheticButton.image.get_color(), "A stale synthetic row lease kept its highlight after the panel epoch advanced.");
+    AssertUnhighlighted(baseline, baseButton.image, "A stale authoritative row lease kept its highlight after the panel epoch advanced.");
+    AssertUnhighlighted(baseline, syntheticButton.image, "A stale synthetic row lease kept its highlight after the panel epoch advanced.");
     AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "Stale exact recipe-row leases remained tracked.");
     lifecycleMessages = ReadExactRecipeLifecycleMessages(lifecycleLogStart);
     var invalidLeaseReleaseCount = lifecycleMessages.Count(message =>
@@ -3264,7 +3434,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         symmetricBaseButton,
         RuntimeUiTargetKinds.Rare,
         "rare-base-symmetric");
-    symmetricPanel.OnRecipeElementEnabled(symmetricBaseRecipe, new object(), symmetricBaseButton);
+    symmetricPanel.OnRecipeElementEnabled(symmetricBaseRecipe, symmetricBaseButton.Cluster, symmetricBaseButton);
     var symmetricSyntheticRecipe = new RecipeProbe(recipeId);
     var symmetricSyntheticButton = new UIButtonSimpleProbe(baseline);
     RuntimeTargetRecipeVariantService.BindRecipeRow(
@@ -3273,25 +3443,11 @@ static void VerifyExactRecipeVariantRowHighlighting()
         symmetricSyntheticButton,
         RuntimeUiTargetKinds.Normal,
         "normal-extra-144");
-    symmetricPanel.OnRecipeElementEnabled(symmetricSyntheticRecipe, new object(), symmetricSyntheticButton);
+    symmetricPanel.OnRecipeElementEnabled(symmetricSyntheticRecipe, symmetricSyntheticButton.Cluster, symmetricSyntheticButton);
     Time.realtimeSinceStartup = 0.25f;
     RuntimePinnedListHighlightService.Tick();
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Rare,
-            symmetricTarget.Palette,
-            Time.realtimeSinceStartup),
-        symmetricBaseButton.image.get_color(),
-        "The symmetric authoritative row did not use only the rare target color.");
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Normal,
-            symmetricTarget.Palette,
-            Time.realtimeSinceStartup),
-        symmetricSyntheticButton.image.get_color(),
-        "The normal synthetic row did not use its custom target color.");
+    AssertColorBlocks(baseline, symmetricBaseButton.image, RuntimeUiTargetKinds.Rare, symmetricTarget.Palette, "The symmetric authoritative row did not use only the rare target color.");
+    AssertColorBlocks(baseline, symmetricSyntheticButton.image, RuntimeUiTargetKinds.Normal, symmetricTarget.Palette, "The normal synthetic row did not use its custom target color.");
     var panelCloseReleaseCount = ReadExactRecipeLifecycleMessages(lifecycleLogStart).Count(message =>
         message.Contains("event=released;", StringComparison.Ordinal)
         && message.Contains("reason=panel-closed;", StringComparison.Ordinal));
@@ -3323,7 +3479,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
         rareSplitButton,
         RuntimeUiTargetKinds.Rare,
         "rare-extra-143-split");
-    splitPanel.OnRecipeElementEnabled(rareSplitRecipe, new object(), rareSplitButton);
+    splitPanel.OnRecipeElementEnabled(rareSplitRecipe, rareSplitButton.Cluster, rareSplitButton);
     var normalSplitRecipe = new RecipeProbe(recipeId);
     var normalSplitButton = new UIButtonSimpleProbe(baseline);
     RuntimeTargetRecipeVariantService.BindRecipeRow(
@@ -3332,24 +3488,10 @@ static void VerifyExactRecipeVariantRowHighlighting()
         normalSplitButton,
         RuntimeUiTargetKinds.Normal,
         "normal-extra-144-split");
-    splitPanel.OnRecipeElementEnabled(normalSplitRecipe, new object(), normalSplitButton);
+    splitPanel.OnRecipeElementEnabled(normalSplitRecipe, normalSplitButton.Cluster, normalSplitButton);
     RuntimePinnedListHighlightService.Tick();
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Rare,
-            splitExtrasTarget.Palette,
-            Time.realtimeSinceStartup),
-        rareSplitButton.image.get_color(),
-        "Different rare extras did not retain their exact rare-only synthetic color.");
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Normal,
-            splitExtrasTarget.Palette,
-            Time.realtimeSinceStartup),
-        normalSplitButton.image.get_color(),
-        "Different normal extras did not retain their exact normal-only synthetic color.");
+    AssertColorBlocks(baseline, rareSplitButton.image, RuntimeUiTargetKinds.Rare, splitExtrasTarget.Palette, "Different rare extras did not retain their exact rare-only synthetic color.");
+    AssertColorBlocks(baseline, normalSplitButton.image, RuntimeUiTargetKinds.Normal, splitExtrasTarget.Palette, "Different normal extras did not retain their exact normal-only synthetic color.");
     splitPanel.OnPanelClose();
     RuntimeTargetRecipeVariantService.RetireForShutdown("split extras exact row-highlight smoke complete");
 
@@ -3371,17 +3513,10 @@ static void VerifyExactRecipeVariantRowHighlighting()
         sharedButton,
         RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
         "shared-extra-145");
-    sharedPanel.OnRecipeElementEnabled(sharedRecipe, new object(), sharedButton);
+    sharedPanel.OnRecipeElementEnabled(sharedRecipe, sharedButton.Cluster, sharedButton);
     Time.realtimeSinceStartup = 0.75f;
     RuntimePinnedListHighlightService.Tick();
-    AssertColor(
-        RuntimeTargetHighlightStyle.BuildListItemPulseColor(
-            baseline,
-            RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
-            sharedExtrasTarget.Palette,
-            Time.realtimeSinceStartup),
-        sharedButton.image.get_color(),
-        "A shared ordered-extras row did not retain its dual target claim and palette.");
+    AssertColorBlocks(baseline, sharedButton.image, RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, sharedExtrasTarget.Palette, "A shared ordered-extras row did not retain its dual target claim and palette.");
     sharedPanel.OnPanelClose();
     RuntimeTargetRecipeVariantService.RetireForShutdown("shared extras exact row-highlight smoke complete");
 
@@ -3397,7 +3532,7 @@ static void VerifyExactRecipeVariantRowHighlighting()
             boundedButton,
             RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal,
             $"bounded-exact-row-{index}");
-        boundedPanel.OnRecipeElementEnabled(boundedRecipe, new object(), boundedButton);
+        boundedPanel.OnRecipeElementEnabled(boundedRecipe, boundedButton.Cluster, boundedButton);
     }
     boundedPanel.OnPanelClose();
     RuntimeTargetRecipeVariantService.RetireForShutdown("bounded exact row-highlight logging smoke complete");
@@ -3630,13 +3765,304 @@ static void AssertNoPatch(
     AssertFalse(ownerPresent, message);
 }
 
-static void AssertHighlighted(Color original, Color actual, string message)
+/// <summary>
+/// 验证完整背景色带的几何、原生图标层级、同色去重与明确身份失效。
+/// 仅测试已声明引用，不从测试场景中的任意图像补选当前物品图标。
+/// </summary>
+static void VerifyColorBlockLayoutAndNativeOwnership()
 {
-    AssertEqualWithin(original.a, actual.a, $"{message} Alpha changed.");
-    var rgbChanged = Math.Abs(original.r - actual.r) > 0.001f
-        || Math.Abs(original.g - actual.g) > 0.001f
-        || Math.Abs(original.b - actual.b) > 0.001f;
-    if (!rgbChanged) throw new InvalidOperationException(message);
+    var baseline = new Color(.2f, .3f, .4f, .45f);
+    var button = new UIButtonSimpleProbe(baseline);
+    var recipe = new RecipeProbe(401);
+    button.Cluster.Bind(recipe);
+    var icon = button.Cluster.Icon;
+    var nativeIconColor = icon.color;
+    var targets = Enumerable.Range(0, 8).Select(slot => new RuntimeUiTargetSnapshot(
+        slot < 4 ? RuntimeUiTargetKind.Rare : RuntimeUiTargetKind.Normal,
+        new RuntimeTargetHighlightColor((byte)(30 + slot * 20), (byte)(200 - slot * 15), (byte)(50 + slot * 17)),
+        true, false, false, false, false, $"{(slot < 4 ? 'R' : 'N')}-{900 + slot}",
+        slot < 4 ? "" : $"ptr:{900 + slot:x}", 900 + slot, slot, 401,
+        new[] { 96 }, Array.Empty<int>(), -1, -1, $"layout:{slot}", slot)).ToArray();
+    var palette = new RuntimeTargetHighlightPalette(targets);
+    var blocks = RuntimePinnedListColorBlocks.TryCreate(button, button.image, button.Cluster, recipe.Text.Visual, out var failure);
+    AssertTrue(blocks != null, "合法背景/图标/cluster 被拒绝：" + failure);
+    var initialNativeWrites = button.image.SetterCount;
+    var nativeChildren = button.transform.Children.ToArray();
+    var allocatedObjects = UnityEngine.Object.All.OfType<GameObject>().Count();
+    try
+    {
+        // 分色直接写入原 Image 的顶点；原生对象数量、子节点和交互状态必须完全不变。
+        AssertTrue(blocks!.Apply((RuntimeUiTargetKinds)255, palette), "八色完整背景应用失败");
+        for (var count = 1; count <= 8; count++)
+        {
+            var claims = (RuntimeUiTargetKinds)((1 << count) - 1);
+            AssertTrue(blocks.Apply(claims, palette), "颜色数量更新失败");
+            var mesh = new UnityEngine.UI.VertexHelper();
+            button.image.OnPopulateMesh(mesh);
+            var originalLeft = mesh.m_Positions.Min(point => point.x);
+            var originalRight = mesh.m_Positions.Max(point => point.x);
+            var originalBottom = mesh.m_Positions.Min(point => point.y);
+            var originalTop = mesh.m_Positions.Max(point => point.y);
+            AssertTrue(blocks.ApplyToNativeMesh(mesh, claims, palette, out failure), "原生背景网格分色失败：" + failure);
+            AssertNativeBands(mesh, baseline, claims, palette, "背景色带未保留完整声明");
+            for (var index = 0; index < count; index++)
+            {
+                var tint = TintedVertexColor(baseline, palette[index]);
+                var points = mesh.m_Positions.Where((point, vertex) => mesh.m_Colors[vertex] == tint).ToArray();
+                // 同时检查左右分区的位置和全高覆盖，避免仅凭出现了全部颜色就接受错误方向。
+                AssertEqualWithin(originalLeft + (originalRight - originalLeft) * index / count, points.Min(point => point.x), "色区左边界未按槽位排列");
+                AssertEqualWithin(originalLeft + (originalRight - originalLeft) * (index + 1) / count, points.Max(point => point.x), "色区未均分原背景宽度");
+                AssertEqualWithin(originalBottom, points.Min(point => point.y), "左右色区未延伸到原背景下边界");
+                AssertEqualWithin(originalTop, points.Max(point => point.y), "左右色区未延伸到原背景上边界");
+            }
+            AssertTrue(nativeChildren.SequenceEqual(button.transform.Children), "原生背景分色新增或调整了子节点");
+            AssertEqual(allocatedObjects, UnityEngine.Object.All.OfType<GameObject>().Count(), "原生背景分色创建了额外视觉对象");
+            for (var index = 0; index < mesh.m_Positions.Count; index++)
+            {
+                AssertEqualWithin((mesh.m_Positions[index].x + 1) * .5f, mesh.m_Uv0S[index].x, "裁剪破坏原生 UV 横坐标");
+                AssertEqualWithin(mesh.m_Positions[index].y + .5f, mesh.m_Uv0S[index].y, "裁剪破坏原生 UV 纵坐标");
+                AssertEqual(mesh.m_Uv0S[index], mesh.m_Uv3S[index], "裁剪丢失附加 UV 通道");
+            }
+            AssertTrue(blocks.RestoreNativeMesh(mesh, out failure), "回退原生网格失败：" + failure);
+            AssertEqual(4, mesh.m_Positions.Count, "回退没有恢复原顶点数量");
+            AssertTrue(mesh.m_Colors.All(value => value == UnityEngine.UI.VertexHelper.ToBytes(baseline)), "回退没有恢复原顶点颜色");
+        }
+        AssertTrue(button.image.raycastTarget, "原生按钮射线配置被修改");
+        AssertColor(nativeIconColor, icon.color, "物品图标颜色被更改");
+        AssertTrue(ReferenceEquals(recipe.Text.Visual, icon.sprite), "物品图标被替换");
+        AssertEqual(initialNativeWrites, button.image.SetterCount, "更新色带写入了原生图像");
+
+        var duplicatePalette = new RuntimeTargetHighlightPalette(targets[0].Color, targets[0].Color);
+        AssertTrue(blocks.Apply(RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, duplicatePalette), "同色声明应用失败");
+        var duplicateMesh = new UnityEngine.UI.VertexHelper();
+        button.image.OnPopulateMesh(duplicateMesh);
+        AssertTrue(blocks.ApplyToNativeMesh(duplicateMesh, RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal, duplicatePalette, out failure), failure);
+        AssertEqual(1, duplicateMesh.m_Colors.Distinct().Count(), "同色声明没有仅在视觉层去重");
+        AssertTrue(blocks.Apply(RuntimeUiTargetKinds.Normal, duplicatePalette), "移除一笔同色声明失败");
+        AssertTrue(blocks.Apply(RuntimeUiTargetKinds.None, duplicatePalette), "空声明未正常隐藏");
+        AssertTrue(blocks.Apply(RuntimeUiTargetKinds.Normal, duplicatePalette), "空声明后没有复用旧资源");
+
+        var beforeHotFrames = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 10000; index++) blocks.Apply(RuntimeUiTargetKinds.Normal, duplicatePalette);
+        AssertEqual(0L, GC.GetAllocatedBytesForCurrentThread() - beforeHotFrames, "背景颜色无变化热帧产生托管分配");
+        button.image.enabled = false;
+        AssertTrue(blocks.RefreshVisibility(), "隐藏原生背景时精确绑定被错误撤回");
+        button.image.enabled = true;
+        button.image.set_color(new Color(.2f, .3f, .4f, .2f));
+        AssertTrue(blocks.RefreshVisibility(), "原生透明度变化令合法绑定失效");
+        var alphaMesh = new UnityEngine.UI.VertexHelper();
+        button.image.OnPopulateMesh(alphaMesh);
+        AssertTrue(blocks.ApplyToNativeMesh(alphaMesh, RuntimeUiTargetKinds.Normal, duplicatePalette, out failure), failure);
+        AssertTrue(alphaMesh.m_Colors.All(value => value.a == 51), "原生透明度被重复相乘或忽略");
+
+        icon.sprite = new Sprite();
+        AssertFalse(blocks.RefreshVisibility(), "池化图标切到别的 sprite 后仍沿用旧色带");
+        icon.sprite = recipe.Text.Visual;
+        icon.transform.SetAsFirstSibling();
+        AssertTrue(blocks.RefreshVisibility(), "原图标顺序变化不应破坏直接背景网格绑定");
+    }
+    finally { blocks!.Dispose(); }
+    AssertTrue(!button.Destroyed && !button.image.Destroyed && !icon.Destroyed,
+        "清理背景分色销毁了原生按钮/图标");
+    AssertEqual(allocatedObjects, UnityEngine.Object.All.OfType<GameObject>().Count(), "背景分色意外创建了覆盖层");
+
+    // 真实图标缺失、重复声明、错用他项 cluster 时必须拒绝，而不是扫描场景猜一个图标。
+    var unavailable = RuntimePinnedListColorBlocks.TryCreate(button, button.image, new object(), recipe.Text.Visual, out _);
+    AssertTrue(unavailable == null, "未知 cluster 被接受");
+    var different = new UIButtonSimpleProbe(baseline);
+    different.Cluster.Bind(recipe);
+    unavailable = RuntimePinnedListColorBlocks.TryCreate(button, button.image, different.Cluster, recipe.Text.Visual, out _);
+    AssertTrue(unavailable == null, "其他按钮的 cluster 被误用");
+    icon.sprite = new Sprite();
+    unavailable = RuntimePinnedListColorBlocks.TryCreate(button, button.image, button.Cluster, recipe.Text.Visual, out _);
+    AssertTrue(unavailable == null, "不匹配当前物品的 sprite 被误用");
+    icon.sprite = recipe.Text.Visual;
+    var duplicated = new DuplicateClusterProbe(button.gameObject, icon.transform);
+    unavailable = RuntimePinnedListColorBlocks.TryCreate(button, button.image, duplicated, recipe.Text.Visual, out _);
+    AssertTrue(unavailable == null, "多个匹配图标的歧义被忽略");
+}
+
+/// <summary>
+/// 直接执行正式背景回调，覆盖共享 VertexHelper 的空输入、无关 Image、线程屏障和坏网格回退。
+/// 这里只确认声明的托管边界，不将反射回调调用记作真实 Harmony/IL2CPP 注入通过。
+/// </summary>
+static void VerifyNativeMeshCallbackGuards()
+{
+    AssertEqual(9, (int)typeof(RuntimePinnedListHighlightService)
+        .GetField("ExpectedHookCount", BindingFlags.NonPublic | BindingFlags.Static)!.GetRawConstantValue()!,
+        "列表 hook 声明未包含原背景网格入口");
+    var callback = typeof(RuntimePinnedListHighlightService).GetMethod("AfterNativeBackgroundMesh", BindingFlags.NonPublic | BindingFlags.Static)!;
+    AssertTrue(callback.ReturnType == typeof(void) && callback.GetParameters().All(value => value.ParameterType == typeof(object))
+        && callback.GetParameters().Length == 2, "背景回调签名与运行时边界不一致");
+    var baseline = new Color(.4f, .5f, .6f, .3f);
+    var panel = new CookingSelectionPanelProbe();
+    var button = new UIButtonSimpleProbe(baseline);
+    CookingSelectionPanelProbe.RecipeBoundColor = baseline;
+    PublishRareTarget(RuntimeNightBusinessLifecycle.Generation, listPinningEnabled: true, recipeVariantEnabled: false,
+        cookerHighlightEnabled: false, seatHighlightEnabled: false, orderHighlightEnabled: false,
+        recipeId: 77, beverageId: -1, ingredientIds: Array.Empty<int>(), extraIngredientIds: Array.Empty<int>(),
+        cookerTypeId: -1, deskCode: -1, orderTraceId: "", targetRevision: "mesh-guards");
+    panel.OnPanelOpen();
+    try
+    {
+        panel.OnRecipeElementEnabled(new RecipeProbe(77), button.Cluster, button);
+        RuntimePinnedListHighlightService.Tick();
+        var empty = new UnityEngine.UI.VertexHelper();
+        ListColorBlockProbe.Invoke("AfterNativeBackgroundMesh", button.image, empty);
+        AssertEqual(0, empty.m_Positions.Count, "合法空网格产生了额外覆盖物");
+        AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:1", "空网格不应永久撤回当前图像登记");
+        AssertHighlighted(baseline, button.image, "空网格后正常重建未恢复着色");
+
+        var iconColor = button.Cluster.Icon.color;
+        var iconMesh = button.Cluster.Icon.RebuildIfDirty();
+        AssertTrue(iconMesh.m_Colors.All(value => value == UnityEngine.UI.VertexHelper.ToBytes(iconColor)), "全局 Image 钩子错误染色中心物品图标");
+        var unrelated = new UIButtonSimpleProbe(baseline);
+        AssertUnhighlighted(baseline, unrelated.image, "全局 Image 钩子错误染色未登记背景");
+
+        var workerMesh = new UnityEngine.UI.VertexHelper();
+        button.image.OnPopulateMesh(workerMesh);
+        var written = UnityEngine.UI.VertexHelper.WriteThreadIds.Count;
+        RunOnWorkerThread(() => ListColorBlockProbe.Invoke("AfterNativeBackgroundMesh", button.image, workerMesh));
+        AssertEqual(written, UnityEngine.UI.VertexHelper.WriteThreadIds.Count, "后台网格回调越过 Unity 主线程屏障");
+        AssertTrue(workerMesh.m_Colors.All(value => value == UnityEngine.UI.VertexHelper.ToBytes(baseline)), "后台调用污染原生网格");
+
+        var invalid = new UnityEngine.UI.VertexHelper();
+        button.image.OnPopulateMesh(invalid);
+        invalid.m_Uv2S.RemoveAt(0);
+        var beforeColors = invalid.m_Colors.ToArray();
+        ListColorBlockProbe.Invoke("AfterNativeBackgroundMesh", button.image, invalid);
+        AssertTrue(beforeColors.SequenceEqual(invalid.m_Colors) && invalid.m_Positions.Count == 4 && invalid.m_Indices.Count == 6,
+            "通道不完整时先破坏了原生网格再失败");
+        AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "失败网格绑定没有撤回");
+    }
+    finally
+    {
+        panel.OnPanelClose();
+        RuntimeUiPinningService.UpdateTargets(RuntimeNightBusinessLifecycle.Generation, Array.Empty<RuntimeUiTargetSnapshot>());
+        CookingSelectionPanelProbe.RecipeBoundColor = new Color(.8f, .8f, .8f, .5f);
+    }
+}
+
+/// <summary>
+/// 在正式 AddVert 写入边界注入重入/复核异常，确认 Service 保护的是正在提交的同一网格，
+/// 而非仅在下一帧清理登记。不会以提前抛错代替写入完成后的失败路径。
+/// </summary>
+static void VerifyNativeMeshExceptionalWrites()
+{
+    var baseline = new Color(.5f, .6f, .7f, .4f);
+    var panel = new CookingSelectionPanelProbe();
+    var recipe = new RecipeProbe(78);
+    var button = new UIButtonSimpleProbe(baseline);
+    CookingSelectionPanelProbe.RecipeBoundColor = baseline;
+    PublishRareTarget(RuntimeNightBusinessLifecycle.Generation, listPinningEnabled: true, recipeVariantEnabled: true,
+        cookerHighlightEnabled: false, seatHighlightEnabled: false, orderHighlightEnabled: false,
+        recipeId: 78, beverageId: -1, ingredientIds: new[] { 13 }, extraIngredientIds: new[] { 13 },
+        cookerTypeId: 3, deskCode: -1, orderTraceId: "", targetRevision: "mesh-exceptional-writes");
+    panel.OnPanelOpen();
+    try
+    {
+        RuntimeTargetRecipeVariantService.BindRecipeRow(panel, recipe, button, RuntimeUiTargetKinds.Rare, "mesh-exact-row");
+        panel.OnRecipeElementEnabled(recipe, button.Cluster, button);
+        RuntimePinnedListHighlightService.Tick();
+        var beforeErrors = ReadListHighlightCounter("visualErrors");
+        var nestedCalls = 0;
+        UnityEngine.UI.VertexHelper.NextWriteAction = () =>
+        {
+            nestedCalls++;
+            // 此时共享网格只有一个顶点，嵌套读取会判为坏网格；正式重入屏障必须直接返回。
+            ListColorBlockProbe.Invoke("AfterNativeBackgroundMesh", button.image, button.image.Mesh);
+        };
+        button.image.RebuildIfDirty();
+        AssertEqual(1, nestedCalls, "没有在实际网格写入期间触发嵌套回调");
+        AssertEqual(beforeErrors, ReadListHighlightCounter("visualErrors"), "嵌套网格回调误撤回外层有效登记");
+        AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:1", "嵌套回调清理了有效行绑定");
+        AssertNativeBands(button.image.Mesh, baseline, RuntimeUiTargetKinds.Rare,
+            RuntimeUiPinningService.ReadTargetSet().Palette, "重入后外层网格没有正常完成");
+
+        var wroteVertex = false;
+        var failedChecks = 0;
+        RuntimeTargetRecipeVariantService.BeforeRowValidation = () =>
+        {
+            if (!wroteVertex) return;
+            failedChecks++;
+            throw new InvalidOperationException("隔离测试：正式网格写入后精确行租约读取失败。");
+        };
+        UnityEngine.UI.VertexHelper.NextWriteAction = () => wroteVertex = true;
+        button.image.SetVerticesDirty();
+        button.image.RebuildIfDirty();
+        AssertTrue(wroteVertex && failedChecks == 1, "没有到达正式写入后的精确租约异常路径");
+        AssertEqual(4, button.image.Mesh.currentVertCount, "写后异常没有同步恢复原顶点结构");
+        AssertEqual(6, button.image.Mesh.currentIndexCount, "写后异常没有同步恢复原索引结构");
+        AssertTrue(button.image.Mesh.m_Colors.All(value => value == UnityEngine.UI.VertexHelper.ToBytes(baseline)),
+            "写后复核抛错仍让旧颜色进入本帧 Canvas 提交");
+        AssertContains(RuntimePinnedListHighlightService.Status, "tracked=recipe:0", "写后异常没有撤销失败行租约");
+        AssertEqual(beforeErrors + 1, ReadListHighlightCounter("visualErrors"), "写后异常未准确记录一次视觉失败");
+
+        RuntimeTargetRecipeVariantService.BeforeRowValidation = null;
+        RuntimeTargetRecipeVariantService.BindRecipeRow(panel, recipe, button, RuntimeUiTargetKinds.Rare, "mesh-exact-row-recovered");
+        panel.OnRecipeElementEnabled(recipe, button.Cluster, button);
+        RuntimePinnedListHighlightService.Tick();
+        AssertHighlighted(baseline, button.image, "异常后重入屏障没有释放，阻止后续正常网格恢复");
+    }
+    finally
+    {
+        RuntimeTargetRecipeVariantService.BeforeRowValidation = null;
+        UnityEngine.UI.VertexHelper.NextWriteAction = null;
+        panel.OnPanelClose();
+        RuntimeUiPinningService.UpdateTargets(RuntimeNightBusinessLifecycle.Generation, Array.Empty<RuntimeUiTargetSnapshot>());
+        CookingSelectionPanelProbe.RecipeBoundColor = new Color(.8f, .8f, .8f, .5f);
+    }
+}
+
+static void AssertHighlighted(Color original, UiImageProbe image, string message)
+{
+    AssertColor(original, image.get_color(), message + " 原生图像颜色不应变化。");
+    var mesh = image.RebuildIfDirty();
+    AssertTrue(mesh.m_Colors.Any(value => value != UnityEngine.UI.VertexHelper.ToBytes(original)), message + " 原背景网格没有着色。");
+}
+
+static void AssertUnhighlighted(Color original, UiImageProbe image, string message)
+{
+    AssertColor(original, image.get_color(), message + " 原生图像颜色不应变化。");
+    var mesh = image.RebuildIfDirty();
+    AssertTrue(mesh.m_Colors.All(value => value == UnityEngine.UI.VertexHelper.ToBytes(original)), message + " 旧背景色带未清理。");
+}
+
+static void AssertColorBlocks(Color original, UiImageProbe image, RuntimeUiTargetKinds claims,
+    RuntimeTargetHighlightPalette palette, string message)
+{
+    AssertColor(original, image.get_color(), message + " 原生图像颜色不应变化。");
+    AssertNativeBands(image.RebuildIfDirty(), original, claims, palette, message);
+}
+
+static Color32 TintedVertexColor(Color baseline, RuntimeTargetHighlightColor tint)
+{
+    var original = UnityEngine.UI.VertexHelper.ToBytes(baseline);
+    var color = tint.ToUnityColor();
+    return new Color32((byte)MathF.Round(original.r * color.r), (byte)MathF.Round(original.g * color.g),
+        (byte)MathF.Round(original.b * color.b), original.a);
+}
+
+/// <summary>检查原生背景三角形着色，禁止用仅检查私有对象存在来替代真实网格输出。</summary>
+static void AssertNativeBands(UnityEngine.UI.VertexHelper mesh, Color baseline, RuntimeUiTargetKinds claims,
+    RuntimeTargetHighlightPalette palette, string message)
+{
+    var colors = Enumerable.Range(0, 8).Where(slot => ((int)claims & (1 << slot)) != 0)
+        .Select(slot => palette[slot]).Distinct().Select(color => TintedVertexColor(baseline, color)).ToArray();
+    AssertEqual(colors.Length, mesh.m_Colors.Distinct().Count(), message + " 原背景没有完整分色。");
+    AssertTrue(colors.All(color => mesh.m_Colors.Contains(color)), message + " 某一订单颜色未进入原背景。");
+    var left = mesh.m_Indices.Min(index => mesh.m_Positions[index].x);
+    var right = mesh.m_Indices.Max(index => mesh.m_Positions[index].x);
+    for (var index = 0; index < mesh.m_Indices.Count; index += 3)
+    {
+        var a = mesh.m_Indices[index]; var b = mesh.m_Indices[index + 1]; var c = mesh.m_Indices[index + 2];
+        AssertEqual(mesh.m_Colors[a], mesh.m_Colors[b], message + " 三角形跨颜色导致渐变。");
+        AssertEqual(mesh.m_Colors[a], mesh.m_Colors[c], message + " 三角形跨颜色导致渐变。");
+        // 直接回调中的料理、追加食材和酒水均以实际 X 坐标验色，覆盖每次目标刷新与精确配方绑定。
+        var center = (mesh.m_Positions[a].x + mesh.m_Positions[b].x + mesh.m_Positions[c].x) / 3;
+        var band = Math.Clamp((int)((center - left) / (right - left) * colors.Length), 0, colors.Length - 1);
+        AssertEqual(colors[band], mesh.m_Colors[a], message + " 原背景颜色没有按从左到右的顺序显示。");
+    }
 }
 
 static void AssertColor(Color expected, Color actual, string message)
@@ -3649,6 +4075,7 @@ static void AssertColor(Color expected, Color actual, string message)
 
 static void AssertEqualWithin(float expected, float actual, string message)
 {
+    ListColorBlockProbe.Assertions++;
     if (Math.Abs(expected - actual) > 0.001f)
     {
         throw new InvalidOperationException($"{message} Expected '{expected}', actual '{actual}'.");
@@ -3657,6 +4084,7 @@ static void AssertEqualWithin(float expected, float actual, string message)
 
 static void AssertContains(string actual, string expected, string message)
 {
+    ListColorBlockProbe.Assertions++;
     if (!actual.Contains(expected, StringComparison.Ordinal))
     {
         throw new InvalidOperationException($"{message} Expected fragment '{expected}', actual '{actual}'.");
@@ -3665,6 +4093,7 @@ static void AssertContains(string actual, string expected, string message)
 
 static void AssertSequenceEqual<T>(IEnumerable<T> expected, IEnumerable<T> actual, string message)
 {
+    ListColorBlockProbe.Assertions++;
     if (!expected.SequenceEqual(actual))
     {
         throw new InvalidOperationException(
@@ -3674,11 +4103,13 @@ static void AssertSequenceEqual<T>(IEnumerable<T> expected, IEnumerable<T> actua
 
 static void AssertTrue(bool actual, string message)
 {
+    ListColorBlockProbe.Assertions++;
     if (!actual) throw new InvalidOperationException(message);
 }
 
 static void AssertFalse(bool actual, string message)
 {
+    ListColorBlockProbe.Assertions++;
     if (actual) throw new InvalidOperationException(message);
 }
 
@@ -3699,6 +4130,7 @@ static void AssertThrows<TException>(Action action, string message)
 
 static void AssertEqual<T>(T expected, T actual, string message)
 {
+    ListColorBlockProbe.Assertions++;
     if (!EqualityComparer<T>.Default.Equals(expected, actual))
     {
         throw new InvalidOperationException($"{message} Expected '{expected}', actual '{actual}'.");

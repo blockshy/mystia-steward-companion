@@ -219,6 +219,9 @@ internal static class RuntimeNightBusinessLifecycle
             return;
         }
 
+        // 在原生经营终止边界内清理同一轮次的调度授权，不能让下一轮读取追认旧订单。
+        RunBoundaryAction("end rare participation", () => RuntimeRareGuestParticipationState.EndBusinessIfCurrent(snapshot.Generation));
+
         if (snapshot.Phase == NightBusinessLifecyclePhase.Closing)
         {
             RunBoundaryAction("suspend cooker highlight", () => RuntimeCookerHighlightService.Suspend(reason));

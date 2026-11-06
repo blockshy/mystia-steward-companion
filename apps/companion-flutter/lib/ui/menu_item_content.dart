@@ -34,6 +34,9 @@ class MenuItemView {
     required this.name,
     this.entityId,
     this.cookerId,
+    this.productionRecipeName,
+    this.productionRecipeId,
+    this.preparedSupply = false,
     this.cooker,
     this.ingredients,
     this.extras,
@@ -55,6 +58,11 @@ class MenuItemView {
 
   /// 厨具只使用配方依赖中的 cookerType，不使用摆放位置或升级厨具实体编号。
   final int? cookerId;
+
+  /// 特殊成品独立于普通配方：仅显示服务端明确提供的实际基底，不把特殊 Food ID 当 Recipe ID。
+  final String? productionRecipeName;
+  final int? productionRecipeId;
+  final bool preparedSupply;
   final String? cooker;
   final List<MenuIngredientView>? ingredients;
   final List<MenuIngredientView>? extras;
@@ -110,6 +118,8 @@ class MenuItemContent extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (showName) MenuItemName(item),
+          if (item.productionRecipeName != null || item.preparedSupply)
+            MenuProductionInfo(item),
           if (item.stock != null || item.facts.isNotEmpty)
             // 与厨具、配方和加料共用前缀与换行规则；“指标”同时涵盖价格、库存和匹配数。
             MenuInfoGroup('指标', [
@@ -148,7 +158,7 @@ class MenuItemContent extends StatelessWidget {
                   ),
               ]),
             ),
-          if (item.kind == MenuItemKind.food) ...[
+          if (item.kind == MenuItemKind.food && !item.preparedSupply) ...[
             MenuInfoGroup('厨具', [
               OrderTag(
                 item.cooker ?? '厨具未知',
@@ -259,6 +269,31 @@ bool _sameTags(List<String> left, List<String> right) =>
     left.length == right.length &&
     Iterable<int>.generate(left.length)
         .every((index) => left[index] == right[index]);
+
+/// 普通经营、专注共用任务特殊成品说明，基底图片仍使用其精确 Food ID。
+class MenuProductionInfo extends StatelessWidget {
+  const MenuProductionInfo(this.item, {super.key});
+  final MenuItemView item;
+  @override
+  Widget build(BuildContext context) => item.preparedSupply
+      ? const MenuInfoGroup('供给', [
+          OrderTag('保温箱成品', kind: OrderTagKind.success),
+        ])
+      : item.productionRecipeName == null
+      ? const SizedBox.shrink()
+      : MenuInfoGroup('制作', [
+          const OrderTag('任务成品', kind: OrderTagKind.warning),
+          OrderTag(
+            '基底 · ${item.productionRecipeName}',
+            kind: OrderTagKind.recipe,
+            leading: EntityImage(
+              kind: EntityImageKind.food,
+              id: item.productionRecipeId,
+              fallback: FLucideIcons.utensils,
+            ),
+          ),
+        ]);
+}
 
 /// 名称与图标在外层和增量详情中共用同一行。图标按真实字体首行居中，长名称
 /// 换行时不会把图标居中到整段高度，也不靠固定top偏移补偿字号。

@@ -9,21 +9,51 @@ import 'package:mystia_steward_companion/features/service_order_highlight.dart';
 import 'support/fixture_model.dart';
 
 void main() {
-  test('订单通道复用共享高亮色，缺失及非法值回到同一默认色', () {
+  test('订单颜色匹配完整身份；辅助关闭保留颜色，旧代次和同桌新单不能借色', () {
     final model = FixtureModel();
     addTearDown(model.dispose);
-    model.profile = {
-      'rareTargetHighlightColor': '#123aBC',
-      'normalTargetHighlightColor': '#DEF456',
+    model.snapshot['nightBusinessGeneration'] = 7;
+    model.profile = {...model.profile, 'gameUiEnabled': false};
+    const order = {
+      'traceId': 'R-1',
+      'orderLifecycleSequence': 10,
+      'deskCode': 1,
     };
-    expect(serviceOrderHighlight(model, rare: true), const Color(0xff123abc));
-    expect(serviceOrderHighlight(model, rare: false), const Color(0xffdef456));
-    model.profile = {
-      'rareTargetHighlightColor': '无效',
-      'normalTargetHighlightColor': '#00000000',
+    model.business['gameUiTargets'] = {
+      'orderColors': [
+        {
+          'kind': 'rare',
+          'traceId': 'R-1',
+          'orderLifecycleSequence': 10,
+          'businessGeneration': 7,
+          'color': '#123ABC',
+        },
+        {
+          'kind': 'rare',
+          'traceId': 'R-2',
+          'orderLifecycleSequence': 11,
+          'businessGeneration': 7,
+          'color': '#DEF456',
+        },
+      ],
     };
-    expect(serviceOrderHighlight(model, rare: true), const Color(0xffffdb2e));
-    expect(serviceOrderHighlight(model, rare: false), const Color(0xff5facd3));
+    expect(
+      serviceOrderHighlight(model, rare: true, order: order),
+      const Color(0xff123abc),
+    );
+    expect(
+      serviceOrderHighlight(
+        model,
+        rare: true,
+        order: {...order, 'orderLifecycleSequence': 12},
+      ),
+      const Color(0xff929aa6),
+    );
+    model.snapshot['nightBusinessGeneration'] = 8;
+    expect(
+      serviceOrderHighlight(model, rare: true, order: order),
+      const Color(0xff929aa6),
+    );
   });
 
   for (final dark in [false, true]) {

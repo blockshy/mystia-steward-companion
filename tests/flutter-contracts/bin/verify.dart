@@ -54,12 +54,133 @@ Future<void> main(List<String> args) async {
   stdout.writeln('PASS: $checks 个协议/传输/状态断言。游戏运行证据=false。');
 }
 
+/// 迁移前 v4 的真实九项定义。夹具显式保留已移除的厨具权重，不能把新版八项
+/// 配置简单改成旧版本号，否则无法检验历史字段全集与固定预设约束。
+JsonMap legacySortFixture(String preset) {
+  const keys = [
+    'foodPreference',
+    'beveragePreference',
+    'negativeRisk',
+    'extraCount',
+    'resourcePressure',
+    'totalCost',
+    'profit',
+    'beverageStock',
+    'cookerAvailable',
+  ];
+  const weights = {
+    'balanced': [70, 60, 90, 45, 55, 30, 35, 35, 60],
+    'resources': [55, 45, 90, 65, 100, 70, 20, 80, 60],
+    'profit': [60, 50, 85, 25, 35, 25, 100, 25, 50],
+    'simple': [50, 45, 90, 100, 45, 45, 25, 40, 70],
+  };
+  return {
+    'preset': preset,
+    'objectives': [
+      for (var index = 0; index < keys.length; index++)
+        {
+          'key': keys[index],
+          'enabled': true,
+          'weight': weights[preset]![index],
+          'direction':
+              {
+                'negativeRisk',
+                'extraCount',
+                'resourcePressure',
+                'totalCost',
+              }.contains(keys[index])
+              ? 'asc'
+              : 'desc',
+        },
+    ],
+  };
+}
+
+JsonMap legacyProfileFixture(int version, {JsonMap? sort}) {
+  final profile = Map<String, Object?>.of(CompanionProfile.defaults().json)
+    ..removeWhere(
+      (key, _) =>
+          (CompanionProfile.gameUiKindFields.contains(key) ||
+          CompanionProfile.autoResumeDefaults.containsKey(key)),
+    )
+    ..remove('rareOrderHighlightPalette')
+    ..remove('normalOrderHighlightPalette')
+    ..remove('rareHighlightOrderCount')
+    ..remove('normalHighlightOrderCount')
+    ..remove('rareGuestParticipationModuleEnabled')
+    ..remove('managedRareGuestIds')
+    ..['rareTargetHighlightColor'] = '#FFDB2E'
+    ..['normalTargetHighlightColor'] = '#5FACD3'
+    ..['recommendationSortProfile'] = sort ?? legacySortFixture('balanced');
+  if (version == 1) profile.remove('gameUiEnabled');
+  if (version < 3) profile['serviceOrderSortMode'] = 'ordered';
+  return profile;
+}
+
 void validateModels() {
   final profile = CompanionProfile.defaults();
+  // v9共享名单保持启用，但新规则必须由用户明确开启；不能因新增能力接管旧暂停单。
+  final v9 = Map<String, Object?>.of(profile.json)
+    ..removeWhere(
+      (key, _) => CompanionProfile.autoResumeDefaults.containsKey(key),
+    )
+    ..['rareGuestParticipationModuleEnabled'] = true
+    ..['managedRareGuestIds'] = [30, 36]
+    ..['rareGameUiEnabled'] = false;
+  final originalV9 = canonicalJson(v9);
+  final migratedV9 = CompanionProfile.fromCheckpoint(v9, 9);
+  check(canonicalJson(v9) == originalV9, 'v9迁移不能原地改写checkpoint。');
+  check(
+    canonicalJson(migratedV9.json) ==
+        canonicalJson({...v9, ...CompanionProfile.autoResumeDefaults}),
+    'v9必须保留完整名单与辅助偏好，仅补默认关闭的等待条规则。',
+  );
+  for (final position in ['front', 'tail']) {
+    for (final threshold in [1, 30, 100]) {
+      final enabled = profile.copyWith({
+        'rareGuestParticipationAutoResumeEnabled': true,
+        'rareGuestParticipationAutoResumeThresholdPercent': threshold,
+        'rareGuestParticipationAutoResumePosition': position,
+      });
+      check(
+        enabled.flag('rareGuestParticipationAutoResumeEnabled') &&
+            enabled.json['rareGuestParticipationAutoResumeThresholdPercent'] ==
+                threshold &&
+            enabled.json['rareGuestParticipationAutoResumePosition'] ==
+                position,
+        '自动启用合法边界或队列位置未保留。',
+      );
+    }
+  }
+  for (final bad in <Object?>[null, 'true', 1]) {
+    expectFormat(
+      () => profile.copyWith({'rareGuestParticipationAutoResumeEnabled': bad}),
+    );
+  }
+  for (final bad in <Object?>[null, '30', 0, 101, 30.5]) {
+    expectFormat(
+      () => profile.copyWith({
+        'rareGuestParticipationAutoResumeThresholdPercent': bad,
+      }),
+    );
+  }
+  for (final bad in <Object?>[null, 'middle', 0]) {
+    expectFormat(
+      () => profile.copyWith({'rareGuestParticipationAutoResumePosition': bad}),
+    );
+  }
+  for (final field in CompanionProfile.autoResumeDefaults.keys) {
+    expectFormat(
+      () => CompanionProfile.fromCheckpoint({
+        ...v9,
+        field: profile.json[field],
+      }, 9),
+    );
+    expectFormat(() => CompanionProfile(Map.of(profile.json)..remove(field)));
+  }
+  expectFormat(() => CompanionProfile(v9));
   // v1/v2 都明确删除订单排序，不能把损坏记录补成合法默认配置。
-  final legacy = Map<String, Object?>.of(profile.json)
-    ..remove('gameUiEnabled')
-    ..['serviceOrderSortMode'] = 'guest';
+  final legacy = legacyProfileFixture(1)..['serviceOrderSortMode'] = 'guest';
   check(
     !CompanionProfile.fromCheckpoint(legacy, null).flag('gameUiEnabled'),
     '旧版全部分项关闭时总开关必须关闭。',
@@ -79,7 +200,8 @@ void validateModels() {
   }
   check(
     !CompanionProfile.fromCheckpoint({
-      ...profile.copyWith({'rareSeatHighlightEnabled': true}).json,
+      ...legacyProfileFixture(2),
+      'rareSeatHighlightEnabled': true,
       'serviceOrderSortMode': 'guest',
     }, 2).flag('gameUiEnabled'),
     '新配置显式关闭总开关时不得用分项反向开启。',
@@ -87,7 +209,7 @@ void validateModels() {
   for (final version in [1, 2]) {
     for (final mode in ['ordered', 'guest']) {
       final source = <String, Object?>{
-        ...profile.json,
+        ...legacyProfileFixture(version),
         'serviceOrderSortMode': mode,
       };
       if (version == 1) source.remove('gameUiEnabled');
@@ -96,8 +218,13 @@ void validateModels() {
       check(
         !migrated.json.containsKey('serviceOrderSortMode') &&
             canonicalJson(source) == before &&
-            canonicalJson(migrated.json) == canonicalJson(profile.json),
-        'schema $version / $mode 仅删除旧排序且不修改源 checkpoint。',
+            canonicalJson(migrated.json) ==
+                canonicalJson({
+                  ...profile.json,
+                  'rareOrderHighlightPalette': ['#FFDB2E', '#F08C78'],
+                  'normalOrderHighlightPalette': ['#5FACD3', '#97C878'],
+                }),
+        'schema $version / $mode 删除旧排序并保留历史补色规则，不修改源 checkpoint。',
       );
     }
   }
@@ -107,7 +234,7 @@ void validateModels() {
   );
   expectFormat(
     () => CompanionProfile.fromCheckpoint({
-      ...profile.json,
+      ...legacyProfileFixture(2),
       'serviceOrderSortMode': 'unknown',
     }, 2),
   );
@@ -182,7 +309,7 @@ void validateModels() {
     check(
       jsonMap(
             CompanionProfile.fromCheckpoint(
-              profile.copyWith({'recommendationSortProfile': fixed}).json,
+              legacyProfileFixture(3, sort: legacySortFixture(preset)),
               3,
             ).json['recommendationSortProfile'],
           )['preset'] ==
@@ -190,8 +317,8 @@ void validateModels() {
       '旧版精确 $preset 预设应保留。',
     );
   }
-  for (final version in [1, 2, 3]) {
-    final fixed = CompanionProfile.sortPreset('balanced');
+  for (final version in [1, 2, 3, 4]) {
+    final fixed = legacySortFixture('balanced');
     final objectives = jsonObjects(fixed['objectives']);
     // 同时保留禁用、反向和非预设权重，并反转列表，验证迁移不重排旧目标。
     final changed = [
@@ -199,9 +326,12 @@ void validateModels() {
       ...objectives.skip(1),
     ].reversed.toList();
     final source = <String, Object?>{
-      ...profile.json,
-      if (version < 3) 'serviceOrderSortMode': 'guest',
-      'recommendationSortProfile': {...fixed, 'objectives': changed},
+      ...legacyProfileFixture(version),
+      'recommendationSortProfile': {
+        ...fixed,
+        'preset': version == 4 ? 'custom' : 'balanced',
+        'objectives': changed,
+      },
     };
     if (version == 1) source.remove('gameUiEnabled');
     final before = canonicalJson(source);
@@ -209,16 +339,353 @@ void validateModels() {
     final sort = jsonMap(migrated.json['recommendationSortProfile']);
     check(sort['preset'] == 'custom', '旧 schema $version 调过参数必须明确迁移成 custom。');
     check(
-      canonicalJson(sort['objectives']) == canonicalJson(changed),
+      canonicalJson(sort['objectives']) ==
+          canonicalJson(
+            changed.where((row) => row['key'] != 'cookerAvailable').toList(),
+          ),
       '旧 schema $version 迁移改变了目标参数/顺序。',
     );
     check(canonicalJson(source) == before, '迁移不得改写原 checkpoint。');
-    expectFormat(
-      () => CompanionProfile.fromCheckpoint({
-        ...source,
-        'recommendationSortProfile': {...fixed, 'preset': 'custom'},
-      }, version),
+    if (version < 4)
+      expectFormat(
+        () => CompanionProfile.fromCheckpoint({
+          ...source,
+          'recommendationSortProfile': {...fixed, 'preset': 'custom'},
+        }, version),
+      );
+  }
+  for (final preset in ['balanced', 'resources', 'profit', 'simple']) {
+    final oldSort = legacySortFixture(preset);
+    final oldProfile = legacyProfileFixture(4, sort: oldSort);
+    final migrated = CompanionProfile.fromCheckpoint(oldProfile, 4);
+    check(
+      canonicalJson(migrated.json['recommendationSortProfile']) ==
+          canonicalJson(CompanionProfile.sortPreset(preset)),
+      'v4 $preset 应精确迁移为八项固定预设。',
     );
+    for (final patch in <JsonMap>[
+      {'weight': 1},
+      {'enabled': false},
+      {'direction': 'asc'},
+    ]) {
+      for (final target in [0, 8]) {
+        final broken = jsonObjects(oldSort['objectives']).toList();
+        broken[target] = {...broken[target], ...patch};
+        expectFormat(
+          () => CompanionProfile.fromCheckpoint({
+            ...oldProfile,
+            'recommendationSortProfile': {...oldSort, 'objectives': broken},
+          }, 4),
+        );
+      }
+    }
+  }
+  for (final version in [1, 2, 3, 4]) {
+    final sameColor = CompanionProfile.fromCheckpoint({
+      ...legacyProfileFixture(version),
+      'rareTargetHighlightColor': '#12ABEF',
+      'normalTargetHighlightColor': '#12ABEF',
+    }, version);
+    for (final field in CompanionProfile.paletteFields) {
+      final palette = sameColor.json[field]! as List<Object?>;
+      check(
+        palette.length == 2 &&
+            palette.toSet().length == 2 &&
+            palette.first == '#12ABEF' &&
+            palette.last == (field.startsWith('rare') ? '#FFDB2E' : '#5FACD3'),
+        'schema $version 历史单色应保留在所属类别，并沿用旧补色规则，不能使用新默认。',
+      );
+    }
+    check(
+      !sameColor.json.containsKey('rareHighlightOrderCount') &&
+          !sameColor.json.containsKey('normalHighlightOrderCount') &&
+          !sameColor.flag('rareGuestParticipationModuleEnabled') &&
+          (sameColor.json['managedRareGuestIds']! as List).isEmpty,
+      'schema $version 新增模块不得隐式暂停客人，颜色数量是唯一辅助上限。',
+    );
+  }
+  for (final palette in [
+    <String>[],
+    List.filled(2, '#FFDB2E'),
+    ['#112233', '#223344', '#334455', '#445566'],
+    ['#FFDB2E', '#abcdef'],
+  ]) {
+    for (final field in CompanionProfile.paletteFields) {
+      expectFormat(() => profile.copyWith({field: palette}));
+    }
+  }
+  // v5 公共八色只通过历史入口迁移；移除旧数量字段，保留两类配色与原有调度。
+  const oldColors = [
+    '#112233',
+    '#223344',
+    '#334455',
+    '#445566',
+    '#556677',
+    '#667788',
+    '#778899',
+    '#8899AA',
+  ];
+  final v5 =
+      <String, Object?>{
+          ...profile.json,
+          'orderHighlightPalette': oldColors,
+          'rareGuestParticipationModuleEnabled': true,
+          'managedRareGuestIds': [7, 8],
+          'rareHighlightOrderCount': 3,
+          'normalHighlightOrderCount': 6,
+        }
+        ..removeWhere(
+          (key, _) =>
+              (CompanionProfile.gameUiKindFields.contains(key) ||
+              CompanionProfile.autoResumeDefaults.containsKey(key)),
+        )
+        ..remove('rareOrderHighlightPalette')
+        ..remove('normalOrderHighlightPalette');
+  final originalV5 = canonicalJson(v5);
+  final migratedV5 = CompanionProfile.fromCheckpoint(v5, 5);
+  for (final field in CompanionProfile.paletteFields) {
+    check(
+      canonicalJson(migratedV5.json[field]) ==
+          canonicalJson(oldColors.take(3).toList()),
+      'v5 未保留前三色顺序。',
+    );
+  }
+  check(canonicalJson(v5) == originalV5, '迁移修改了输入 checkpoint。');
+  check(
+    migratedV5.flag('rareGuestParticipationModuleEnabled') &&
+        !migratedV5.json.containsKey('rareHighlightOrderCount') &&
+        !migratedV5.json.containsKey('normalHighlightOrderCount') &&
+        canonicalJson(migratedV5.json['managedRareGuestIds']) == '[7,8]',
+    'v5 迁移重置了既有偏好。',
+  );
+  expectFormat(() => CompanionProfile(v5));
+  final v6 =
+      <String, Object?>{
+        ...migratedV5.json,
+        'rareHighlightOrderCount': 1,
+        'normalHighlightOrderCount': 8,
+        'rareOrderHighlightPalette': ['#123456', '#234567'],
+        'normalOrderHighlightPalette': ['#ABCDEF'],
+      }..removeWhere(
+        (key, _) =>
+            (CompanionProfile.gameUiKindFields.contains(key) ||
+            CompanionProfile.autoResumeDefaults.containsKey(key)),
+      );
+  final originalV6 = canonicalJson(v6);
+  final migratedV6 = CompanionProfile.fromCheckpoint(v6, 6);
+  check(canonicalJson(v6) == originalV6, 'v6 迁移不应修改原输入。');
+  check(
+    canonicalJson(migratedV6.json) ==
+        canonicalJson(
+          Map<String, Object?>.of(v6)
+            ..remove('rareHighlightOrderCount')
+            ..remove('normalHighlightOrderCount')
+            ..addAll({
+              ...CompanionProfile.autoResumeDefaults,
+              for (final field in CompanionProfile.gameUiKindFields)
+                field: true,
+            }),
+        ),
+    'v6 迁移删除独立数量并补分类开关，不得缩减颜色或重置其他偏好。',
+  );
+  expectFormat(() => CompanionProfile(v6));
+  for (final version in [5, 6]) {
+    final old = version == 5 ? v5 : v6;
+    for (final field in CompanionProfile.legacyHighlightCountFields) {
+      for (final invalid in <Object?>[null, '2', 0, 9, 2.5]) {
+        expectFormat(
+          () => CompanionProfile.fromCheckpoint({
+            ...old,
+            field: invalid,
+          }, version),
+        );
+      }
+      final missing = Map<String, Object?>.of(old)..remove(field);
+      expectFormat(() => CompanionProfile.fromCheckpoint(missing, version));
+    }
+  }
+  expectFormat(
+    () => CompanionProfile.fromCheckpoint({
+      ...v5,
+      'orderHighlightPalette': oldColors.take(4).toList(),
+    }, 5),
+  );
+  expectFormat(
+    () => CompanionProfile.fromCheckpoint({
+      ...v5,
+      'orderHighlightPalette': List.filled(8, '#112233'),
+    }, 5),
+  );
+  final changedNormal = migratedV5.copyWith({
+    'normalOrderHighlightPalette': ['#FFFFFF'],
+  });
+  check(
+    canonicalJson(changedNormal.json['rareOrderHighlightPalette']) ==
+        canonicalJson(oldColors.take(3).toList()),
+    '编辑普客调色板污染稀客。',
+  );
+  const expectedDefaults = {
+    'rareOrderHighlightPalette': ['#F2CA5C', '#EF856D'],
+    'normalOrderHighlightPalette': ['#5AA9E6', '#57C7B6'],
+  };
+  for (final field in CompanionProfile.paletteFields) {
+    check(
+      canonicalJson(profile.json[field]) ==
+          canonicalJson(expectedDefaults[field]),
+      '新配置默认两色和顺序必须明确，不能混用另一类颜色。',
+    );
+    check(
+      (profile.copyWith({field: oldColors.take(3).toList()}).json[field]!
+                  as List)
+              .length ==
+          3,
+      '三种颜色上限不应被拒绝。',
+    );
+  }
+  // 当前 schema 无迁移；再次读取有效自定义配色应逐项保留，不能用新版默认补齐或替换。
+  final savedCurrent = profile.copyWith({
+    'rareOrderHighlightPalette': ['#FFDB2E', '#F08C78'],
+    'normalOrderHighlightPalette': ['#5FACD3'],
+  });
+  check(
+    canonicalJson(
+          CompanionProfile.fromCheckpoint(
+            savedCurrent.json,
+            CompanionProfile.schemaVersion,
+          ).json,
+        ) ==
+        canonicalJson(savedCurrent.json),
+    '当前已保存配色被新默认改写。',
+  );
+  // v7旧默认的整套及缩减前缀换同数量冷暖色；任意自定义值保持前三项。
+  const previousDefaults = {
+    'rare': ['#BA9CE8', '#FFFFFF', '#000000', '#F08C78'],
+    'normal': ['#FFDB2E', '#5FACD3', '#F97373', '#7CCB8A'],
+  };
+  for (final count in [1, 2, 3, 4]) {
+    for (final customized in [false, true]) {
+      final source =
+          <String, Object?>{
+            ...profile.json,
+            for (final kind in ['rare', 'normal'])
+              '${kind}OrderHighlightPalette':
+                  (customized ? oldColors : previousDefaults[kind]!)
+                      .take(count)
+                      .toList(),
+          }..removeWhere(
+            (key, _) =>
+                (CompanionProfile.gameUiKindFields.contains(key) ||
+                CompanionProfile.autoResumeDefaults.containsKey(key)),
+          );
+      final original = canonicalJson(source);
+      final next = CompanionProfile.fromCheckpoint(source, 7);
+      for (final kind in ['rare', 'normal']) {
+        check(
+          canonicalJson(next.json['${kind}OrderHighlightPalette']) ==
+              canonicalJson(
+                (customized
+                        ? oldColors
+                        : CompanionProfile.highlightPresets(kind))
+                    .take(count > 3 ? 3 : count)
+                    .toList(),
+              ),
+          'v7迁移必须保持数量和自定义前三色，只替换已知旧默认前缀。',
+        );
+      }
+      check(canonicalJson(source) == original, 'v7迁移修改了原checkpoint。');
+      expectFormat(
+        () => CompanionProfile.fromCheckpoint({
+          ...source,
+          'rareHighlightOrderCount': 2,
+        }, 7),
+      );
+      if (count == 4) {
+        expectFormat(
+          () => CompanionProfile.fromCheckpoint({
+            ...source,
+            'rareOrderHighlightPalette': [
+              '#112233',
+              '#223344',
+              '#334455',
+              '#abcdef',
+            ],
+          }, 7),
+        );
+      }
+    }
+  }
+  // v8 是分类开关加入前的最后版本；只补两个 true，保留全局关闭、各类分项、
+  // 自定义配色以及原始对象。线上构造仍拒绝缺失字段，不能借历史迁移放宽在线协议。
+  final v8 =
+      <String, Object?>{
+        ...savedCurrent.json,
+        'gameUiEnabled': false,
+        'normalSeatHighlightEnabled': true,
+        'rareGameUiPinningEnabled': true,
+      }..removeWhere(
+        (key, _) =>
+            (CompanionProfile.gameUiKindFields.contains(key) ||
+            CompanionProfile.autoResumeDefaults.containsKey(key)),
+      );
+  final v8Before = canonicalJson(v8);
+  final migratedV8 = CompanionProfile.fromCheckpoint(v8, 8);
+  check(canonicalJson(v8) == v8Before, 'v8迁移不得改写原checkpoint。');
+  check(
+    canonicalJson(migratedV8.json) ==
+        canonicalJson({
+          ...v8,
+          ...CompanionProfile.autoResumeDefaults,
+          'normalGameUiEnabled': true,
+          'rareGameUiEnabled': true,
+        }),
+    'v8迁移只补分类总开关，不重置已有辅助配置。',
+  );
+  expectFormat(() => CompanionProfile(v8));
+  for (final field in CompanionProfile.gameUiKindFields) {
+    check(profile.flag(field), '新配置分类开关默认开启，全局仍关闭。');
+    final disabled = migratedV8.copyWith({field: false});
+    check(
+      canonicalJson(
+            CompanionProfile.fromCheckpoint(
+              disabled.json,
+              CompanionProfile.schemaVersion,
+            ).json,
+          ) ==
+          canonicalJson(disabled.json),
+      '当前schema读回必须保留关闭状态。',
+    );
+    expectFormat(
+      () => CompanionProfile.fromCheckpoint({...v8, field: true}, 8),
+    );
+    for (final bad in <Object?>[null, 'true', 1]) {
+      expectFormat(() => profile.copyWith({field: bad}));
+    }
+  }
+  expectFormat(
+    () => CompanionProfile.fromCheckpoint(
+      Map.of(v8)..remove('normalSeatHighlightEnabled'),
+      8,
+    ),
+  );
+  expectFormat(
+    () => CompanionProfile.fromCheckpoint({
+      ...v8,
+      'rareOrderHighlightPalette': ['#112233', '#223344', '#334455', '#445566'],
+    }, 8),
+  );
+  for (final ids in <List<Object?>>[
+    [1, 1],
+    [2, 1],
+    [-1],
+    [1.0],
+    List.generate(513, (index) => index),
+  ]) {
+    expectFormat(() => profile.copyWith({'managedRareGuestIds': ids}));
+  }
+  // 新协议连旧的合法数量也拒绝，防止只隐藏控件却仍可通过在线补丁写入独立上限。
+  for (final count in [0, 1, 2, 4, 8, 9]) {
+    expectFormat(() => profile.copyWith({'rareHighlightOrderCount': count}));
+    expectFormat(() => profile.copyWith({'normalHighlightOrderCount': count}));
   }
   expectFormat(
     () => profile.copyWith({
@@ -1659,6 +2126,29 @@ Future<void> validateRealHost() async {
   );
   final dll = '$root/host/bin/Release/net6.0/FlutterContractsHost.dll';
   if (!File(dll).existsSync()) throw StateError('请先构建真实 HTTP host：$dll');
+  // 生产签名、最后一步参与准入与专注存储/投影纳入完整入口，避免遗漏独立专项。
+  // 均只操作托管夹具和隔离文件，不打开游戏端口、不调用Unity或真实游戏写入。
+  for (final mode in [
+    '--snapshot-signature',
+    '--participation-admission',
+    '--game-focus-overlay',
+    '--rare-order-display',
+    '--order-patience',
+    '--rare-patience-auto-resume',
+    '--cooking-ingredient-wait',
+  ]) {
+    final guard = await Process.run(
+      'C:/Program Files/dotnet/dotnet.exe',
+      [dll, mode],
+      stdoutEncoding: utf8,
+      stderrEncoding: utf8,
+    );
+    check(
+      guard.exitCode == 0,
+      '真实 C# 边界专项失败：$mode\n${guard.stdout}\n${guard.stderr}',
+    );
+    stdout.write(guard.stdout);
+  }
   // 复用同一合成配置串行验证 C# /snapshot 实时排序；此专项仅绑定临时回环端口，
   // 完成后才启动常规宿主，不创建第二份配置或与其争用文件/业务线程。
   final presentation = await Process.run(
@@ -2236,7 +2726,7 @@ const manualWritePaths = [
   '/inventory/bulk-set',
   '/rare-guests/invite',
   '/rare-guests/invite-all',
-  '/orders/rare/dismiss',
+  '/orders/rare/participation',
   '/logs/config',
   '/logs/console',
   '/logs/open-folder',

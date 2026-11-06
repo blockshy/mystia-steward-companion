@@ -23,7 +23,12 @@ try
     VerifyCorruptCustomRecipeIsPreserved(root, log);
     VerifyFutureSchemasArePreserved(root, log);
     VerifyCompanionDeviceAuthority(root, log);
-    foreach (var version in new[] { 1, 2, 3 }) VerifyDeviceAuthorityLegacyMigration(root, log, version);
+    VerifyDefaultAndSavedHighlightPalettes(root, log);
+    foreach (var version in new[] { 1, 2, 3, 4 }) VerifyDeviceAuthorityLegacyMigration(root, log, version);
+    foreach (var version in new[] { 5, 6 }) VerifyIndependentHighlightPalettes(root, log, version);
+    VerifyThreeColorPaletteMigration(root, log);
+    VerifyKindGameUiSwitchMigration(root, log);
+    VerifyPatienceAutoResumeMigration(root, log);
     VerifyScoringModes(root, log);
     VerifyCorruptDeviceAuthorityIsPreserved(root, log);
     Console.WriteLine("PASS: local API file stores and companion device configuration authority passed storage, CAS and corruption checks.");
@@ -38,6 +43,307 @@ finally
 {
     Logger.Sources.Remove(log);
     Directory.Delete(root, recursive: true);
+}
+
+/// <summary>
+/// 新注册使用两类默认两色；已有 schema 10 文件只读重开必须原样保留自定义两色及单色，
+/// 不能因为产品默认更新而补齐、重排、重算修订或要求一次新的同步确认。
+/// </summary>
+static void VerifyDefaultAndSavedHighlightPalettes(string root, ManualLogSource log)
+{
+    var checks = 0;
+    void Check(bool condition, string message)
+    {
+        checks++;
+        if (!condition) throw new InvalidOperationException(message);
+    }
+    Check(CompanionDeviceAuthorityStore.ProfileSchemaVersion == 10, "类别辅助开关必须通过 schema 10 显式迁移。");
+    Check(CompanionDeviceAuthorityStore.DefaultRareHighlightPalette.SequenceEqual(
+        new[] { "#F2CA5C", "#EF856D" }), "稀客默认暖色或顺序错误。");
+    Check(CompanionDeviceAuthorityStore.DefaultNormalHighlightPalette.SequenceEqual(
+        new[] { "#5AA9E6", "#57C7B6" }), "普客默认冷色或顺序错误。");
+    const string id = "77777777-7777-7777-7777-777777777777";
+    var path = Path.Combine(root, "saved-current-palettes.json");
+    var store = new CompanionDeviceAuthorityStore(path, log);
+    var now = DateTime.UtcNow;
+    var state = store.Register(id, "保留已有颜色", RegisterRequest("windows", BuildSharedProfile(false, 2)), now);
+    foreach (var kind in new[] { "rare", "normal" })
+    {
+        var expected = kind == "rare" ? CompanionDeviceAuthorityStore.DefaultRareHighlightPalette
+            : CompanionDeviceAuthorityStore.DefaultNormalHighlightPalette;
+        Check(state.CurrentDeviceProfile.GetProperty(kind + "OrderHighlightPalette").EnumerateArray()
+            .Select(color => color.GetString()).SequenceEqual(expected), "新注册没有保留默认两色。");
+    }
+    var customized = JsonNode.Parse(state.CurrentDeviceProfile.GetRawText())!.AsObject();
+    customized["rareOrderHighlightPalette"] = new JsonArray("#FFDB2E", "#F08C78");
+    customized["normalOrderHighlightPalette"] = new JsonArray("#5FACD3");
+    state = store.UpdatePrimaryProfile(id, new CompanionDeviceProfileUpdateRequest {
+        ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, ExpectedAuthorityRevision = state.AuthorityRevision,
+        ExpectedProfileRevision = state.CurrentDeviceProfileRevision,
+        Profile = JsonSerializer.SerializeToElement(customized),
+    }, now);
+    var savedFile = File.ReadAllText(path);
+    var reopened = new CompanionDeviceAuthorityStore(path, log).Read(id, now);
+    Check(File.ReadAllText(path) == savedFile, "读取 schema 10 已有颜色改写了存储文件。");
+    // 内存序列化与磁盘缩进可能不同，按夹具独立规范化比较内容，不把空白差异当成值改变。
+    Check(CanonicalFixtureHash(reopened.CurrentDeviceProfile) == CanonicalFixtureHash(state.CurrentDeviceProfile),
+        "已有自定义颜色被新版默认替换。");
+    Check(reopened.CurrentDeviceProfileRevision == state.CurrentDeviceProfileRevision
+        && reopened.CurrentDeviceProfileHash == state.CurrentDeviceProfileHash
+        && reopened.PendingSyncId == state.PendingSyncId, "读取已有颜色不应推进修订或制造新的同步。");
+    Console.WriteLine($"PASS default and saved highlight palettes: {checks} assertions; exact new defaults and unchanged schema 10 reload.");
+}
+
+/// <summary>
+/// v9旧文件没有低耐心策略，升级必须保持名单/手动暂停含义并显式补为关闭。
+/// 真实存储重开、配置哈希、修订、ACK和无效输入均走生产仓库，避免只测字段复制。
+/// </summary>
+static void VerifyPatienceAutoResumeMigration(string root, ManualLogSource log)
+{
+    var checks = 0;
+    void Check(bool value, string message) { checks++; if (!value) throw new InvalidOperationException(message); }
+    const string id = "88888888-8888-8888-8888-888888888888";
+    var now = DateTime.UtcNow;
+    var old = JsonNode.Parse(BuildSharedProfile(true, 2).GetRawText())!.AsObject();
+    old.Remove("rareGuestParticipationAutoResumeEnabled");
+    old.Remove("rareGuestParticipationAutoResumeThresholdPercent");
+    old.Remove("rareGuestParticipationAutoResumePosition");
+    old["rareGuestParticipationModuleEnabled"] = true;
+    old["managedRareGuestIds"] = new JsonArray(30, 36);
+    old["rareGameUiEnabled"] = false;
+    var oldProfile = JsonSerializer.SerializeToElement(old);
+    var data = new DeviceAuthorityData {
+        Version = 9, RegistryId = "0123456789abcdef0123456789abcdef", AuthorityRevision = 7,
+        StateRevision = 12, PrimaryDeviceId = id, Devices = new() { new() {
+            DeviceId = id, Label = "旧调度配置", Platform = "windows", AppVersion = "v9-test",
+            Profile = oldProfile, ProfileHash = CanonicalFixtureHash(oldProfile), ProfileRevision = 5,
+            AppliedProfileRevision = 5, CreatedAtUtc = now.AddDays(-2), UpdatedAtUtc = now.AddDays(-1),
+        } },
+    };
+    var path = Path.Combine(root, "auto-resume-v9.json");
+    File.WriteAllText(path, JsonSerializer.Serialize(data, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+    var store = new CompanionDeviceAuthorityStore(path, log);
+    var state = store.Read(id, now);
+    Check(state.ProfileSchemaVersion == 10 && state.CurrentDeviceProfileRevision == 6
+        && state.AuthorityRevision == 8 && state.StateRevision == 13, "等待条策略迁移必须只推进一次修订。");
+    var profile = state.CurrentDeviceProfile;
+    Check(!profile.GetProperty("rareGuestParticipationAutoResumeEnabled").GetBoolean()
+        && profile.GetProperty("rareGuestParticipationAutoResumeThresholdPercent").GetInt32() == 30
+        && profile.GetProperty("rareGuestParticipationAutoResumePosition").GetString() == "tail", "升级不得擅自启用暂停订单。");
+    foreach (var field in oldProfile.EnumerateObject())
+        Check(CanonicalFixtureHash(field.Value) == CanonicalFixtureHash(profile.GetProperty(field.Name)),
+            "迁移改写了已有共享偏好：" + field.Name);
+    Check(!string.IsNullOrEmpty(state.PendingSyncId) && state.CurrentDeviceProfileHash != data.Devices[0].ProfileHash,
+        "新增策略必须有新摘要及持久化确认。");
+    var saved = File.ReadAllText(path);
+    var reopened = new CompanionDeviceAuthorityStore(path, log).Read(id, now);
+    Check(File.ReadAllText(path) == saved && reopened.PendingSyncId == state.PendingSyncId,
+        "同一已迁移配置重开不可再次迁移。");
+    Check(!store.IsCurrentPrimaryOnline(state.AuthorityRevision, now), "未确认迁移不能自动启用订单。");
+    state = store.AcknowledgeSync(id, new() {
+        ProtocolVersion = 1, SyncId = state.PendingSyncId!, ProfileRevision = state.CurrentDeviceProfileRevision,
+        ProfileHash = state.CurrentDeviceProfileHash,
+    }, now);
+    Check(store.IsCurrentPrimaryOnline(state.AuthorityRevision, now), "已确认且在线的主设备应可评估自动启用。");
+    Check(!store.IsCurrentPrimaryOnline(0, now) && !store.IsCurrentPrimaryOnline(state.AuthorityRevision - 1, now),
+        "无效或过期主配置修订不得自动启用。");
+    Check(!store.IsCurrentPrimaryOnline(state.AuthorityRevision, now.AddSeconds(21))
+        && !store.IsCurrentPrimaryOnline(state.AuthorityRevision, now.AddSeconds(22)), "只读检查不能延长主设备在线时间。");
+
+    foreach (var position in new[] { "front", "tail" })
+    foreach (var threshold in new[] { 1, 30, 100 })
+    {
+        var updated = JsonNode.Parse(state.CurrentDeviceProfile.GetRawText())!.AsObject();
+        updated["rareGuestParticipationAutoResumeEnabled"] = true;
+        updated["rareGuestParticipationAutoResumeThresholdPercent"] = threshold;
+        updated["rareGuestParticipationAutoResumePosition"] = position;
+        state = store.UpdatePrimaryProfile(id, new() {
+            ProtocolVersion = 1, ProfileSchemaVersion = 10, ExpectedAuthorityRevision = state.AuthorityRevision,
+            ExpectedProfileRevision = state.CurrentDeviceProfileRevision, Profile = JsonSerializer.SerializeToElement(updated),
+        }, now);
+        var stored = new CompanionDeviceAuthorityStore(path, log).Read(id, now).CurrentDeviceProfile;
+        Check(stored.GetProperty("rareGuestParticipationAutoResumeEnabled").GetBoolean()
+            && stored.GetProperty("rareGuestParticipationAutoResumeThresholdPercent").GetInt32() == threshold
+            && stored.GetProperty("rareGuestParticipationAutoResumePosition").GetString() == position,
+            "启用/阈值/位置必须共同耐久保存。");
+    }
+    foreach (var (field, invalid) in new (string, JsonNode?)[] {
+        ("rareGuestParticipationAutoResumeEnabled", null), ("rareGuestParticipationAutoResumeEnabled", JsonValue.Create("true")),
+        ("rareGuestParticipationAutoResumeThresholdPercent", JsonValue.Create(0)), ("rareGuestParticipationAutoResumeThresholdPercent", JsonValue.Create(101)),
+        ("rareGuestParticipationAutoResumeThresholdPercent", JsonValue.Create(30.5)), ("rareGuestParticipationAutoResumeThresholdPercent", JsonValue.Create("30")),
+        ("rareGuestParticipationAutoResumePosition", JsonValue.Create("middle")), ("rareGuestParticipationAutoResumePosition", null),
+    })
+    {
+        var broken = JsonNode.Parse(state.CurrentDeviceProfile.GetRawText())!.AsObject(); broken[field] = invalid;
+        var before = File.ReadAllText(path);
+        ExpectAuthorityError(400, () => store.UpdatePrimaryProfile(id, new() {
+            ProtocolVersion = 1, ProfileSchemaVersion = 10, ExpectedAuthorityRevision = state.AuthorityRevision,
+            ExpectedProfileRevision = state.CurrentDeviceProfileRevision, Profile = JsonSerializer.SerializeToElement(broken),
+        }, now));
+        Check(File.ReadAllText(path) == before, "无效策略写入不得覆盖已有文件。");
+    }
+    ExpectAuthorityError(409, () => store.Register("77777777-7777-7777-7777-777777777778", "旧客户端", new() {
+        ProtocolVersion = 1, ProfileSchemaVersion = 9, Platform = "windows", AppVersion = "old", Profile = oldProfile,
+    }, now));
+    Console.WriteLine($"PASS patience automatic resume profile migration: {checks} assertions; old settings preserved, default disabled and current writes validated.");
+}
+
+/// <summary>
+/// 旧版完整四色先验证再截断；只替换已知旧默认前缀，自定义前三色及其他偏好保持。
+/// 同时验证迁移修订、ACK屏障、再次读取幂等和非法尾色不能被截断掩盖。
+/// </summary>
+static void VerifyThreeColorPaletteMigration(string root, ManualLogSource log)
+{
+    var assertions = 0;
+    void Check(bool value, string message) { assertions++; if (!value) throw new InvalidOperationException(message); }
+    const string id = "88888888-8888-8888-8888-888888888888";
+    var now = DateTime.UtcNow;
+    var oldRare = new[] { "#BA9CE8", "#FFFFFF", "#000000", "#F08C78" };
+    var oldNormal = new[] { "#FFDB2E", "#5FACD3", "#F97373", "#7CCB8A" };
+    var warm = new[] { "#F2CA5C", "#EF856D", "#E785B4" };
+    var cool = new[] { "#5AA9E6", "#57C7B6", "#9A8FE8" };
+    var custom = new[] { "#123456", "#ABCDEF", "#654321", "#CDEFAB" };
+    foreach (var version in new[] { 6, 7 })
+    foreach (var count in new[] { 1, 2, 3, 4 })
+    foreach (var isDefault in new[] { false, true })
+    {
+        var profile = JsonNode.Parse(BuildSharedProfile(true, 3).GetRawText())!.AsObject();
+        profile.Remove("rareGameUiEnabled"); profile.Remove("normalGameUiEnabled");
+    profile.Remove("rareGuestParticipationAutoResumeEnabled"); profile.Remove("rareGuestParticipationAutoResumeThresholdPercent"); profile.Remove("rareGuestParticipationAutoResumePosition");
+        profile["rareOrderHighlightPalette"] = JsonSerializer.SerializeToNode((isDefault ? oldRare : custom).Take(count));
+        profile["normalOrderHighlightPalette"] = JsonSerializer.SerializeToNode((isDefault ? oldNormal : custom).Take(count));
+        if (version == 6) { profile["rareHighlightOrderCount"] = 8; profile["normalHighlightOrderCount"] = 1; }
+        var oldProfile = JsonSerializer.SerializeToElement(profile);
+        var data = new DeviceAuthorityData {
+            Version = version, RegistryId = "0123456789abcdef0123456789abcdef", AuthorityRevision = 7,
+            StateRevision = 12, PrimaryDeviceId = id, Devices = new() { new() {
+                DeviceId = id, Label = "旧配置", Platform = "windows", AppVersion = "migration-test",
+                Profile = oldProfile, ProfileHash = CanonicalFixtureHash(oldProfile), ProfileRevision = 5,
+                AppliedProfileRevision = 5, CreatedAtUtc = now.AddDays(-2), UpdatedAtUtc = now.AddDays(-1),
+            } },
+        };
+        var original = JsonSerializer.Serialize(data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        var path = Path.Combine(root, $"three-colors-v{version}-{count}-{isDefault}.json");
+        File.WriteAllText(path, original);
+        var store = new CompanionDeviceAuthorityStore(path, log);
+        var state = store.Read(id, now);
+        Check(state.ProfileSchemaVersion == CompanionDeviceAuthorityStore.ProfileSchemaVersion && state.CurrentDeviceProfileRevision == 6
+            && state.AuthorityRevision == 8 && state.StateRevision == 13, "颜色迁移修订错误。");
+        foreach (var kind in new[] { "rare", "normal" })
+        {
+            var source = !isDefault ? custom : version == 7 ? (kind == "rare" ? warm : cool) : (kind == "rare" ? oldRare : oldNormal);
+            Check(state.CurrentDeviceProfile.GetProperty(kind + "OrderHighlightPalette").EnumerateArray()
+                .Select(item => item.GetString()).SequenceEqual(source.Take(Math.Min(count, 3))), "颜色迁移没有保持同数量/自定义优先级。");
+        }
+        foreach (var field in oldProfile.EnumerateObject().Where(item => !item.Name.EndsWith("OrderHighlightPalette", StringComparison.Ordinal)
+            && item.Name is not "rareHighlightOrderCount" and not "normalHighlightOrderCount"))
+            Check(field.Value.GetRawText() == state.CurrentDeviceProfile.GetProperty(field.Name).GetRawText(), "颜色迁移修改了无关偏好。");
+        Check(state.PendingSyncId != null && !store.TryAuthorizePrimary(id, state.AuthorityRevision, now, out _), "迁移不能沿用旧ACK授权。");
+        var migrated = File.ReadAllText(path);
+        var reopened = new CompanionDeviceAuthorityStore(path, log).Read(id, now);
+        Check(File.ReadAllText(path) == migrated && reopened.CurrentDeviceProfileRevision == 6, "迁移不应重复执行。");
+        if (count == 4)
+        {
+            var broken = JsonNode.Parse(original)!.AsObject();
+            var device = broken["devices"]![0]!.AsObject();
+            device["profile"]!["rareOrderHighlightPalette"]![3] = "#abcdef";
+            device["profileHash"] = CanonicalFixtureHash(JsonSerializer.SerializeToElement(device["profile"]));
+            var badPath = path + ".bad";
+            var badText = broken.ToJsonString();
+            File.WriteAllText(badPath, badText);
+            var badStore = new CompanionDeviceAuthorityStore(badPath, log);
+            ExpectAuthorityError(503, () => badStore.Read(id, now));
+            Check(File.ReadAllText(badPath) == badText, "非法第四色被截断修复或原文件被覆盖。");
+        }
+    }
+    Console.WriteLine($"PASS three-color palette migration: {assertions} assertions; v6/v7 strict migration and custom preservation.");
+}
+
+/// <summary>
+/// schema 8 的实际磁盘结构不含类别总开关。迁移只补两个 true，不能重推全局开关、
+/// 覆盖分项或重置自定义颜色；新 schema 必须完整提供两个布尔值并可独立持久化关闭。
+/// </summary>
+static void VerifyKindGameUiSwitchMigration(string root, ManualLogSource log)
+{
+    var checks = 0;
+    void Check(bool value, string message) { checks++; if (!value) throw new InvalidOperationException(message); }
+    const string id = "99999999-9999-9999-9999-999999999999";
+    var now = DateTime.UtcNow;
+    foreach (var master in new[] { false, true })
+    {
+        var profile = JsonNode.Parse(BuildSharedProfile(false, 2).GetRawText())!.AsObject();
+        profile.Remove("rareGameUiEnabled"); profile.Remove("normalGameUiEnabled");
+    profile.Remove("rareGuestParticipationAutoResumeEnabled"); profile.Remove("rareGuestParticipationAutoResumeThresholdPercent"); profile.Remove("rareGuestParticipationAutoResumePosition");
+        profile["gameUiEnabled"] = master;
+        profile["rareGameUiPinningEnabled"] = true;
+        profile["rareRecipeVariantEnabled"] = true;
+        profile["normalSeatHighlightEnabled"] = true;
+        profile["rareOrderHighlightPalette"] = new JsonArray("#A1B2C3", "#D4E5F6", "#102030");
+        profile["normalOrderHighlightPalette"] = new JsonArray("#123456");
+        var oldProfile = JsonSerializer.SerializeToElement(profile);
+        var data = new DeviceAuthorityData {
+            Version = 8, RegistryId = "0123456789abcdef0123456789abcdef", AuthorityRevision = 7,
+            StateRevision = 12, PrimaryDeviceId = id, Devices = new() { new() {
+                DeviceId = id, Label = "旧类别配置", Platform = "windows", AppVersion = "v8-test",
+                Profile = oldProfile, ProfileHash = CanonicalFixtureHash(oldProfile), ProfileRevision = 5,
+                AppliedProfileRevision = 5, CreatedAtUtc = now.AddDays(-2), UpdatedAtUtc = now.AddDays(-1),
+            } },
+        };
+        var path = Path.Combine(root, $"kind-switch-v8-{master}.json");
+        File.WriteAllText(path, JsonSerializer.Serialize(data, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
+        var store = new CompanionDeviceAuthorityStore(path, log);
+        var state = store.Read(id, now);
+        Check(state.ProfileSchemaVersion == 10 && state.CurrentDeviceProfileRevision == 6
+            && state.AuthorityRevision == 8 && state.StateRevision == 13, "类别开关迁移没有推进一次完整修订。");
+        foreach (var kind in new[] { "rare", "normal" })
+            Check(state.CurrentDeviceProfile.GetProperty(kind + "GameUiEnabled").GetBoolean(), "迁移必须默认允许原类别行为。");
+        foreach (var field in oldProfile.EnumerateObject())
+            Check(CanonicalFixtureHash(field.Value) == CanonicalFixtureHash(state.CurrentDeviceProfile.GetProperty(field.Name)),
+                "类别开关迁移改写了原有字段：" + field.Name);
+        Check(state.CurrentDeviceProfileHash != data.Devices[0].ProfileHash
+            && state.CurrentDeviceProfileHash == CanonicalFixtureHash(state.CurrentDeviceProfile), "新字段必须纳入配置摘要。");
+        Check(!store.TryAuthorizePrimary(id, state.AuthorityRevision, now, out _), "旧ACK不得授权新的类别开关配置。");
+        var migrated = File.ReadAllText(path);
+        var reopened = new CompanionDeviceAuthorityStore(path, log).Read(id, now);
+        Check(File.ReadAllText(path) == migrated && reopened.PendingSyncId == state.PendingSyncId,
+            "读取schema10不得重复迁移或更新待确认标识。");
+        state = store.AcknowledgeSync(id, new CompanionDeviceSyncAckRequest {
+            ProtocolVersion = 1, SyncId = state.PendingSyncId!, ProfileRevision = state.CurrentDeviceProfileRevision,
+            ProfileHash = state.CurrentDeviceProfileHash,
+        }, now);
+        foreach (var toggles in new[] { (Rare: false, Normal: true), (Rare: true, Normal: false), (Rare: false, Normal: false), (Rare: true, Normal: true) })
+        {
+            var updated = JsonNode.Parse(state.CurrentDeviceProfile.GetRawText())!.AsObject();
+            updated["rareGameUiEnabled"] = toggles.Rare; updated["normalGameUiEnabled"] = toggles.Normal;
+            state = store.UpdatePrimaryProfile(id, new CompanionDeviceProfileUpdateRequest {
+                ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, ExpectedAuthorityRevision = state.AuthorityRevision,
+                ExpectedProfileRevision = state.CurrentDeviceProfileRevision, Profile = JsonSerializer.SerializeToElement(updated),
+            }, now);
+            var saved = new CompanionDeviceAuthorityStore(path, log).Read(id, now).CurrentDeviceProfile;
+            Check(saved.GetProperty("rareGameUiEnabled").GetBoolean() == toggles.Rare
+                && saved.GetProperty("normalGameUiEnabled").GetBoolean() == toggles.Normal, "两类总开关无法独立保存并重载。");
+            foreach (var field in oldProfile.EnumerateObject())
+                Check(CanonicalFixtureHash(field.Value) == CanonicalFixtureHash(saved.GetProperty(field.Name)),
+                    "切换类别总开关破坏原分项或配色：" + field.Name);
+        }
+        foreach (var field in new[] { "rareGameUiEnabled", "normalGameUiEnabled" })
+        foreach (var invalidValue in new[] { "missing", "string", "null" })
+        {
+            var invalid = JsonNode.Parse(state.CurrentDeviceProfile.GetRawText())!.AsObject();
+            if (invalidValue == "missing") invalid.Remove(field);
+            else invalid[field] = invalidValue == "null" ? null : JsonValue.Create("false");
+            var before = File.ReadAllText(path);
+            ExpectAuthorityError(400, () => store.UpdatePrimaryProfile(id, new CompanionDeviceProfileUpdateRequest {
+                ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, ExpectedAuthorityRevision = state.AuthorityRevision,
+                ExpectedProfileRevision = state.CurrentDeviceProfileRevision, Profile = JsonSerializer.SerializeToElement(invalid),
+            }, now));
+            Check(File.ReadAllText(path) == before, "非法类别总开关不得被补默认并写盘。");
+        }
+        ExpectAuthorityError(409, () => store.Register(id, "旧在线协议", new CompanionDeviceRegisterRequest {
+            ProtocolVersion = 1, ProfileSchemaVersion = 8, Platform = "windows", AppVersion = "old", Profile = oldProfile,
+        }, now));
+    }
+    Console.WriteLine($"PASS kind game UI switches: {checks} assertions; strict v8-to-current migration, independent persistence and preserved preferences.");
 }
 
 static void VerifyCompanionDeviceAuthority(string root, ManualLogSource log)
@@ -226,18 +532,20 @@ static void VerifyDeviceAuthorityLegacyMigration(string root, ManualLogSource lo
     const string primaryId = "11111111-1111-1111-1111-111111111111";
     const string secondaryId = "22222222-2222-2222-2222-222222222222";
     const string oldPending = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    var first = JsonNode.Parse(BuildSharedProfile(true, 2).GetRawText())!.AsObject();
+    var first = BuildLegacySharedProfile(true, 2, legacyVersion);
     if (legacyVersion == 1) first.Remove("gameUiEnabled");
     if (legacyVersion < 3) first["serviceOrderSortMode"] = "guest";
     // 旧界面允许名称仍是 balanced 时改九项参数；迁移必须保留这些数值并标记 custom。
-    first["recommendationSortProfile"]!["preset"] = "balanced";
+    first["recommendationSortProfile"]!["preset"] = legacyVersion < 4 ? "balanced" : "custom";
     first["rareSeatHighlightEnabled"] = true;
     first["rareTargetHighlightColor"] = "#12ABEF";
-    var second = JsonNode.Parse(BuildSharedProfile(true, 4).GetRawText())!.AsObject();
+    // 两个旧通道可以同色；分别保留各自原色并补为两色，不能跨通道相互覆盖。
+    first["normalTargetHighlightColor"] = "#12ABEF";
+    var second = BuildLegacySharedProfile(true, 4, legacyVersion);
     if (legacyVersion == 1) second.Remove("gameUiEnabled");
     if (legacyVersion < 3) second["serviceOrderSortMode"] = "ordered";
     // 另一设备保持真正的固定预设，证明迁移不会一律把所有旧记录改成自定义。
-    second["recommendationSortProfile"] = RecommendationEngine.BuildDefaultRecommendationSortProfile("profit");
+    second["recommendationSortProfile"] = BuildLegacySortPreset("profit");
     var legacy = new DeviceAuthorityData
     {
         Version = legacyVersion, RegistryId = "0123456789abcdef0123456789abcdef",
@@ -276,11 +584,26 @@ static void VerifyDeviceAuthorityLegacyMigration(string root, ManualLogSource lo
     {
         var state = before.DeviceId == primaryId ? primary : secondary;
         Check(!state.CurrentDeviceProfile.TryGetProperty("serviceOrderSortMode", out _), "迁移后仍保留已删除的订单排序字段。");
-        foreach (var field in before.Profile.EnumerateObject().Where(field => field.Name is not "serviceOrderSortMode" and not "recommendationSortProfile"))
+        foreach (var field in before.Profile.EnumerateObject().Where(field => field.Name is not "serviceOrderSortMode" and not "recommendationSortProfile" and not "rareTargetHighlightColor" and not "normalTargetHighlightColor"))
             Check(field.Value.GetRawText() == state.CurrentDeviceProfile.GetProperty(field.Name).GetRawText(), "迁移改写了既有偏好：" + field.Name);
         var oldSort = before.Profile.GetProperty("recommendationSortProfile");
         var newSort = state.CurrentDeviceProfile.GetProperty("recommendationSortProfile");
-        Check(oldSort.GetProperty("objectives").GetRawText() == newSort.GetProperty("objectives").GetRawText(), "迁移改变了目标数值或顺序。");
+        Check(oldSort.GetProperty("objectives").EnumerateArray().Where(item => item.GetProperty("key").GetString() != "cookerAvailable")
+            .Select(item => item.GetRawText()).SequenceEqual(newSort.GetProperty("objectives").EnumerateArray().Select(item => item.GetRawText())),
+            "迁移只能删除厨具评分项，其他目标数值与顺序必须原样保留。");
+        Check(!state.CurrentDeviceProfile.TryGetProperty("rareTargetHighlightColor", out _)
+            && !state.CurrentDeviceProfile.TryGetProperty("normalTargetHighlightColor", out _), "旧单通道颜色字段未删除。");
+        foreach (var kind in new[] { "rare", "normal" })
+        {
+            var expectedPalette = new[] { before.Profile.GetProperty(kind + "TargetHighlightColor").GetString() }
+                .Concat(kind == "rare" ? new[] { "#FFDB2E", "#F08C78" } : new[] { "#5FACD3", "#97C878" }).Distinct().Take(2);
+            Check(state.CurrentDeviceProfile.GetProperty(kind + "OrderHighlightPalette").EnumerateArray().Select(item => item.GetString()).SequenceEqual(expectedPalette),
+                "历史颜色必须分别保留到自己的通道，再补齐两色。");
+        }
+        Check(!state.CurrentDeviceProfile.TryGetProperty("rareHighlightOrderCount", out _)
+            && !state.CurrentDeviceProfile.TryGetProperty("normalHighlightOrderCount", out _), "迁移后不得保留独立辅助数量。");
+        Check(!state.CurrentDeviceProfile.GetProperty("rareGuestParticipationModuleEnabled").GetBoolean()
+            && state.CurrentDeviceProfile.GetProperty("managedRareGuestIds").GetArrayLength() == 0, "迁移不得自动暂停既有客人。");
         Check(newSort.GetProperty("preset").GetString() == (before.DeviceId == primaryId ? "custom" : "profit"), "迁移没有准确区分固定预设和历史自定义值。");
         if (legacyVersion < 3 || before.DeviceId == primaryId)
             Check(state.CurrentDeviceProfileHash != before.ProfileHash, "内容改变后的配置必须使用新哈希。");
@@ -357,7 +680,7 @@ static void VerifyDeviceAuthorityLegacyMigration(string root, ManualLogSource lo
     {
         "hash", "field", "missing-field", "future", "missing-version", "missing-state",
         "missing-pending", "unknown-root", "unknown-device", "duplicate-root", "duplicate-device",
-        "null-registry", "null-label", "null-pending",
+        "null-registry", "null-label", "null-pending", "invalid-fixed-preset",
     })
     {
         var broken = JsonNode.Parse(source.Json)!.AsObject();
@@ -370,6 +693,13 @@ static void VerifyDeviceAuthorityLegacyMigration(string root, ManualLogSource lo
             else invalidProfile.Remove("autoRareOrderEnabled");
             // 即使重算了哈希，也必须按旧 schema 的精确字段集合拒绝。
             record["profileHash"] = CanonicalFixtureHash(JsonSerializer.SerializeToElement(invalidProfile));
+        }
+        if (corruption == "invalid-fixed-preset")
+        {
+            // v1-v3 本就允许名称与参数不一致；仅已收紧的 v4/当前 schema 必须拒绝。
+            if (source.Version < 4) continue;
+            record["profile"]!["recommendationSortProfile"]!["preset"] = "balanced";
+            record["profileHash"] = CanonicalFixtureHash(JsonSerializer.SerializeToElement(record["profile"]));
         }
         if (corruption == "future") broken["version"] = 999;
         if (corruption == "missing-version") broken.Remove("version");
@@ -400,11 +730,11 @@ static void VerifyDeviceAuthorityLegacyMigration(string root, ManualLogSource lo
         checks++;
         Check(File.ReadAllText(corruptPath, Encoding.UTF8) == contents, "迁移覆盖了异常原文件：" + corruption);
     }
-    Console.WriteLine($"PASS shared profile v{legacyVersion} to v4 migration: {checks} assertions; explicit scoring mode, exact old hashes, preserved values, pending ACK and idempotent reload.");
+    Console.WriteLine($"PASS shared profile v{legacyVersion} to current v10 migration: {checks} assertions; explicit scoring mode, exact old hashes, preserved values, pending ACK and idempotent reload.");
 }
 
 /// <summary>
-/// 在线 schema 只允许固定预设的精确九项，或显式 custom；覆盖写盘拒绝、重启保留与
+/// 在线 schema 只允许固定预设的精确八项，或显式 custom；覆盖写盘拒绝、重启保留与
 /// 领域归一化，防止仅界面隐藏编辑器而 HTTP 仍接受名不副实的固定预设。
 /// </summary>
 static void VerifyScoringModes(string root, ManualLogSource log)
@@ -462,9 +792,142 @@ static void VerifyScoringModes(string root, ManualLogSource log)
         var normalized = RecommendationEngine.NormalizeSortProfile(originalSort);
         Check(normalized["preset"]!.GetValue<string>() == "custom", "领域归一化丢失 custom 模式。");
         Check(normalized["objectives"]!.ToJsonString() == originalSort["objectives"]!.ToJsonString(),
-            "领域归一化改变了完整九项目标。");
+            "领域归一化改变了完整八项目标。");
     }
     Console.WriteLine($"PASS scoring modes: {checks} assertions; exact presets, custom persistence and rejection without write.");
+}
+
+/// <summary>
+/// 验证 v5 公共八色拆分、v6 保留独立配色，以及两版本删除独立辅助数量的一次性迁移。
+/// 使用真实磁盘存储、修订和 ACK 流程，确保迁移不重置调度名单，也不授权未确认的写入。
+/// </summary>
+static void VerifyIndependentHighlightPalettes(string root, ManualLogSource log, int legacyVersion)
+{
+    var checks = 0;
+    void Check(bool condition, string message)
+    {
+        checks++;
+        if (!condition) throw new InvalidOperationException(message);
+    }
+    const string id = "66666666-6666-6666-6666-666666666666";
+    var now = DateTime.UtcNow;
+    var colors = new[] { "#112233", "#223344", "#334455", "#445566", "#556677", "#667788", "#778899", "#8899AA" };
+    var profile = JsonNode.Parse(BuildSharedProfile(true, 3).GetRawText())!.AsObject();
+    profile.Remove("rareGameUiEnabled"); profile.Remove("normalGameUiEnabled");
+    profile.Remove("rareGuestParticipationAutoResumeEnabled"); profile.Remove("rareGuestParticipationAutoResumeThresholdPercent"); profile.Remove("rareGuestParticipationAutoResumePosition");
+    if (legacyVersion == 5)
+    {
+        profile.Remove("rareOrderHighlightPalette");
+        profile.Remove("normalOrderHighlightPalette");
+        profile["orderHighlightPalette"] = JsonSerializer.SerializeToNode(colors);
+    }
+    else
+    {
+        // 旧数量故意不同于颜色数，迁移只能删除旧数量，不能反过来截断或补齐原配色。
+        profile["rareOrderHighlightPalette"] = new JsonArray(colors[0], colors[1]);
+        profile["normalOrderHighlightPalette"] = new JsonArray(colors[2]);
+    }
+    profile["rareHighlightOrderCount"] = 3;
+    profile["normalHighlightOrderCount"] = 6;
+    profile["rareGuestParticipationModuleEnabled"] = true;
+    profile["managedRareGuestIds"] = new JsonArray(7, 8);
+    var oldProfile = JsonSerializer.SerializeToElement(profile);
+    var data = new DeviceAuthorityData
+    {
+        Version = legacyVersion, RegistryId = "0123456789abcdef0123456789abcdef",
+        AuthorityRevision = 7, StateRevision = 12, PrimaryDeviceId = id,
+        Devices = new() { new() {
+            DeviceId = id, Label = "旧主设备", Platform = "windows", AppVersion = $"v{legacyVersion}-test",
+            Profile = oldProfile, ProfileHash = CanonicalFixtureHash(oldProfile),
+            ProfileRevision = 5, AppliedProfileRevision = 5,
+            CreatedAtUtc = now.AddDays(-2), UpdatedAtUtc = now.AddDays(-1),
+        } },
+    };
+    var original = JsonSerializer.Serialize(data, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    var path = Path.Combine(root, $"palettes-v{legacyVersion}.json");
+    File.WriteAllText(path, original, new UTF8Encoding(false));
+    var store = new CompanionDeviceAuthorityStore(path, log);
+    var state = store.Read(id, now);
+    Check(state.ProfileSchemaVersion == CompanionDeviceAuthorityStore.ProfileSchemaVersion && state.AuthorityRevision == 8 && state.StateRevision == 13
+        && state.CurrentDeviceProfileRevision == 6, "历史配置必须仅推进一次迁移修订。");
+    Check(state.CurrentDeviceProfileHash == CanonicalFixtureHash(state.CurrentDeviceProfile)
+        && state.CurrentDeviceProfileHash != data.Devices[0].ProfileHash, "调色板迁移必须重算精确哈希。");
+    foreach (var field in oldProfile.EnumerateObject().Where(field => field.Name is not "orderHighlightPalette" and not "rareHighlightOrderCount" and not "normalHighlightOrderCount"))
+        Check(field.Value.GetRawText() == state.CurrentDeviceProfile.GetProperty(field.Name).GetRawText(), "调色板迁移改写其他偏好：" + field.Name);
+    foreach (var kind in new[] { "rare", "normal" })
+    {
+        var expected = legacyVersion == 5 ? colors.Take(3) : oldProfile.GetProperty(kind + "OrderHighlightPalette").EnumerateArray().Select(color => color.GetString());
+        Check(state.CurrentDeviceProfile.GetProperty(kind + "OrderHighlightPalette").EnumerateArray()
+            .Select(color => color.GetString()).SequenceEqual(expected), "旧配色迁移顺序或数量错误。");
+        Check(!state.CurrentDeviceProfile.TryGetProperty(kind + "HighlightOrderCount", out _), "历史独立辅助数量必须移除。");
+    }
+    Check(!state.CurrentDeviceProfile.TryGetProperty("orderHighlightPalette", out _), "公共调色板字段不应保留到新配置。");
+    Check(state.PendingSyncId != null && !store.TryAuthorizePrimary(id, state.AuthorityRevision, now, out _), "迁移后必须等待客户端确认新配置。");
+    var migrated = File.ReadAllText(path);
+    var reopened = new CompanionDeviceAuthorityStore(path, log).Read(id, now);
+    Check(migrated == File.ReadAllText(path) && reopened.PendingSyncId == state.PendingSyncId, "已迁移记录不得在重启时重复迁移。");
+    state = store.AcknowledgeSync(id, new CompanionDeviceSyncAckRequest {
+        ProtocolVersion = 1, SyncId = state.PendingSyncId!, ProfileRevision = state.CurrentDeviceProfileRevision,
+        ProfileHash = state.CurrentDeviceProfileHash,
+    }, now);
+    Check(store.TryAuthorizePrimary(id, state.AuthorityRevision, now, out _), "确认后的主设备应恢复配置权限。");
+    var changed = JsonNode.Parse(state.CurrentDeviceProfile.GetRawText())!.AsObject();
+    changed["normalOrderHighlightPalette"] = new JsonArray(colors[0]);
+    state = store.UpdatePrimaryProfile(id, new CompanionDeviceProfileUpdateRequest {
+        ProtocolVersion = 1, ProfileSchemaVersion = CompanionDeviceAuthorityStore.ProfileSchemaVersion, ExpectedAuthorityRevision = state.AuthorityRevision,
+        ExpectedProfileRevision = state.CurrentDeviceProfileRevision, Profile = JsonSerializer.SerializeToElement(changed),
+    }, now);
+    Check(state.CurrentDeviceProfile.GetProperty("normalOrderHighlightPalette").GetArrayLength() == 1
+        && state.CurrentDeviceProfile.GetProperty("rareOrderHighlightPalette").GetArrayLength() == (legacyVersion == 5 ? 3 : 2),
+        "两类可分别选择一至三色，且跨类同色必须合法。");
+    // 注册入口与更新入口共用严格校验，分别验证两类的非法长度、重复色和格式。
+    foreach (var kind in new[] { "rare", "normal" })
+    foreach (var invalidColors in new[] { Array.Empty<string>(), colors.Take(4).ToArray(), new[] { colors[0], colors[0] }, new[] { "#abcdef" } })
+    {
+        var invalid = JsonNode.Parse(BuildSharedProfile(false, 2).GetRawText())!.AsObject();
+        invalid[kind + "OrderHighlightPalette"] = JsonSerializer.SerializeToNode(invalidColors);
+        var rejectPath = Path.Combine(root, $"palette-v{legacyVersion}-invalid.json");
+        var rejectStore = new CompanionDeviceAuthorityStore(rejectPath, log);
+        ExpectAuthorityError(400, () => rejectStore.Register(id, "无效颜色", RegisterRequest("windows", JsonSerializer.SerializeToElement(invalid)), now));
+        Check(!File.Exists(rejectPath), "非法颜色不得生成设备配置文件。");
+    }
+    // 被删除的旧数量仍先严格校验；非法历史结构不能因移除字段而被静默修复。
+    // 当前 HTTP 即使收到合法旧字段也必须拒绝，防止仅界面隐藏设置却继续保存独立数量。
+    foreach (var kind in new[] { "rare", "normal" })
+    {
+        var invalid = JsonNode.Parse(BuildSharedProfile(false, 2).GetRawText())!.AsObject();
+        invalid[kind + "HighlightOrderCount"] = 2;
+        var rejectPath = Path.Combine(root, $"palette-v{legacyVersion}-{kind}-obsolete.json");
+        var rejectStore = new CompanionDeviceAuthorityStore(rejectPath, log);
+        ExpectAuthorityError(400, () => rejectStore.Register(id, "旧数量", RegisterRequest("windows", JsonSerializer.SerializeToElement(invalid)), now));
+        Check(!File.Exists(rejectPath), "当前 HTTP 的旧数量字段不得写盘。");
+        var oldRequest = new CompanionDeviceRegisterRequest {
+            ProtocolVersion = 1, ProfileSchemaVersion = legacyVersion, Platform = "windows", AppVersion = "legacy-test", Profile = oldProfile,
+        };
+        ExpectAuthorityError(409, () => rejectStore.Register(id, "旧协议", oldRequest, now));
+        Check(!File.Exists(rejectPath), "旧 HTTP 协议不得写盘。");
+    }
+    foreach (var corrupt in new[] { "hash", "count", "duplicate", "old-count", "missing-old-count" })
+    {
+        var broken = JsonNode.Parse(original)!.AsObject();
+        var device = broken["devices"]![0]!.AsObject();
+        if (corrupt == "hash") device["profileHash"] = new string('0', 64);
+        else
+        {
+            if (corrupt == "old-count") device["profile"]!["rareHighlightOrderCount"] = 9;
+            else if (corrupt == "missing-old-count") device["profile"]!.AsObject().Remove("normalHighlightOrderCount");
+            else device["profile"]![legacyVersion == 5 ? "orderHighlightPalette" : "rareOrderHighlightPalette"] = JsonSerializer.SerializeToNode(
+                corrupt == "count" ? colors.Take(legacyVersion == 5 ? 4 : 5).ToArray() : Enumerable.Repeat(colors[0], legacyVersion == 5 ? 8 : 2).ToArray());
+            device["profileHash"] = CanonicalFixtureHash(JsonSerializer.SerializeToElement(device["profile"]));
+        }
+        var corruptPath = Path.Combine(root, $"palettes-v{legacyVersion}-" + corrupt + ".json");
+        var contents = broken.ToJsonString();
+        File.WriteAllText(corruptPath, contents, new UTF8Encoding(false));
+        var corruptStore = new CompanionDeviceAuthorityStore(corruptPath, log);
+        ExpectAuthorityError(503, () => corruptStore.Read(id, now));
+        Check(File.ReadAllText(corruptPath) == contents, "异常历史配置不得被迁移覆盖。");
+    }
+    Console.WriteLine($"PASS independent highlight palettes v{legacyVersion}: {checks} assertions; removed counts, per-kind bounds, preserved preferences and restart.");
 }
 
 /// <summary>夹具按历史哈希规范递归排序对象键，保留数组顺序，不调用被测迁移函数。</summary>
@@ -511,7 +974,7 @@ static JsonElement BuildSharedProfile(bool automationEnabled, int rareConcurrenc
 {
     var booleanFields = new[]
     {
-        "automationEnabled", "gameUiEnabled", "autoRareOrderEnabled", "autoNormalOrderEnabled",
+        "automationEnabled", "gameUiEnabled", "rareGuestParticipationModuleEnabled", "autoRareOrderEnabled", "autoNormalOrderEnabled",
         "autoNormalTakeBeverage", "autoNormalStartCooking", "autoNormalDeliverFood",
         "autoNormalCompleteOrder", "autoNormalStopOnError", "autoPrepCompleteOrder",
         "autoPrepTakeBeverage", "autoPrepStartCooking", "autoPrepCollectCooking",
@@ -523,6 +986,8 @@ static JsonElement BuildSharedProfile(bool automationEnabled, int rareConcurrenc
         "rareOrderHighlightEnabled", "normalOrderHighlightEnabled",
     };
     var profile = booleanFields.ToDictionary(field => field, _ => (object)false, StringComparer.Ordinal);
+    profile["rareGameUiEnabled"] = true;
+    profile["normalGameUiEnabled"] = true;
     profile["automationEnabled"] = automationEnabled;
     profile["autoRareOrderEnabled"] = true;
     profile["filterMissingCookers"] = true;
@@ -531,14 +996,18 @@ static JsonElement BuildSharedProfile(bool automationEnabled, int rareConcurrenc
     profile["autoNormalConcurrency"] = 3;
     profile["autoMaxStepRetries"] = 3;
     profile["autoMaxRollbacks"] = 2;
-    profile["rareTargetHighlightColor"] = "#FFDB2E";
-    profile["normalTargetHighlightColor"] = "#5FACD3";
+    profile["rareOrderHighlightPalette"] = CompanionDeviceAuthorityStore.DefaultRareHighlightPalette;
+    profile["normalOrderHighlightPalette"] = CompanionDeviceAuthorityStore.DefaultNormalHighlightPalette;
+    profile["managedRareGuestIds"] = Array.Empty<int>();
+    profile["rareGuestParticipationAutoResumeEnabled"] = false;
+    profile["rareGuestParticipationAutoResumeThresholdPercent"] = 30;
+    profile["rareGuestParticipationAutoResumePosition"] = "tail";
     profile["recommendationBudgetPolicy"] = "block";
     profile["recipeVariantLimitPerBase"] = 1;
     var objectiveKeys = new[]
     {
         "foodPreference", "beveragePreference", "negativeRisk", "extraCount", "resourcePressure",
-        "totalCost", "profit", "beverageStock", "cookerAvailable",
+        "totalCost", "profit", "beverageStock",
     };
     profile["recommendationSortProfile"] = new Dictionary<string, object?>
     {
@@ -557,6 +1026,32 @@ static JsonElement BuildSharedProfile(bool automationEnabled, int rareConcurrenc
         ["excludedBeverageIds"] = Array.Empty<int>(),
     };
     return JsonSerializer.SerializeToElement(profile);
+}
+
+/// <summary>明确构造历史九项/双颜色结构，不能仅把当前 schema 的版本号改旧。</summary>
+static JsonObject BuildLegacySharedProfile(bool automationEnabled, int rareConcurrency, int version)
+{
+    var value = JsonNode.Parse(BuildSharedProfile(automationEnabled, rareConcurrency).GetRawText())!.AsObject();
+    value.Remove("rareGameUiEnabled"); value.Remove("normalGameUiEnabled");
+    value.Remove("rareGuestParticipationAutoResumeEnabled"); value.Remove("rareGuestParticipationAutoResumeThresholdPercent"); value.Remove("rareGuestParticipationAutoResumePosition");
+    foreach (var key in new[] { "rareOrderHighlightPalette", "normalOrderHighlightPalette", "rareHighlightOrderCount", "normalHighlightOrderCount", "rareGuestParticipationModuleEnabled", "managedRareGuestIds" }) value.Remove(key);
+    value["rareTargetHighlightColor"] = "#FFDB2E";
+    value["normalTargetHighlightColor"] = "#5FACD3";
+    value["recommendationSortProfile"]!["objectives"]!.AsArray().Add(new JsonObject
+    { ["key"] = "cookerAvailable", ["enabled"] = true, ["weight"] = 50, ["direction"] = "desc" });
+    if (version == 1) value.Remove("gameUiEnabled");
+    if (version < 3) value["serviceOrderSortMode"] = "ordered";
+    return value;
+}
+
+/// <summary>历史权重来自迁移前 v4 定义，保留已移除厨具项用于严格迁移验证。</summary>
+static JsonObject BuildLegacySortPreset(string preset)
+{
+    var value = RecommendationEngine.BuildDefaultRecommendationSortProfile(preset);
+    var weight = preset switch { "profit" => 50, "simple" => 70, _ => 60 };
+    value["objectives"]!.AsArray().Add(new JsonObject
+    { ["key"] = "cookerAvailable", ["enabled"] = true, ["weight"] = weight, ["direction"] = "desc" });
+    return value;
 }
 
 static void ExpectAuthorityError(int statusCode, Action action)

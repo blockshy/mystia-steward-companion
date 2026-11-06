@@ -8,6 +8,7 @@ try
     VerifyInvalidationIsExactAndAbaSafe();
     VerifyRequestLifecycleMatchingIsExact();
     VerifyOldPostfixDoesNotRemoveNewActiveLifecycle();
+    VerifyControllerLeaveSnapshotIsExactAndFrozen();
     VerifyCapacityIsBounded();
     VerifyInvalidIdentityAndSourceFailClosed();
     VerifyClearDoesNotRewindEitherSequence();
@@ -20,6 +21,48 @@ catch (Exception ex)
 {
     Console.Error.WriteLine($"FAIL: {ex}");
     return 1;
+}
+
+/// <summary>
+/// 离桌快照只包含进入原生方法前本场次、本类型、本控制器的活动 token；
+/// 同指针复用或新增绑定不能改变旧快照，也不能被旧回执终止。
+/// </summary>
+static void VerifyControllerLeaveSnapshotIsExactAndFrozen()
+{
+    RuntimeOrderTerminalReceiptStore.Clear();
+    var first = RuntimeOrderTerminalReceiptStore.BeginLifecycle(61, RuntimeOrderKind.Special, 0x1100, 0x2100);
+    var second = RuntimeOrderTerminalReceiptStore.BeginLifecycle(61, RuntimeOrderKind.Special, 0x1101, 0x2100);
+    RuntimeOrderTerminalReceiptStore.BeginLifecycle(62, RuntimeOrderKind.Special, 0x1100, 0x2100);
+    RuntimeOrderTerminalReceiptStore.BeginLifecycle(61, RuntimeOrderKind.Normal, 0x1100, 0x2100);
+    RuntimeOrderTerminalReceiptStore.BeginLifecycle(61, RuntimeOrderKind.Special, 0x1100, 0x2101);
+    var frozen = RuntimeOrderTerminalReceiptStore.CaptureActiveControllerLifecycles(
+        61, RuntimeOrderKind.Special, 0x2100);
+    AssertEqual(2, frozen.Length, "Leave snapshot included another generation, kind or controller.");
+    AssertTrue(frozen.Contains(Token(61, RuntimeOrderKind.Special, 0x1100, 0x2100, first)),
+        "Leave snapshot missed its first exact binding.");
+    AssertTrue(frozen.Contains(Token(61, RuntimeOrderKind.Special, 0x1101, 0x2100, second)),
+        "Leave snapshot missed its second exact binding.");
+    var replacement = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+        61, RuntimeOrderKind.Special, 0x1100, 0x2100);
+    var successor = RuntimeOrderTerminalReceiptStore.BeginLifecycle(
+        61, RuntimeOrderKind.Special, 0x1102, 0x2100);
+    foreach (var token in frozen)
+    {
+        RuntimeOrderTerminalReceiptStore.Publish(new RuntimeOrderTerminalHookState(
+            token.BusinessGeneration, token.OrderKind, token.OrderPointer,
+            token.ControllerPointer, token.LifecycleSequence, RuntimeOrderTerminalDisposition.Removed,
+            RuntimeOrderTerminalReceiptSource.LeaveFromDesk));
+    }
+    AssertActive(61, RuntimeOrderKind.Special, 0x1100, 0x2100, replacement);
+    AssertActive(61, RuntimeOrderKind.Special, 0x1102, 0x2100, successor);
+    AssertInactive(61, RuntimeOrderKind.Special, 0x1101, 0x2100);
+    AssertEqual(0, RuntimeOrderTerminalReceiptStore.CaptureActiveControllerLifecycles(
+        0, RuntimeOrderKind.Special, 0x2100).Length, "Invalid generation captured controller bindings.");
+    AssertEqual(0, RuntimeOrderTerminalReceiptStore.CaptureActiveControllerLifecycles(
+        61, RuntimeOrderKind.Special, 0).Length, "A missing controller captured bindings.");
+    AssertEqual(0, RuntimeOrderTerminalReceiptStore.CaptureActiveControllerLifecycles(
+        61, (RuntimeOrderKind)99, 0x2100).Length, "An unknown kind captured bindings.");
+    RuntimeOrderTerminalReceiptStore.Clear();
 }
 
 static void VerifyExactIdentity()

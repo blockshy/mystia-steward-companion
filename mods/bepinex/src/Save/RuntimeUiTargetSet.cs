@@ -14,6 +14,7 @@ internal enum RuntimeUiTargetKinds
     None = 0,
     Rare = 1,
     Normal = 2,
+    Slot2 = 4, Slot3 = 8, Slot4 = 16, Slot5 = 32, Slot6 = 64, Slot7 = 128,
 }
 
 /// <summary>
@@ -47,7 +48,8 @@ internal sealed class RuntimeUiTargetSnapshot
         IEnumerable<int> extraIngredientIds,
         int beverageId,
         int cookerTypeId,
-        string targetRevision)
+        string targetRevision,
+        int colorSlot = -1)
     {
         ArgumentNullException.ThrowIfNull(orderTraceId);
         ArgumentNullException.ThrowIfNull(orderKey);
@@ -124,6 +126,10 @@ internal sealed class RuntimeUiTargetSnapshot
                 nameof(targetRevision));
         }
 
+        // 槽位代表精确订单，不代表客人种类。旧的双目标构造默认仅用于独立专项测试；
+        // 业务发布始终传入稳定分配器给出的槽位，不能用列表索引取色。
+        ColorSlot = colorSlot == -1 ? (kind == RuntimeUiTargetKind.Rare ? 0 : 1) : colorSlot;
+        if (ColorSlot is < 0 or > 7) throw new ArgumentOutOfRangeException(nameof(colorSlot));
         Kind = kind;
         Color = color;
         ListPinningEnabled = listPinningEnabled;
@@ -139,6 +145,7 @@ internal sealed class RuntimeUiTargetSnapshot
         BeverageId = beverageId;
         CookerTypeId = cookerTypeId;
         TargetRevision = targetRevision;
+        IdentityKey = $"{Kind}:{OrderTraceId}:{OrderLifecycleSequence}:{OrderKey}";
         _ingredientIds = normalizedIngredientIds;
         _extraIngredientIds = normalizedExtraIngredientIds;
         _readOnlyIngredientIds = Array.AsReadOnly(_ingredientIds);
@@ -147,9 +154,10 @@ internal sealed class RuntimeUiTargetSnapshot
 
     public RuntimeUiTargetKind Kind { get; }
 
-    public RuntimeUiTargetKinds Claim => Kind == RuntimeUiTargetKind.Rare
-        ? RuntimeUiTargetKinds.Rare
-        : RuntimeUiTargetKinds.Normal;
+    /// <summary>发布内至多八个订单各占一位；同一实体的声明按位合并，撤回一单不会抹除其他单。</summary>
+    public int ColorSlot { get; }
+    public RuntimeUiTargetKinds Claim => (RuntimeUiTargetKinds)(1 << ColorSlot);
+    public string IdentityKey { get; }
 
     public RuntimeTargetHighlightColor Color { get; }
 
@@ -192,6 +200,7 @@ internal sealed class RuntimeUiTargetSnapshot
     {
         ArgumentNullException.ThrowIfNull(other);
         return Kind == other.Kind
+            && ColorSlot == other.ColorSlot
             && Color == other.Color
             && ListPinningEnabled == other.ListPinningEnabled
             && RecipeVariantEnabled == other.RecipeVariantEnabled
@@ -264,13 +273,21 @@ internal sealed class RuntimeUiTargetSnapshot
 }
 
 /// <summary>
-/// Atomic rare/normal UI target publication. The collection is always ordered rare then normal
-/// and contains at most one target of each kind.
+/// 多订单原子发布，按颜色槽位稳定排列。每个精确订单及槽位只能出现一次，最多八单。
 /// </summary>
 internal sealed class RuntimeUiTargetSetSnapshot
 {
     private readonly RuntimeUiTargetSnapshot[] _targets;
     private readonly ReadOnlyCollection<RuntimeUiTargetSnapshot> _readOnlyTargets;
+
+    // 列表、厨具每帧按实体查询声明，索引仅在不可变发布创建时构建。
+    // 避免每张卡、每个资源在 LateUpdate 中分配捕获式委托或重复遍历全部订单。
+    private readonly Dictionary<int, RuntimeUiTargetKinds> _recipeClaims = new();
+    private readonly Dictionary<int, RuntimeUiTargetKinds> _baseRecipeClaims = new();
+    private readonly Dictionary<int, RuntimeUiTargetKinds> _variantRecipeClaims = new();
+    private readonly Dictionary<int, RuntimeUiTargetKinds> _ingredientClaims = new();
+    private readonly Dictionary<int, RuntimeUiTargetKinds> _beverageClaims = new();
+    private readonly Dictionary<int, RuntimeUiTargetKinds> _cookerClaims = new();
 
     public static readonly RuntimeUiTargetSetSnapshot Disabled = new(
         generation: 0,
@@ -283,12 +300,13 @@ internal sealed class RuntimeUiTargetSetSnapshot
         IEnumerable<RuntimeUiTargetSnapshot> targets)
     {
         ArgumentNullException.ThrowIfNull(targets);
-        var normalizedTargets = targets.OrderBy(target => target.Kind).ToArray();
-        if (normalizedTargets.Length > 2
-            || normalizedTargets.Select(target => target.Kind).Distinct().Count() != normalizedTargets.Length)
+        var normalizedTargets = targets.OrderBy(target => target.ColorSlot).ToArray();
+        if (normalizedTargets.Length > 8
+            || normalizedTargets.Select(target => target.IdentityKey).Distinct().Count() != normalizedTargets.Length
+            || normalizedTargets.Select(target => target.ColorSlot).Distinct().Count() != normalizedTargets.Length)
         {
             throw new ArgumentException(
-                "A UI target publication accepts at most one rare and one normal target.",
+                "UI 目标发布最多包含八个不同订单，且每个订单使用独立颜色槽位。",
                 nameof(targets));
         }
 
@@ -303,6 +321,15 @@ internal sealed class RuntimeUiTargetSetSnapshot
         var seatClaims = new Dictionary<int, RuntimeSeatHighlightClaim>();
         foreach (var target in _targets)
         {
+            if (target.ListPinningEnabled)
+            {
+                AddClaim(_recipeClaims, target.RecipeId, target.Claim);
+                AddClaim(target.RecipeVariantEnabled && target.ExtraIngredientIds.Count > 0
+                    ? _variantRecipeClaims : _baseRecipeClaims, target.RecipeId, target.Claim);
+                foreach (var ingredientId in target.IngredientIds) AddClaim(_ingredientClaims, ingredientId, target.Claim);
+                AddClaim(_beverageClaims, target.BeverageId, target.Claim);
+            }
+            if (target.CookerHighlightEnabled) AddClaim(_cookerClaims, target.CookerTypeId, target.Claim);
             if (!target.SeatHighlightEnabled || target.DeskCode < 0) continue;
             var combined = target.Claim;
             if (seatClaims.TryGetValue(target.DeskCode, out var existing)) combined |= existing.Claims;
@@ -311,14 +338,8 @@ internal sealed class RuntimeUiTargetSetSnapshot
         }
         SeatHighlightClaims = new ReadOnlyDictionary<int, RuntimeSeatHighlightClaim>(seatClaims);
 
-        var rareColor = RuntimeTargetHighlightColor.DefaultRare;
-        var normalColor = RuntimeTargetHighlightColor.DefaultNormal;
-        foreach (var target in _targets)
-        {
-            if (target.Kind == RuntimeUiTargetKind.Rare) rareColor = target.Color;
-            else normalColor = target.Color;
-        }
-        Palette = new RuntimeTargetHighlightPalette(rareColor, normalColor);
+        Palette = new RuntimeTargetHighlightPalette(_targets);
+
     }
 
     public long Generation { get; }
@@ -333,56 +354,55 @@ internal sealed class RuntimeUiTargetSetSnapshot
 
     public RuntimeTargetHighlightPalette Palette { get; }
 
-    public bool TryGetTarget(RuntimeUiTargetKind kind, out RuntimeUiTargetSnapshot target)
+    /// <summary>仅用精确订单键查询；同一种类存在多单时不能返回第一项冒充目标。</summary>
+    public bool TryGetTarget(string identityKey, out RuntimeUiTargetSnapshot target)
     {
-        target = _targets.FirstOrDefault(candidate => candidate.Kind == kind)!;
-        return target != null;
+        // 八单上界使简单遍历足够；比较缓存标识，不生成 LINQ 闭包或拼接新字符串。
+        foreach (var candidate in _targets)
+        {
+            if (!string.Equals(candidate.IdentityKey, identityKey, StringComparison.Ordinal)) continue;
+            target = candidate;
+            return true;
+        }
+        target = null!;
+        return false;
     }
 
-    public RuntimeUiTargetKinds GetRecipeClaims(int recipeId)
-    {
-        return GetClaims(target => target.ListPinningEnabled && target.RecipeId == recipeId);
-    }
+    public RuntimeUiTargetKinds GetRecipeClaims(int recipeId) => ReadClaim(_recipeClaims, recipeId);
+
+    /// <summary>有实际加料的变体只占据合成行，不把其声明同时叠到权威基础配方行。</summary>
+    public RuntimeUiTargetKinds GetBaseRecipeClaims(int recipeId) => ReadClaim(_baseRecipeClaims, recipeId);
+    public RuntimeUiTargetKinds GetRecipeVariantClaims(int recipeId) => ReadClaim(_variantRecipeClaims, recipeId);
+    public bool HasRecipeVariants(int recipeId) => GetRecipeVariantClaims(recipeId) != RuntimeUiTargetKinds.None;
+    public RuntimeUiTargetKinds GetIngredientClaims(int ingredientId) => ReadClaim(_ingredientClaims, ingredientId);
+    public RuntimeUiTargetKinds GetBeverageClaims(int beverageId) => ReadClaim(_beverageClaims, beverageId);
+    public RuntimeUiTargetKinds GetCookerClaims(int cookerTypeId) => ReadClaim(_cookerClaims, cookerTypeId);
 
     /// <summary>
-    /// Returns claims that belong on the authoritative base-recipe row. Variant-enabled targets
-    /// with actual extras are represented by their exact synthetic row instead.
+    /// 取得某个显示条目所有有效声明中最早的点单序号。普客与稀客共用生命周期计数器，
+    /// 因而可跨类别排序；同物品只占一行，最早订单撤回后由剩余最早订单接续其优先级。
+    /// 无声明返回最大值，使非目标条目保持游戏原有相对顺序；不改变辅助候选或颜色槽。
     /// </summary>
-    public RuntimeUiTargetKinds GetBaseRecipeClaims(int recipeId)
+    internal long GetOrderPriority(RuntimeUiTargetKinds claims)
     {
-        return GetClaims(target =>
-            target.ListPinningEnabled
-            && target.RecipeId == recipeId
-            && (!target.RecipeVariantEnabled || target.ExtraIngredientIds.Count == 0));
+        var earliest = long.MaxValue;
+        foreach (var target in _targets)
+        {
+            if ((target.Claim & claims) == RuntimeUiTargetKinds.None) continue;
+            earliest = Math.Min(earliest, target.OrderLifecycleSequence);
+        }
+        return earliest;
     }
 
-    public RuntimeUiTargetKinds GetRecipeVariantClaims(int recipeId)
-    {
-        return GetClaims(target =>
-            target.ListPinningEnabled
-            && target.RecipeId == recipeId
-            && target.RecipeVariantEnabled
-            && target.ExtraIngredientIds.Count > 0);
-    }
+    private static RuntimeUiTargetKinds ReadClaim(Dictionary<int, RuntimeUiTargetKinds> index, int id) =>
+        index.TryGetValue(id, out var claim) ? claim : RuntimeUiTargetKinds.None;
 
-    public bool HasRecipeVariants(int recipeId)
+    private static void AddClaim(Dictionary<int, RuntimeUiTargetKinds> index, int id, RuntimeUiTargetKinds claim)
     {
-        return GetRecipeVariantClaims(recipeId) != RuntimeUiTargetKinds.None;
-    }
-
-    public RuntimeUiTargetKinds GetIngredientClaims(int ingredientId)
-    {
-        return GetClaims(target => target.ListPinningEnabled && target.ContainsIngredient(ingredientId));
-    }
-
-    public RuntimeUiTargetKinds GetBeverageClaims(int beverageId)
-    {
-        return GetClaims(target => target.ListPinningEnabled && target.BeverageId == beverageId);
-    }
-
-    public RuntimeUiTargetKinds GetCookerClaims(int cookerTypeId)
-    {
-        return GetClaims(target => target.CookerHighlightEnabled && target.CookerTypeId == cookerTypeId);
+        // -1 表示未提供实体；不能令缺失的配方/酒水在查询负占位时得到真实订单声明。
+        if (id < 0) return;
+        index.TryGetValue(id, out var previous);
+        index[id] = previous | claim;
     }
 
     public bool HasSameValues(
@@ -402,15 +422,7 @@ internal sealed class RuntimeUiTargetSetSnapshot
         return true;
     }
 
-    private RuntimeUiTargetKinds GetClaims(Func<RuntimeUiTargetSnapshot, bool> predicate)
-    {
-        var claims = RuntimeUiTargetKinds.None;
-        foreach (var target in _targets)
-        {
-            if (predicate(target)) claims |= target.Claim;
-        }
-        return claims;
-    }
+
 }
 
 /// <summary>一次目标发布内的纯托管座位声明；同桌普客/稀客合并标志，保留完整发布及经营代次。</summary>

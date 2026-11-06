@@ -124,6 +124,33 @@ namespace MystiaStewardCompanion.LocalApi
             }
         }
         internal void Invalidate() => InvalidateBusinessInput();
+        /// <summary>
+        /// 保留一次已完成帧的真实 UI 发布输入，用来模拟配置变更后迟到的旧计算回调。
+        /// 只在当前结果稳定时捕获；重放仍调用生产发布函数及其权威校验，不能伪造拒绝结果。
+        /// </summary>
+        internal Func<bool> CaptureGameUiReplayForTest()
+        {
+            lock (_businessLock)
+            {
+                var frame = _businessResultFrame ?? throw new InvalidOperationException("尚无已完成业务帧。");
+                var result = J.Obj(J.Clone(_businessLastOrderResult ?? throw new InvalidOperationException("尚无已完成推荐结果。")));
+                var normalTargets = MystiaStewardCompanion.Business.Application.BusinessQueries.BindNormalTargetRows(
+                    result["normalExecutionTargets"], frame.Snapshot);
+                return () =>
+                {
+                    // 与真实发布共用权威锁，隔离后台当前帧的合法发布，避免将其计数变化
+                    // 错判成旧帧复活；被测旧帧仍必须自行通过生产校验才能到达发布替身。
+                    lock (_authorityTransitionLock)
+                    {
+                        var publications = RuntimeUiPinningService.PublicationCount;
+                        var targets = RuntimeUiPinningService.Targets;
+                        PublishBusinessGameUi(frame, result, normalTargets);
+                        return RuntimeUiPinningService.PublicationCount == publications
+                            && ReferenceEquals(RuntimeUiPinningService.Targets, targets);
+                    }
+                };
+            }
+        }
         internal void AddFavorite() => _favoriteStore.AddRecipe(3, "测试稀客", "鲜", 101, Array.Empty<int>());
         internal void CheckFrameAuthorityDoesNotRenew()
         {

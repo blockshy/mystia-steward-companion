@@ -40,6 +40,8 @@ internal enum AutomationCookingControllerLeaseReleaseReason
     ManualHandoff,
     DeliveryCleanupCompleted,
     DeliveryCleanupTerminated,
+    // 原生订单已经结束，只释放逻辑预约；不影响未由 Mod 送达的成品与现场。
+    OrderTerminatedBeforeDelivery,
 }
 
 /// <summary>

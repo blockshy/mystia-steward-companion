@@ -25,6 +25,13 @@ internal readonly record struct RuntimeAutomationControlDecision(
     bool CompletionConfigured);
 
 /// <summary>
+/// 从当前已确认的共享配置提取的调度策略。只保存标量，不持有 JSON 或游戏对象；
+/// 队列恢复同时服务手动高亮，不能把自动化执行租约或料理开关当作此策略的启用条件。
+/// </summary>
+internal readonly record struct RuntimeRareGuestAutoResumeSettings(
+    long AuthorityRevision, bool Enabled, int ThresholdPercent, bool ToFront);
+
+/// <summary>
 /// Holds the control-state lock across one native side-effect boundary.
 /// </summary>
 /// <remarks>
@@ -66,6 +73,10 @@ internal static class RuntimeAutomationControlState
 {
     private static readonly object SyncRoot = new();
     private static RuntimeAutomationControlProfile? _profile;
+    // 有效名单与模块状态一并发布；关闭模块保留配置，仅清空执行所用的名单。
+    private static int[] _configuredManagedRareGuestIds = Array.Empty<int>();
+    private static bool _participationModuleEnabled;
+    private static RuntimeRareGuestAutoResumeSettings _rareAutoResume = new(0, false, 30, false);
     private static long _authorityRevision;
     private static long _leaseAuthorityRevision;
     private static DateTime _leaseExpiresAtUtc;
@@ -95,10 +106,16 @@ internal static class RuntimeAutomationControlState
         }
 
         var profile = RuntimeAutomationControlProfile.Parse(activeProfile);
+        var enabled = activeProfile.TryGetProperty("rareGuestParticipationModuleEnabled", out var module) && module.ValueKind == JsonValueKind.True;
+        var managed = ParseManagedGuestIds(activeProfile);
+        var autoResume = ParseRareAutoResume(activeProfile, authorityRevision, enabled);
         lock (SyncRoot)
         {
-            var changed = _authorityRevision != authorityRevision || _profile != profile;
+            var changed = _authorityRevision != authorityRevision || _profile != profile || _rareAutoResume != autoResume;
             _profile = profile;
+            _participationModuleEnabled = enabled;
+            _configuredManagedRareGuestIds = managed;
+            _rareAutoResume = autoResume;
             _authorityRevision = authorityRevision;
             if (!changed) return;
 
@@ -142,6 +159,9 @@ internal static class RuntimeAutomationControlState
         lock (SyncRoot)
         {
             _profile = null;
+            _participationModuleEnabled = false;
+            _rareAutoResume = new(0, false, 30, false);
+            _configuredManagedRareGuestIds = Array.Empty<int>();
             _authorityRevision = 0;
             _leaseAuthorityRevision = 0;
             _leaseExpiresAtUtc = DateTime.MinValue;
@@ -150,6 +170,75 @@ internal static class RuntimeAutomationControlState
         }
     }
 
+    /// <summary>只复制当前生效名单；未启用模块与空名单完全沿用原自动化流程。</summary>
+    public static IReadOnlyList<int> SnapshotManagedRareGuestIds()
+    {
+        lock (SyncRoot) return _participationModuleEnabled
+            ? _configuredManagedRareGuestIds.ToArray() : Array.Empty<int>();
+    }
+
+    public static bool SnapshotRareGuestParticipationModuleEnabled()
+    {
+        lock (SyncRoot) return _participationModuleEnabled;
+    }
+
+    /// <summary>发布节奏内读取策略；模块关闭时保留配置，却不允许自动恢复任何暂停订单。</summary>
+    internal static RuntimeRareGuestAutoResumeSettings SnapshotRareGuestAutoResumeSettings()
+    {
+        lock (SyncRoot) return _rareAutoResume;
+    }
+
+    /// <summary>
+    /// 共享存储负责 schema 迁移；运行时仍拒绝畸形值。缺失字段只供旧内部夹具使用关闭默认，
+    /// 不得把非法位置或越界阈值静默修正为一个会改变队列的有效策略。
+    /// </summary>
+    private static RuntimeRareGuestAutoResumeSettings ParseRareAutoResume(JsonElement profile, long revision, bool moduleEnabled)
+    {
+        var fieldCount = (profile.TryGetProperty("rareGuestParticipationAutoResumeEnabled", out _) ? 1 : 0)
+            + (profile.TryGetProperty("rareGuestParticipationAutoResumeThresholdPercent", out _) ? 1 : 0)
+            + (profile.TryGetProperty("rareGuestParticipationAutoResumePosition", out _) ? 1 : 0);
+        if (fieldCount is > 0 and < 3)
+            throw new InvalidDataException("等待条自动启用配置必须同时提供开关、阈值和队列位置。");
+        var enabled = false;
+        if (profile.TryGetProperty("rareGuestParticipationAutoResumeEnabled", out var enabledValue))
+        {
+            if (enabledValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new InvalidDataException("等待条自动启用必须是布尔值。");
+            enabled = enabledValue.GetBoolean();
+        }
+        var threshold = 30;
+        if (profile.TryGetProperty("rareGuestParticipationAutoResumeThresholdPercent", out var thresholdValue)
+            && (thresholdValue.ValueKind != JsonValueKind.Number || !thresholdValue.TryGetInt32(out threshold) || threshold is < 1 or > 100))
+            throw new InvalidDataException("等待条自动启用阈值必须是 1 至 100 的整数。");
+        var front = false;
+        if (profile.TryGetProperty("rareGuestParticipationAutoResumePosition", out var position))
+        {
+            if (position.ValueKind != JsonValueKind.String || position.GetString() is not ("front" or "tail"))
+                throw new InvalidDataException("等待条自动启用位置必须是 front 或 tail。");
+            front = position.GetString() == "front";
+        }
+        return new(revision, moduleEnabled && enabled, threshold, front);
+    }
+
+    /// <summary>
+    /// 配置存储已完成 schema 迁移和校验，此处仍独立拒绝无序、重复、负数和超长名单，
+    /// 防止运行时调用绕过存储层。缺失字段仅表示旧内部离线夹具的禁用默认值。
+    /// </summary>
+    private static int[] ParseManagedGuestIds(JsonElement profile)
+    {
+        if (!profile.TryGetProperty("managedRareGuestIds", out var values)) return Array.Empty<int>();
+        if (values.ValueKind != JsonValueKind.Array || values.GetArrayLength() > 512)
+            throw new InvalidDataException("稀客调度名单必须是最多 512 项的数组。");
+        var result = new int[values.GetArrayLength()];
+        var previous = -1; var index = 0;
+        foreach (var value in values.EnumerateArray())
+        {
+            if (!value.TryGetInt32(out var id) || id < 0 || id <= previous)
+                throw new InvalidDataException("稀客调度名单必须是非负且严格递增的整数。");
+            result[index++] = id; previous = id;
+        }
+        return result;
+    }
     public static RuntimeAutomationControlDecision Observe(
         RuntimeAutomationControlTargetKind targetKind,
         RuntimeAutomationControlStage stage,

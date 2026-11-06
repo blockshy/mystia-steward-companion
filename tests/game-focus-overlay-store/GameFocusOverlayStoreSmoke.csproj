@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><LangVersion>10.0</LangVersion>
+  </PropertyGroup>
+  <!-- 只链接真实纯托管仓库，不依赖Unity或HTTP宿主；与完整宿主共用相同断言。 -->
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="Production/AtomicFile.cs" />
+    <Compile Include="../../mods/bepinex/src/Ui/GameFocusOverlayModels.cs" Link="Production/GameFocusOverlayModels.cs" />
+    <Compile Include="../../mods/bepinex/src/Ui/GameFocusOverlayStore.cs" Link="Production/GameFocusOverlayStore.cs" />
+    <Compile Include="../flutter-contracts/host/GameFocusOverlayStoreContractTests.cs" Link="GameFocusOverlayStoreContractTests.cs" />
+  </ItemGroup>
+</Project>

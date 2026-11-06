@@ -23,6 +23,7 @@ public static class RuntimeRecommendationSupport
             ["disabledIngredientIds"] = new JsonArray(),
             ["excludedIngredientIds"] = Clone(preferences["recommendationExclusions"]?["excludedIngredientIds"]) ?? new JsonArray(),
             ["excludedBeverageIds"] = Clone(preferences["recommendationExclusions"]?["excludedBeverageIds"]) ?? new JsonArray(),
+            ["storedDarkCuisineCount"] = Clone(runtime["storedDarkCuisineCount"]),
             ["ownedIngredientQty"] = Clone(runtimeSets["ownedIngredientQty"]) ?? new JsonObject(),
             ["ownedBeverageQty"] = Clone(runtimeSets["ownedBeverageQty"]) ?? new JsonObject(),
             ["placedCookerNames"] = Cookers.BuildRecommendationCookerNameSet(runtimeSets, Bool(preferences["filterMissingCookers"])),

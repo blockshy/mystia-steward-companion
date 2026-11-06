@@ -17,6 +17,7 @@ internal sealed partial class LocalApiServer
         "Kind",
         "Revision",
         "Color",
+        "ColorSlot",
         "ListPinningEnabled",
         "RecipeVariantEnabled",
         "CookerHighlightEnabled",
@@ -73,7 +74,8 @@ internal sealed partial class LocalApiServer
             ReadExactNonNegativeIntListQuery(query, $"{prefix}ExtraIngredientIds", 5),
             ReadRequiredOptionalIdQuery(query, $"{prefix}BeverageId"),
             ReadRequiredOptionalIdQuery(query, $"{prefix}CookerTypeId"),
-            ReadStringQuery(query, $"{prefix}Revision"));
+            ReadStringQuery(query, $"{prefix}Revision"),
+            ReadRequiredNonNegativeIntQuery(query, $"{prefix}ColorSlot"));
     }
 
     private static void ValidateUiPinningTargetParameters(string query, int targetCount)

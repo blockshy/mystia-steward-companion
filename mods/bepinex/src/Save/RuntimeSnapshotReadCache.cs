@@ -115,6 +115,7 @@ internal sealed class RuntimeSnapshotReadCache
             HasServedBeverage = existing.HasServedBeverage,
             ReadyToEvaluate = existing.ReadyToEvaluate,
             HasEvaluated = existing.HasEvaluated,
+            PatienceRemainingRatio = existing.PatienceRemainingRatio,
             ControllerAvailable = existing.ControllerAvailable,
             CanAutomate = existing.CanAutomate,
             ActionBlockReason = existing.ActionBlockReason,

@@ -4,8 +4,9 @@ namespace MystiaStewardCompanion.Save;
 
 internal readonly record struct RuntimeTargetHighlightColor(byte R, byte G, byte B)
 {
-    public static readonly RuntimeTargetHighlightColor DefaultRare = new(0xFF, 0xDB, 0x2E);
-    public static readonly RuntimeTargetHighlightColor DefaultNormal = new(0x5F, 0xAC, 0xD3);
+    // 无显式目标的缺省首色与新配置保持一致；已解析目标始终使用各自保存的槽位颜色。
+    public static readonly RuntimeTargetHighlightColor DefaultRare = new(0xF2, 0xCA, 0x5C);
+    public static readonly RuntimeTargetHighlightColor DefaultNormal = new(0x5A, 0xA9, 0xE6);
 
     public static bool TryParseExactHex(string value, out RuntimeTargetHighlightColor color)
     {
@@ -39,9 +40,74 @@ internal readonly record struct RuntimeTargetHighlightColor(byte R, byte G, byte
     }
 }
 
-internal readonly record struct RuntimeTargetHighlightPalette(
-    RuntimeTargetHighlightColor Rare,
-    RuntimeTargetHighlightColor Normal);
+/// <summary>
+/// 不可变槽位调色板。声明槽决定订单身份和颜色，显示槽序决定色块左右位置，两者独立；
+/// 只在发布时构建顺序，渲染帧按缓存顺序筛选声明，不排序或分配集合。
+/// </summary>
+internal readonly struct RuntimeTargetHighlightPalette
+{
+    private readonly RuntimeTargetHighlightColor[] _colors;
+    private readonly int[] _displaySlots;
+    public RuntimeTargetHighlightPalette(RuntimeTargetHighlightColor rare, RuntimeTargetHighlightColor normal)
+    {
+        _colors = new RuntimeTargetHighlightColor[8];
+        _colors[0] = rare; _colors[1] = normal;
+        // 双目标纯值夹具没有生命周期输入，维持原来0、1槽的确定顺序。
+        _displaySlots = new[] { 0, 1, 2, 3, 4, 5, 6, 7 };
+    }
+    public RuntimeTargetHighlightPalette(IReadOnlyList<RuntimeUiTargetSnapshot> targets)
+    {
+        _colors = new RuntimeTargetHighlightColor[8];
+        _displaySlots = new int[8];
+        Span<long> lifecycles = stackalloc long[8];
+        lifecycles.Fill(long.MaxValue);
+        foreach (var target in targets)
+        {
+            _colors[target.ColorSlot] = target.Color;
+            lifecycles[target.ColorSlot] = target.OrderLifecycleSequence;
+        }
+        // 普客与稀客的序号来自同一个BeginLifecycle计数器，可跨类别比较点单先后。
+        // 至多八槽做稳定插入排序；并列生命周期（主要是离线夹具）按槽号保持确定性。
+        // 空槽保留在末尾且不参与有效声明，不能把空槽复用当成新订单应回到旧位置的依据。
+        for (var slot = 0; slot < _displaySlots.Length; slot++)
+        {
+            var position = slot;
+            while (position > 0 && lifecycles[_displaySlots[position - 1]] > lifecycles[slot])
+            {
+                _displaySlots[position] = _displaySlots[position - 1];
+                position--;
+            }
+            _displaySlots[position] = slot;
+        }
+    }
+    public RuntimeTargetHighlightColor Rare => this[0];
+    public RuntimeTargetHighlightColor Normal => this[1];
+    public RuntimeTargetHighlightColor this[int slot] => _colors[slot];
+
+    /// <summary>
+    /// 按订单生命周期提取某个资源的可见颜色。先筛选该资源的声明，再合并同色，
+    /// 让同色块位于仍关联该资源的最早订单处；撤回一笔声明不会抹除其他同色订单。
+    /// 调用方使用八元素栈缓冲区，颜色或排列变化均可通过逐元素比较触发网格更新。
+    /// </summary>
+    internal int CollectDisplayColors(RuntimeUiTargetKinds claims, Span<RuntimeTargetHighlightColor> destination)
+    {
+        var mask = (int)claims;
+        if (mask < 0 || (mask & ~255) != 0 || destination.Length < 8)
+            throw new ArgumentOutOfRangeException(nameof(claims));
+        // 空声明不访问颜色存储，保持默认值调色板也能安全撤回显示的既有行为。
+        if (mask == 0) return 0;
+        var count = 0;
+        foreach (var slot in _displaySlots)
+        {
+            if ((mask & (1 << slot)) == 0) continue;
+            var color = _colors[slot];
+            var duplicate = false;
+            for (var index = 0; index < count; index++) duplicate |= destination[index] == color;
+            if (!duplicate) destination[count++] = color;
+        }
+        return count;
+    }
+}
 
 /// <summary>
 /// Computes tint properties from an immutable target palette and pulse clock.
@@ -49,8 +115,29 @@ internal readonly record struct RuntimeTargetHighlightPalette(
 /// </summary>
 internal static class RuntimeTargetHighlightStyle
 {
+    /// <summary>
+    /// 订单卡片使用固定透明度，不再随时钟明暗呼吸。多声明的已有颜色轮换仍保留，
+    /// 避免共用视觉时只显示第一笔订单；通常每张订单卡只有一个精确声明。
+    /// </summary>
+    internal static Color BuildOrderHighlightColor(RuntimeUiTargetKinds claims,
+        RuntimeTargetHighlightPalette palette, float realtimeSinceStartup)
+    {
+        var color = ResolveTargetColor(claims, palette, realtimeSinceStartup);
+        return new Color(color.r, color.g, color.b, 0.81f);
+    }
+
+    /// <summary>桌位同样取消明暗呼吸，保留既有中间亮度与多声明颜色轮换。</summary>
+    internal static Color BuildSeatFillColor(RuntimeUiTargetKinds claims,
+        RuntimeTargetHighlightPalette palette, float realtimeSinceStartup)
+    {
+        var color = ResolveTargetColor(claims, palette, realtimeSinceStartup);
+        return new Color(color.r, color.g, color.b, 0.575f);
+    }
+
     private const float PulseFrequency = 5.5f;
-    private const float SharedColorRoundTripFrequency = PulseFrequency * 0.5f;
+    // 每色固定停留 1.5 秒、末尾 0.3 秒柔和切换。共享订单越多只延长总周期，不加快闪烁。
+    private const float SharedColorDwellSeconds = 1.5f;
+    private const float SharedColorTransitionSeconds = 0.3f;
     private const float MinimumOrderHighlightAlpha = 0.62f;
     private const float OrderHighlightAlphaAmplitude = 0.19f;
     private const float MinimumTintBlend = 0.55f;
@@ -116,16 +203,21 @@ internal static class RuntimeTargetHighlightStyle
         RuntimeTargetHighlightPalette palette,
         float realtimeSinceStartup)
     {
-        return claims switch
-        {
-            RuntimeUiTargetKinds.Rare => palette.Rare.ToUnityColor(),
-            RuntimeUiTargetKinds.Normal => palette.Normal.ToUnityColor(),
-            RuntimeUiTargetKinds.Rare | RuntimeUiTargetKinds.Normal => BlendTargetColors(
-                palette.Rare,
-                palette.Normal,
-                BuildSharedColorRatio(realtimeSinceStartup)),
-            _ => throw new ArgumentOutOfRangeException(nameof(claims), claims, "A highlighted resource must have a target claim."),
-        };
+        var mask = (int)claims;
+        if (mask <= 0 || (mask & ~255) != 0)
+            throw new ArgumentOutOfRangeException(nameof(claims));
+        Span<int> slots = stackalloc int[8];
+        var count = 0;
+        for (var slot = 0; slot < 8; slot++)
+            if ((mask & (1 << slot)) != 0) slots[count++] = slot;
+        if (count == 1) return palette[slots[0]].ToUnityColor();
+        var clock = MathF.Max(0f, realtimeSinceStartup);
+        var index = (int)(clock / SharedColorDwellSeconds) % count;
+        var within = clock % SharedColorDwellSeconds;
+        var amount = Math.Clamp((within - (SharedColorDwellSeconds - SharedColorTransitionSeconds))
+            / SharedColorTransitionSeconds, 0f, 1f);
+        // 大部分时间精确显示预设色；过渡仅用于消除突变，不把混合色作为第三种订单身份。
+        return BlendTargetColors(palette[slots[index]], palette[slots[(index + 1) % count]], amount);
     }
 
     private static Color BlendTargetColors(
@@ -145,14 +237,6 @@ internal static class RuntimeTargetHighlightStyle
     private static float BuildPulseRatio(float realtimeSinceStartup)
     {
         return (MathF.Sin(realtimeSinceStartup * PulseFrequency) + 1f) * 0.5f;
-    }
-
-    private static float BuildSharedColorRatio(float realtimeSinceStartup)
-    {
-        // Shared-resource hue travels at half the intensity frequency. At both exact color
-        // endpoints the intensity pulse is at the same midpoint, so neither order kind is
-        // permanently rendered with a stronger tint.
-        return (MathF.Sin(realtimeSinceStartup * SharedColorRoundTripFrequency) + 1f) * 0.5f;
     }
 
     private static float BuildTintBlend(float realtimeSinceStartup)

@@ -35,7 +35,7 @@ internal static class CompletedDisplayTests
                 snapshot["snapshotSignature"] = "captured-" + index;
                 J.Obj(orders[0])["lastSeenAtUtc"] = "captured-" + index;
                 host.Publish(snapshot, catalog);
-                var complete = host.CaptureCompletedDisplayForTest();
+                var complete = host.CaptureCompletedDisplayForTest(seedColors: index == 0);
                 snapshot["snapshotSignature"] = "queued-" + index;
                 J.Obj(orders[0])["lastSeenAtUtc"] = "queued-" + index;
                 host.Publish(snapshot, catalog);
@@ -47,8 +47,11 @@ internal static class CompletedDisplayTests
                 Check(J.Str(status["recommendations"]?["recommendations"]?[0]?["order"]?["lastSeenAtUtc"]) == "captured-" + index,
                     "只读完成结果没有持续前进。");
                 Check(J.Arr(status["recommendations"]?["normalExecutionTargets"]).Count == 0
-                    && status["gameUiTargets"]?["rare"] == null && status["gameUiTargets"]?["normal"] == null,
+                    && J.Arr(status["gameUiTargets"]?["rare"]).Count == 0 && J.Arr(status["gameUiTargets"]?["normal"]).Count == 0,
                     "过期展示携带了可误用的执行/高亮目标。");
+                Check(J.Arr(status["gameUiTargets"]?["orderColors"]).Count == 1
+                    && J.Str(status["gameUiTargets"]?["orderColors"]?[0]?["traceId"]) == "R-1",
+                    "刷新期间只读展示丢失了已有订单颜色。");
             }
             Check(!host.HasExecutionFrameForCompletedDisplayTest && effects == 0, "只读完成发布推进了执行帧或产生动作。");
 
@@ -82,9 +85,12 @@ namespace MystiaStewardCompanion.LocalApi
     internal sealed partial class LocalApiServer
     {
         /// <summary>仅测试捕获与完成时刻；调用真实求解/发布逻辑，不新增产品中的可注入权限或调度钩子。</summary>
-        internal Func<bool> CaptureCompletedDisplayForTest()
+        internal Func<bool> CaptureCompletedDisplayForTest(bool seedColors = false)
         {
             var frame = CaptureBusinessFrame();
+            // 模拟本场前一次当前发布已分配颜色；不建立执行帧或调用原生界面。
+            if (seedColors) _orderHighlightAssignments.ProjectSnapshot((long)J.Num(frame.Snapshot["nightBusinessGeneration"]),
+                frame.Snapshot["nightBusiness"], frame.Snapshot["normalBusiness"], frame.Preferences);
             return () =>
             {
                 var result = EvaluateBusinessOrders(frame, out _, out var milliseconds);

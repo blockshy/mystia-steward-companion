@@ -41,7 +41,9 @@ internal static class RuntimeServeInWorkMissionSignalReconciler
 
             foreach (var foodId in definition.FoodIds)
             {
-                if (foodId < 0)
+                // 此处仅接收已验证 ServeInWork 定义；-1 是明确的黑暗料理目标，
+                // 并非缺失字段的默认值。未知负数仍拒绝整个信号集合，避免错误任务写入。
+                if (foodId < -1)
                 {
                     return false;
                 }

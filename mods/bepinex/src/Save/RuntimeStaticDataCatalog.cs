@@ -166,6 +166,7 @@ internal sealed class RuntimeStaticDataCatalog
                 Ingredients = ingredients,
                 Beverages = beverages,
                 Recipes = recipes,
+                SpecialProducts = ReadSpecialProducts(methods.RefFood, methods.GetFoodLang, foodTags),
                 NormalCustomers = normalCustomers,
                 RareCustomers = rareCustomers,
                 FoodTagIdMap = ToStringKeyDictionary(foodTags),
@@ -300,6 +301,36 @@ internal sealed class RuntimeStaticDataCatalog
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 黑暗料理由游戏烹饪失败转换产生，没有 RecipesMapping 条目。只读取 Food -1 的
+    /// 精确原生定义与本地化，绝不追加伪配方。此能力读取失败时保留普通目录，单独让任务目标等待。
+    /// </summary>
+    private static List<SpecialFoodProduct> ReadSpecialProducts(
+        MethodInfo refFood, MethodInfo getFoodLang, IReadOnlyDictionary<int, string> foodTags)
+    {
+        try
+        {
+            var food = InvokeRequiredStatic(refFood, -1);
+            RequireRuntimeObjectId(food, -1, "DataBaseCore.RefFood(-1)");
+            return new List<SpecialFoodProduct>
+            {
+                new()
+                {
+                    Id = -1, ProductKind = "dark-cuisine",
+                    Name = ReadRequiredLanguageName(getFoodLang, -1),
+                    PositiveTags = ReadTagNames(ReadRequiredIntArrayMember(food, "RawTags"), foodTags),
+                    Level = ReadRequiredIntMember(food, "level"),
+                    Price = ReadRequiredIntMember(food, "baseValue"),
+                },
+            };
+        }
+        catch
+        {
+            // 专项能力未知不能污染普通料理、任务列表或其他订单的计算。
+            return new List<SpecialFoodProduct>();
+        }
     }
 
     private static List<RuntimeRecipeDescriptor> ReadRecipeDescriptors(

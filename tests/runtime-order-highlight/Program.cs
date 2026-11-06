@@ -140,16 +140,28 @@ RuntimeOrderHighlightService.Tick();
 Assert(GameObject.Instantiated.Count == 1, "The exact target order must create one private overlay despite another order sharing its desk.");
 var firstOverlay = FindLatestOverlay();
 var firstOverlayImage = InspectPrivateOverlay(firstOverlay);
+Assert(Math.Abs(firstOverlay.transform.rect.width - 32f) < 0.001f
+       && Math.Abs(firstOverlay.transform.localPosition.y + firstOverlay.transform.rect.yMin + 33f) < 0.001f
+       && Math.Abs(firstOverlay.transform.localPosition.y + firstOverlay.transform.rect.yMax - 15f) < 0.001f,
+    "订单覆盖层必须保留原宽度/底边，并在原生桌号区域下沿结束；不能给整张卡片染色。");
 Assert(RuntimeOrderHighlightService.Status.Contains("active", StringComparison.Ordinal), "A unique registered target must become active.");
 Assert(RuntimeOrderHighlightService.Status.Contains($"order:0x{orderA.Pointer:x}", StringComparison.Ordinal), "Diagnostics must identify the exact captured order pointer.");
 AssertColor(firstOverlayImage.color, RuntimeTargetHighlightColor.DefaultRare,
     "The private border must use the configured rare-order highlight color.");
-Assert(firstOverlayImage.color.a is >= 0.62f and <= 1f, "The yellow overlay alpha must remain in the bounded pulse range.");
+Assert(Math.Abs(firstOverlayImage.color.a - 0.81f) < .0001f, "订单高亮必须使用固定透明度0.81。");
 
 Time.realtimeSinceStartup = 0.2f;
 var firstAlpha = firstOverlayImage.color.a;
 RuntimeOrderHighlightService.Tick();
-Assert(firstOverlayImage.color.a != firstAlpha, "An active private overlay must pulse without recreating the card.");
+Assert(firstOverlayImage.color.a == firstAlpha, "订单高亮不能因时间推进而明暗呼吸。");
+var stableColorWrites = firstOverlayImage.ColorWrites;
+for (var frame = 0; frame < 120; frame++)
+{
+    Time.realtimeSinceStartup = .2f + frame / 60f;
+    RuntimeOrderHighlightService.Tick();
+    Assert(firstOverlayImage.color.a == firstAlpha, "持续时钟推进不能改变订单透明度。");
+}
+Assert(firstOverlayImage.ColorWrites == stableColorWrites, "静态订单颜色不应逐帧重复写入UI图层。");
 Assert(GameObject.Instantiated.Count == 1, "Pulse updates must not recreate a healthy overlay.");
 Assert(elementA.current == nativeCurrent && elementA.ChangeBorderStyleCalls == 0, "Highlighting must not change the game's current order focus.");
 Assert(nativeImage.color == nativeColor
@@ -513,8 +525,8 @@ AssertColor(InspectPrivateOverlay(dualRareOverlay).color, dualRareColor,
 AssertColor(InspectPrivateOverlay(dualNormalOverlay).color, dualNormalColor,
     "The normal HUD card must use its injected color from a real normal capture.");
 Assert(RuntimeOrderHighlightService.Status.StartsWith("active:2/2", StringComparison.Ordinal)
-       && RuntimeOrderHighlightService.Status.Contains("Rare:target:", StringComparison.Ordinal)
-       && RuntimeOrderHighlightService.Status.Contains("Normal:target:", StringComparison.Ordinal),
+       && RuntimeOrderHighlightService.Status.Contains("Rare:R-", StringComparison.Ordinal)
+       && RuntimeOrderHighlightService.Status.Contains("Normal:N-", StringComparison.Ordinal),
     "Both exact HUD target kinds must remain active simultaneously.");
 
 // 对应真实日志中普客酒水 2→-1 的相同订单修订：原生目标与 HUD 绑定未变时不创建新框。
@@ -685,6 +697,182 @@ Assert(revisionOverlay.m_CachedPtr == IntPtr.Zero && GameObject.Instantiated.Cou
     "经营会话变化必须撤销旧框，且不能复用上一会话登记的 HUD 元素。");
 RuntimeOrderHighlightService.Dispose("target revision identity regression complete");
 
+// 八单同类与混合单都应独立绑定；重排、改色及撤回一单不重建其余原生卡片的自有覆盖层。
+foreach (var composition in new[] { "rare", "normal", "mixed" })
+{
+    const long businessGeneration = 303;
+    RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, businessGeneration, unityThreadId);
+    RuntimeOrderHighlightService.Resume("multi-order exact identity regression");
+    SpecialOrderRuntimeCapture.Captures.Clear(); NormalOrderRuntimeCapture.Captures.Clear();
+    var owner = new OrderController();
+    var targets = new List<RuntimeUiTargetSnapshot>();
+    var elements = new List<OrderingElement>();
+    for (var slot = 0; slot < 8; slot++)
+    {
+        var order = new GuestsManager.OrderBase(deskCode: slot);
+        elements.Add(CreateElement(owner, order, slot));
+        var color = new RuntimeTargetHighlightColor((byte)(20 + 20 * slot), 120, 210);
+        if (composition == "normal" || composition == "mixed" && slot % 2 == 1)
+        {
+            var capture = AddNormalCapture(order, new GuestsManager.OrderBase(), DateTime.UtcNow, slot, 400 + slot);
+            targets.Add(CreateNormalTarget(capture, "many-normal-" + slot, color, slot));
+        }
+        else
+        {
+            var capture = AddCapture(order, DateTime.UtcNow, slot, 500 + slot, 10, 20);
+            targets.Add(CreateRareTarget(RuntimeOrderTraceIdService.GetRareTraceId(capture), capture.OrderLifecycleSequence,
+                slot, "many-rare-" + slot, color, slot));
+        }
+    }
+    RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(businessGeneration, targets.ToArray()));
+    Time.realtimeSinceStartup = 300f;
+    RuntimeOrderHighlightService.Tick();
+    var overlays = elements.Select(FindLiveOverlayFor).ToArray();
+    Assert(overlays.Select(item => item.Pointer).Distinct().Count() == 8, composition + " 八单必须有八个精确独立覆盖层。");
+    var createdCount = GameObject.Instantiated.Count;
+    targets[5] = ChangeTargetContent(targets[5], "changed-color", -1, -1, Array.Empty<int>(), Array.Empty<int>(),
+        new RuntimeTargetHighlightColor(220, 20, 100));
+    RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(businessGeneration, targets.AsEnumerable().Reverse().ToArray()));
+    RuntimeOrderHighlightService.Tick();
+    Assert(GameObject.Instantiated.Count == createdCount && elements.Select(FindLiveOverlayFor).SequenceEqual(overlays),
+        composition + " 改色或目标顺序变化不得销毁并重建已有覆盖层。");
+    AssertColor(InspectPrivateOverlay(overlays[5]).color, targets[5].Color, "改色必须同步到同一订单的原覆盖层。");
+    RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(businessGeneration, targets.Where(target => target.ColorSlot != 3).ToArray()));
+    RuntimeOrderHighlightService.Tick();
+    Assert(overlays[3].m_CachedPtr == IntPtr.Zero && overlays.Where((_, index) => index != 3).All(item => item.m_CachedPtr != IntPtr.Zero),
+        composition + " 撤回一单不能清除同类其他订单的覆盖层。");
+    RuntimeOrderHighlightService.Dispose("multi-order regression complete");
+    Assert(overlays.All(item => item.m_CachedPtr == IntPtr.Zero), "模块停用必须释放全部八单自有覆盖层。");
+}
+
+// 实际桌号矩形决定正文上沿：字号增大、原焦点边框scale=0、卡片池重用均不猜固定像素。
+RuntimeNightBusinessLifecycle.Snapshot = new NightBusinessLifecycleSnapshot(true, 404, unityThreadId);
+RuntimeOrderHighlightService.Resume("exact desk label body bounds");
+SpecialOrderRuntimeCapture.Captures.Clear(); NormalOrderRuntimeCapture.Captures.Clear();
+var bodyOwner = new OrderController();
+var bodyOrder = new GuestsManager.OrderBase(deskCode: 0);
+var bodyCapture = AddNormalCapture(bodyOrder, new GuestsManager.OrderBase(), capturedAtA.AddHours(1), 0, 401);
+var bodyElement = CreateElement(bodyOwner, bodyOrder, 0);
+var sourceBody = bodyElement.borderStyleImageForCurrent.gameObject.transform;
+var deskHeader = bodyElement.text.gameObject.transform;
+var originalSize = sourceBody.sizeDelta;
+var originalPosition = sourceBody.anchoredPosition;
+sourceBody.localScale = new Vector3(0, 0, 0); // 原生ChangeBorderStyle会如此隐藏当前边框。
+Time.realtimeSinceStartup = 100;
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(404, CreateNormalTarget(bodyCapture, "body:initial")));
+RuntimeOrderHighlightService.Tick();
+var bodyOverlay = FindLiveOverlayFor(bodyElement);
+foreach (var headerHeight in new[] { 20f, 28f, 16f })
+{
+    deskHeader.sizeDelta = new Vector2(64, headerHeight);
+    Time.realtimeSinceStartup += 0.3f;
+    RuntimeOrderHighlightService.Tick();
+    var expectedTop = deskHeader.localPosition.y - headerHeight / 2;
+    Assert(Math.Abs(bodyOverlay.transform.localPosition.y + bodyOverlay.transform.rect.yMax - expectedTop) < 0.001f,
+        "桌号字号/区域变化后高亮上沿必须跟随精确下沿，不能保留旧裁剪或侵入桌号。");
+    Assert(Math.Abs(bodyOverlay.transform.localPosition.y + bodyOverlay.transform.rect.yMin + 33f) < 0.001f
+        && bodyOverlay.transform.rect.width == 32 && bodyOverlay.transform.localScale == Vector3.one,
+        "裁剪必须始终保留底边与宽度，且不能继承隐藏边框的零缩放。");
+    Assert(sourceBody.sizeDelta == originalSize && sourceBody.anchoredPosition == originalPosition
+        && sourceBody.localScale == new Vector3(0, 0, 0)
+        && deskHeader.sizeDelta == new Vector2(64, headerHeight),
+        "正文裁剪不得写入原背景或桌号矩形。");
+    AssertOriginalImageGeometry(bodyOverlay, sourceBody);
+}
+var realHeaderParent = deskHeader.parent;
+deskHeader.parent = new GameObject().transform;
+Time.realtimeSinceStartup += 0.3f;
+RuntimeOrderHighlightService.Tick();
+Assert(bodyOverlay.m_CachedPtr == IntPtr.Zero, "桌号字段被移到另一父级时必须撤回覆盖层，不能猜正文范围。");
+deskHeader.parent = realHeaderParent;
+Time.realtimeSinceStartup += 0.6f;
+RuntimeOrderHighlightService.Tick();
+bodyOverlay = FindLiveOverlayFor(bodyElement);
+NormalOrderRuntimeCapture.Captures.Clear();
+var pooledBodyOrder = new GuestsManager.OrderBase(deskCode: 2);
+var pooledBodyCapture = AddNormalCapture(pooledBodyOrder, new GuestsManager.OrderBase(), capturedAtA.AddHours(2), 2, 402);
+deskHeader.sizeDelta = new Vector2(64, 24);
+var pooledBodyElement = CreateElement(bodyOwner, pooledBodyOrder, 2, bodyElement);
+RuntimeOrderHighlightService.UpdateTargets(CreateHudTargetSet(404, CreateNormalTarget(pooledBodyCapture, "body:pooled")));
+RuntimeOrderHighlightService.Tick();
+var pooledBodyOverlay = FindLiveOverlayFor(pooledBodyElement);
+Assert(bodyOverlay.m_CachedPtr == IntPtr.Zero
+    && Math.Abs(pooledBodyOverlay.transform.localPosition.y + pooledBodyOverlay.transform.rect.yMax - 13f) < 0.001f,
+    "卡片池重用必须销毁旧覆盖层，并根据新桌号区域重新计算正文，不能累积裁剪量。");
+
+// 手工布置固定物理范围：背景x=-10..30、y=0..96，桌号下沿y=72。
+// 用不同pivot/非中心父pivot/固定或拉伸锚点表达同一几何，预期始终为x=-10..30、y=0..72；
+// 这可检出把anchoredPosition当localPosition，或把sizeDelta当真实rect的错误。
+var geometryParent = (RectTransform)sourceBody.parent!;
+geometryParent.sizeDelta = new Vector2(200, 240);
+geometryParent.pivot = new Vector2(0.25f, 0.75f);
+foreach (var stretched in new[] { false, true })
+foreach (var sourcePivot in new[] { 0f, 0.5f, 1f })
+foreach (var headerPivot in new[] { 0f, 0.5f, 1f })
+{
+    sourceBody.anchorMin = stretched ? new Vector2(0.2f, 0.15f) : new Vector2(0.7f, 0.8f);
+    sourceBody.anchorMax = stretched ? new Vector2(0.8f, 0.85f) : sourceBody.anchorMin;
+    sourceBody.pivot = new Vector2(sourcePivot, sourcePivot);
+    sourceBody.sizeDelta = stretched ? new Vector2(-80, -72) : new Vector2(40, 96);
+    sourceBody.anchoredPosition = stretched
+        ? new Vector2(-80 * sourcePivot, 144 - 72 * sourcePivot)
+        : new Vector2(-100 + 40 * sourcePivot, -12 + 96 * sourcePivot);
+    deskHeader.anchorMin = stretched ? new Vector2(0.1f, 0.7f) : new Vector2(0.3f, 0.9f);
+    deskHeader.anchorMax = stretched ? new Vector2(0.9f, 0.9f) : deskHeader.anchorMin;
+    deskHeader.pivot = new Vector2(0.5f, headerPivot);
+    deskHeader.sizeDelta = stretched ? new Vector2(-112, -24) : new Vector2(48, 24);
+    deskHeader.anchoredPosition = stretched
+        ? new Vector2(-40, 84 - 24 * headerPivot)
+        : new Vector2(0, 36 + 24 * headerPivot);
+    var sourceBefore = (sourceBody.sizeDelta, sourceBody.anchoredPosition, sourceBody.pivot, sourceBody.anchorMin, sourceBody.anchorMax);
+    var headerBefore = (deskHeader.sizeDelta, deskHeader.anchoredPosition, deskHeader.pivot, deskHeader.anchorMin, deskHeader.anchorMax);
+    Assert(Math.Abs(sourceBody.rect.height - 96) < 0.001f
+        && Math.Abs(sourceBody.localPosition.y + sourceBody.rect.yMin) < 0.001f
+        && Math.Abs(deskHeader.localPosition.y + deskHeader.rect.yMin - 72) < 0.001f,
+        "人工锚点夹具必须保持已声明的背景和桌号物理范围。");
+    Assert(Math.Abs(sourceBody.anchoredPosition.y - sourceBody.localPosition.y) > 0.001f,
+        "该夹具必须实际区分anchoredPosition与localPosition，不能在零参考点上空测。");
+    Time.realtimeSinceStartup += 0.3f;
+    RuntimeOrderHighlightService.Tick();
+    var rect = pooledBodyOverlay.transform.rect;
+    var position = pooledBodyOverlay.transform.localPosition;
+    Assert(pooledBodyOverlay.m_CachedPtr != IntPtr.Zero
+        && Math.Abs(position.x + rect.xMin + 10) < 0.001f
+        && Math.Abs(position.x + rect.xMax - 30) < 0.001f
+        && Math.Abs(position.y + rect.yMin) < 0.001f
+        && Math.Abs(position.y + rect.yMax - 72) < 0.001f,
+        "固定/拉伸锚点和pivot0/0.5/1都必须保留正文左右/底边，且上沿精确止于桌号下沿。");
+    Assert(pooledBodyOverlay.transform.pivot == sourceBody.pivot
+        && pooledBodyOverlay.transform.anchorMin == sourceBody.anchorMin
+        && pooledBodyOverlay.transform.anchorMax == sourceBody.anchorMax,
+        "裁剪不应偷偷改为固定锚点或中心pivot。");
+    Assert(sourceBefore == (sourceBody.sizeDelta, sourceBody.anchoredPosition, sourceBody.pivot, sourceBody.anchorMin, sourceBody.anchorMax)
+        && headerBefore == (deskHeader.sizeDelta, deskHeader.anchoredPosition, deskHeader.pivot, deskHeader.anchorMin, deskHeader.anchorMax),
+        "几何裁剪不得改写原背景或桌号的锚点、尺寸和位置。");
+    AssertOriginalImageGeometry(pooledBodyOverlay, sourceBody);
+}
+// 私有裁剪器被关闭、缩放或子图脱离mask时必须整组撤回，不允许回退为整张订单染色。
+foreach (var corruption in new Action<GameObject>[]
+{
+    overlay => ((RectMask2D)overlay.GetComponent(typeof(RectMask2D))!).enabled = false,
+    overlay => overlay.transform.localScale = new Vector3(1, .5f, 1),
+    overlay => InspectPrivateOverlay(overlay).maskable = false,
+    overlay => InspectPrivateOverlay(overlay).raycastTarget = true,
+})
+{
+    var oldContainer = FindLiveOverlayFor(pooledBodyElement);
+    var oldImageObject = oldContainer.transform.Children.Single().gameObject;
+    corruption(oldContainer);
+    Time.realtimeSinceStartup += .3f;
+    RuntimeOrderHighlightService.Tick();
+    Assert(oldContainer.m_CachedPtr == IntPtr.Zero && oldImageObject.m_CachedPtr == IntPtr.Zero,
+        "私有容器失效必须连同未裁剪的子图一起销毁，不能遗留重复桌号图形。");
+    Time.realtimeSinceStartup += .6f;
+    RuntimeOrderHighlightService.Tick();
+    AssertOriginalImageGeometry(FindLiveOverlayFor(pooledBodyElement), sourceBody);
+}
+RuntimeOrderHighlightService.Dispose("exact body bounds complete");
+
 var serviceSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeOrderHighlightService.cs");
 var traceSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeOrderTraceIdService.cs");
 var resolverSource = File.ReadAllText("mods/bepinex/src/Save/RuntimeUiTargetOrderResolver.cs");
@@ -692,7 +880,6 @@ foreach (var required in new[]
          {
              "CreateOrderingElement",
              "RuntimeUiTargetOrderResolver.TryResolveCurrentCapture",
-             "Dictionary<RuntimeUiTargetKind, ActiveOrderVisual>",
              "exact native order is claimed by both target kinds",
              "HasExactSafeImageComponents",
              "sourceObject.transform.childCount != 0",
@@ -705,9 +892,9 @@ foreach (var required in new[]
              "Il2CppClassPointerStore.GetNativeClassPointer(componentType)",
              "IL2CPP.il2cpp_object_get_class(pointer)",
              "pointer = component.Pointer",
-             "UnityEngine.Object.Instantiate(sourceObject, parent)",
+             "UnityEngine.Object.Instantiate(sourceObject, cloneTransform)",
              "SetRaycastTarget!.Invoke(clonedImage, new object?[] { false })",
-             "RuntimeTargetHighlightStyle.BuildOrderHighlightPulseColor",
+             "RuntimeTargetHighlightStyle.BuildOrderHighlightColor",
          })
 {
     Assert(serviceSource.Contains(required, StringComparison.Ordinal), $"Order highlighting must retain its exact runtime contract: {required}");
@@ -739,7 +926,7 @@ foreach (var forbidden in new[]
     Assert(!serviceSource.Contains(forbidden, StringComparison.Ordinal), $"Order highlighting must not use unsafe focus mutation, shared stubs, or scene scans: {forbidden}");
 }
 
-Console.WriteLine("Runtime order highlight smoke passed.");
+Console.WriteLine($"Runtime order highlight smoke passed: {HudAssertionCounter.Count} assertions; direct callbacks, no game/Harmony injection.");
 
 static CapturedRuntimeSpecialOrder AddCapture(
     GuestsManager.OrderBase order,
@@ -848,31 +1035,58 @@ static void InvokeHarmonyCallback(
     callback.Invoke(null, arguments);
 }
 
+static void AssertOriginalImageGeometry(GameObject overlay, RectTransform source)
+{
+    var image = InspectPrivateOverlay(overlay);
+    var picture = (RectTransform)image.transform;
+    // 独立比较共同父坐标中的完整图像范围。只检查裁剪容器高度无法识别上轮的
+    // 九宫格重排缺陷：真正要保证的是原图保持全高，顶部只被遮罩截掉而没有压进正文。
+    var x = overlay.transform.localPosition.x + picture.localPosition.x;
+    var y = overlay.transform.localPosition.y + picture.localPosition.y;
+    Assert(Math.Abs(picture.rect.width - source.rect.width) < .001f
+        && Math.Abs(picture.rect.height - source.rect.height) < .001f,
+        "九宫格子图必须保持原背景完整尺寸，不能跟着正文容器缩高。");
+    Assert(Math.Abs(x + picture.rect.xMin - source.localPosition.x - source.rect.xMin) < .001f
+        && Math.Abs(x + picture.rect.xMax - source.localPosition.x - source.rect.xMax) < .001f
+        && Math.Abs(y + picture.rect.yMin - source.localPosition.y - source.rect.yMin) < .001f
+        && Math.Abs(y + picture.rect.yMax - source.localPosition.y - source.rect.yMax) < .001f,
+        "完整九宫格必须与原背景物理范围重合，包括非中心pivot、拉伸锚点和原图零缩放。");
+    Assert(y + picture.rect.yMax > overlay.transform.localPosition.y + overlay.transform.rect.yMax,
+        "原图桌号顶部应留在裁剪容器外，不能被缩放或平移到正文内部。");
+    Assert(picture.localScale == Vector3.one, "私有子图不能继承原生焦点背景的零缩放。");
+}
+
 static Image InspectPrivateOverlay(GameObject overlay)
 {
     Assert(overlay.name == "MystiaStewardCompanion.TargetOrderHighlight", "The overlay must have a private Mod-owned identity.");
-    var components = overlay.GetComponents<Component>();
+    Assert(overlay.GetComponents<Component>().Length == 2 && overlay.GetComponent(typeof(RectMask2D)) is RectMask2D,
+        "正文容器只拥有RectTransform和原生RectMask2D，不含原游戏文字或交互。");
+    Assert(overlay.transform.childCount == 1, "裁剪容器只能拥有唯一的私有背景子图。");
+    var picture = overlay.transform.Children.Single().gameObject;
+    var components = picture.GetComponents<Component>();
     Assert(components.Length == 3, "The private overlay must contain exactly RectTransform, CanvasRenderer, and Image.");
     Assert(components.Select(component => component.Pointer).ToHashSet().Count == 3,
         "The private overlay must retain three unique native component identities when wrappers are erased.");
-    var imageComponent = overlay.GetComponent(typeof(Image));
+    var imageComponent = picture.GetComponent(typeof(Image));
     var image = RuntimeReflectionUtility.TryCastRuntimeObject(imageComponent, "UnityEngine.UI.Image") as Image;
     if (image == null) throw new InvalidOperationException("The private overlay Image exact native cast failed.");
     Assert(image.Pointer == imageComponent?.Pointer,
         "The private overlay Image must be recovered by exact native cast without changing identity.");
     Assert(!image.raycastTarget, "The private overlay must never intercept UI input.");
+    Assert(image.maskable, "子图必须参与原生RectMask2D裁剪，不能重新显示被裁掉的桌号纹理。");
     Assert(image.enabled && overlay.activeInHierarchy, "The private overlay must be renderable.");
     return image;
 }
 
 static GameObject FindLatestOverlay()
 {
-    return GameObject.Instantiated.Last(item => item.name == "MystiaStewardCompanion.TargetOrderHighlight");
+    return GameObject.Instantiated.Last(item => item.name == "MystiaStewardCompanion.TargetOrderHighlight.Image").transform.parent!.gameObject;
 }
 
 static GameObject[] LiveOverlays() => GameObject.Instantiated
-    .Where(item => item.name == "MystiaStewardCompanion.TargetOrderHighlight"
+    .Where(item => item.name == "MystiaStewardCompanion.TargetOrderHighlight.Image"
         && item.m_CachedPtr != IntPtr.Zero)
+    .Select(item => item.transform.parent!.gameObject)
     .ToArray();
 
 static GameObject FindLiveOverlayFor(OrderingElement element)
@@ -922,7 +1136,8 @@ static RuntimeUiTargetSnapshot CreateRareTarget(
     long lifecycleSequence,
     int deskCode,
     string revision,
-    RuntimeTargetHighlightColor? color = null) => new(
+    RuntimeTargetHighlightColor? color = null,
+    int colorSlot = -1) => new(
     RuntimeUiTargetKind.Rare,
     color ?? RuntimeTargetHighlightColor.DefaultRare,
     listPinningEnabled: false,
@@ -939,12 +1154,13 @@ static RuntimeUiTargetSnapshot CreateRareTarget(
     Array.Empty<int>(),
     -1,
     -1,
-    revision);
+    revision, colorSlot);
 
 static RuntimeUiTargetSnapshot CreateNormalTarget(
     CapturedRuntimeNormalOrder capture,
     string revision,
-    RuntimeTargetHighlightColor? color = null) => new(
+    RuntimeTargetHighlightColor? color = null,
+    int colorSlot = -1) => new(
     RuntimeUiTargetKind.Normal,
     color ?? RuntimeTargetHighlightColor.DefaultNormal,
     listPinningEnabled: false,
@@ -961,7 +1177,7 @@ static RuntimeUiTargetSnapshot CreateNormalTarget(
     Array.Empty<int>(),
     -1,
     -1,
-    revision);
+    revision, colorSlot);
 
 /// <summary>仅替换配方展示内容，完整保留既有订单身份，模拟投影更新而非新订单。</summary>
 static RuntimeUiTargetSnapshot ChangeTargetContent(
@@ -988,7 +1204,7 @@ static RuntimeUiTargetSnapshot ChangeTargetContent(
         extraIngredientIds,
         beverageId,
         target.CookerTypeId,
-        revision);
+        revision, target.ColorSlot);
 
 static void AssertColor(Color actual, RuntimeTargetHighlightColor expected, string message)
 {
@@ -1000,5 +1216,11 @@ static void AssertColor(Color actual, RuntimeTargetHighlightColor expected, stri
 
 static void Assert(bool condition, string message)
 {
+    HudAssertionCounter.Count++;
     if (!condition) throw new InvalidOperationException(message);
+}
+
+internal static class HudAssertionCounter
+{
+    internal static int Count;
 }

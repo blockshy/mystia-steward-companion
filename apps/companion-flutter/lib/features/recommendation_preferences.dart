@@ -311,7 +311,7 @@ class _RecommendationPreferencesPanelState
       ),
     ]),
     Section('评分排序', [
-      const _PreferenceNote('四个预设使用固定参数；选择“自定义”后才能编辑九项目标。权重共同参与评分，排列顺序不代表优先级。'),
+      const _PreferenceNote('四个预设使用固定参数；选择“自定义”后才能编辑各项目标。权重共同参与评分，排列顺序不代表优先级。'),
       _modeTabs(),
       if (_mode != 'custom')
         const _PreferenceNote('当前采用固定预设。切换到自定义会保留当前参数，不会自动改动数值。'),
@@ -386,7 +386,6 @@ class _ObjectiveRow extends StatelessWidget {
           'totalCost': '成本',
           'profit': '利润',
           'beverageStock': '酒水库存',
-          'cookerAvailable': '厨具可用',
         }[objective['key']] ??
         label(objective['key']);
     return Container(

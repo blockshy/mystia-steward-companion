@@ -727,11 +727,13 @@ namespace UnityEngine
             {
                 if (ThrowOnColorWrite) throw new InvalidOperationException("rejected color write");
                 _color = value;
+                ColorWriteCount++;
                 CreatePropertyBlockForVisualWrite();
             }
         }
 
         public bool ThrowOnColorWrite { get; set; }
+        public int ColorWriteCount { get; private set; }
 
         public Material? sharedMaterial
         {

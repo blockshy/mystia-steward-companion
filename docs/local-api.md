@@ -1,6 +1,6 @@
 # 本地 API
 
-更新日期：2026-10-23
+更新日期：2026-11-06
 
 本文档只定义游戏进程内本地 HTTP API 的监听、鉴权、设备权威、方法矩阵、请求生命周期和传输边界。运行时数据含义见 [运行时 Provider](runtime-provider.md)，订单身份见 [运行时订单生命周期](runtime-order-lifecycle.md)，自动化状态机见 [自动化运行时](automation-runtime.md)。
 
@@ -74,6 +74,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | `/logs/settings` | 总日志和控制台状态 |
 | `/logs/packages` | 本项目已导出诊断包列表及精确删除标识，不返回任意目录文件 |
 | `/favorites` | 料理与酒水收藏 |
+| `/ui/focus-overlay` | 游戏电脑的专注显示设置、修订和临时编辑状态 |
 | `/custom-recipes` | 自定义推荐料理配置 |
 | `/rare-guests/invitations` | 稀客邀请只读候选 |
 
@@ -88,15 +89,22 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | 业务意图 | `/business/page-session/open`、`/business/page-session/update`、`/business/automation/retry` |
 | 本机连接 | `/local-api/config` |
 | 游戏资源 | `/game-media/reload` |
+| 游戏内显示 | `/ui/focus-overlay`（部分设置与精确修订 CAS） |
 | 更新 | `/updates/status`、`/updates/check`、`/updates/download`、`/updates/install-on-exit` |
 | 日志与诊断 | `/diagnostics/automation-decision`、`/logs/export-diagnostics`、`/logs/packages/delete`、`/logs/config`、`/logs/console`、`/logs/open-folder` |
 | 运行时库存 | `/inventory/set`、`/inventory/bulk-set` |
-| 订单 | `/orders/rare/dismiss` |
+| 订单 | `/orders/rare/participation`（精确身份、版本 CAS；见[稀客调度](rare-order-participation.md)） |
 | 稀客邀请 | `/rare-guests/invite`、`/rare-guests/invite-all` |
 | 收藏 | `/favorites/add-recipe`、`/favorites/remove-recipe`、`/favorites/add-beverage`、`/favorites/remove-beverage` |
 | 自定义料理 | `/custom-recipes/upsert`、`/custom-recipes/remove`、`/custom-recipes/settings`、`/custom-recipes/update-flags`、`/custom-recipes/move` |
 
 设备权威、业务意图、人工确认 `/automation/barriers/ack`、本机连接配置与诊断包删除 POST 使用有界 JSON body 和 exact property set。租约获取/释放只读取身份及权威请求头，游戏资源重读不携带业务参数；其余端点有参数时按下文定义使用 URL query。新增协议不能同时保留 query、JSON 或别名多套写法。
+
+### 游戏内专注显示设置
+
+`GET /ui/focus-overlay`返回`{revision, settings, ready, status, canReset}`，移除编辑状态。POST接受严格JSON`{expectedRevision, changes}`；changes可部分更新外观，但`layout{x,y,width,height}`与`content{showRare,showNormal,rareFirst,showOrderTags,showFood,showIngredients,showExtras,showCooker,showBeverage}`必须提交完整子对象。位置尺寸为屏幕内有限归一化值；`theme`为light/dark，`scrollPercent`为0–100整数。旧editing及顶层内容字段拒绝。主设备和精确Authority-Revision必须有效，不要求自动化租约或回环来源。冲突409、非法字段/类型/范围400；客户端仅补读，不自动重放。坏配置返回`ready:false,canReset:true`，仅单独显式`resetLayout:true`可恢复；正常重置只恢复布局和列表位置，失败不发布成功内存状态。
+
+设置不进入共享推荐profile或触发候选重算。布局只由客户端提交，游戏内无写入或输入入口；主设备在本机偏好耐久保存、连接/切主后同步同一内容与主题，未知回执不靠轮询重发。磁盘版本2严格迁移完整版本1并保存原字节备份。字段和绘制边界见[游戏内专注显示](game-focus-overlay.md)。
 
 ### 本机局域网与连接凭据
 
@@ -148,6 +156,7 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 - `POST /business/automation/retry` 只接受 `{protocolVersion, automationSessionId, businessGeneration, kind, key}`，其中人工交互协议 `protocolVersion` 为 2，`kind` 为 `rare|normal`，`key` 为精确订单标识。服务端同时核对快照会话、经营代次和真实 Active 生命周期；重试还需要当前主设备、精确权威 revision 和有效租约。实际动作由编排器根据最新事实重新决定。
 - 后台读取不会更新设备在线时间，也不会自动取得或续期租约；现有客户端心跳继续承担在线许可。
 - 同一经营代次的持续输入故障只撤销一次业务结果和 UI 目标；恢复发布后或经营代次变化后，新故障仍会重新撤销。错误原因变化仍记录诊断，不能用日志限流替代状态处理。
+- 游戏 UI 目标按精确订单身份批量发布，`gameUiTargets.rare/normal` 为数组；两类调色板各1–3色、默认2色，一色辅助该类一笔订单，合计最多6笔。`orderColors` 只包含入选辅助订单的稳定颜色分配，独立于游戏辅助开关。目标协议携带全局唯一 `colorSlot`（0–7）。厨具摆放区域、料理制作和酒水取用列表同时显示各色色块，座位与左下订单固定透明度，多声明仍轮换颜色；具体契约见[多订单高亮](multi-order-highlights.md)。
 - 游戏 UI 投影和共享偏好保留 `#RRGGBB` 颜色；宿主在适配边界转换为既有游戏目标协议的 `RRGGBB`，仍使用严格的大写十六进制解析器。
 - 候选缓存仅存完整值参数对应的纯计算结果；订单身份、代次、执行许可和副作用结果不缓存。输入变化会撤销旧帧，动作排队和主线程执行前再次核对版本。
 
@@ -162,11 +171,28 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | 边界 | 当前版本 | 实现来源 |
 | --- | --- | --- |
 | 设备注册、配置与 CAS 协议 | `protocolVersion: 1` | `CompanionDeviceAuthorityStore.ProtocolVersion` |
-| 共享 profile 与设备注册表磁盘格式 | `profileSchemaVersion: 4` / `version: 4` | `CompanionDeviceAuthorityStore`、Dart `CompanionProfile` |
+| 共享 profile 与设备注册表磁盘格式 | `profileSchemaVersion: 10` / `version: 10` | `CompanionDeviceAuthorityStore`、Dart `CompanionProfile` |
 | 推荐查询与业务状态 | `protocolVersion: 1` | `modules/companion-contracts/BusinessProtocol.cs` |
 | 暂停订单重试与人工确认 | `protocolVersion: 2` | `modules/companion-contracts/ClientProtocol.cs` |
 
-设备注册表保存于 `BepInEx/config/MystiaStewardCompanion/companion-devices.json`。已知磁盘 v1/v2/v3 先严格验证原字段、修订和 profile hash，再一次性原子迁入 v4：v1 从历史游戏辅助分项推导总开关，v1/v2 删除已取消的 `serviceOrderSortMode`；三种旧版评分参数与其预设不一致时仅将模式改为 `custom`，保留全部参数。迁移保留设备身份与主设备选择，为各设备更新 profile revision/hash 和待同步标识；有设备时同时推进 authority/state revision，客户端须保存并确认新配置。损坏或未来版本保留原文件并拒绝使用，HTTP 不接受旧 schema。
+设备注册表保存于 `BepInEx/config/MystiaStewardCompanion/companion-devices.json`。已知磁盘 v1–v9 先严格验证原字段、修订和 profile hash，再一次性原子迁入 v10。迁移步骤按原版本累积应用，不把旧字段直接当作当前 HTTP 配置接受：
+
+| 原版本 | 迁入当前配置时的处理 |
+| --- | --- |
+| v1 | 从原游戏辅助分项推导总开关。 |
+| v1–v2 | 删除已取消的 `serviceOrderSortMode`，订单显示统一使用当前排序规则。 |
+| v1–v3 | 评分参数与预设不一致时只将模式改为 `custom`，保留有效参数。 |
+| v1–v4 | 删除无效的厨具评分项，保留其余八项权重、顺序及厨具可用性硬约束；新增调度默认关闭、名单为空，原单色按历史规则补为两色。 |
+| v5 | 将公共八色分别取前三色生成两类独立调色板。 |
+| v6 | 严格验证原独立调色板后保留各类前三色。 |
+| v5–v6 | 两类 `HighlightOrderCount` 先按原1–8整数范围验证，再删除；不保留第二套数量设置。 |
+| v7 | 精确匹配原默认整套或缩减前缀时，按原数量换为冷/暖预设（最多三色）；自定义保留前三色。 |
+| v1–v8 | 补齐 `normalGameUiEnabled`、`rareGameUiEnabled` 为 `true`，保留全局开关及原分项偏好。 |
+| v1–v9 | 补齐等待条自动启用规则为关闭、30%、队尾，不自动开启调度。 |
+
+当前调色板 `rareOrderHighlightPalette`、`normalOrderHighlightPalette` 各接受1–3种不重复的大写 `#RRGGBB`，默认各2种，跨类可同色；数组长度就是该类辅助上限。关闭一类辅助后，该类五项游戏目标撤回，客户端只读 `orderColors` 保留；显示颜色不授予执行许可。当前等待条策略字段为 `rareGuestParticipationAutoResumeEnabled`、`rareGuestParticipationAutoResumeThresholdPercent`（1–100整数）与 `rareGuestParticipationAutoResumePosition`（`front` / `tail`），与名单使用同一配置修订保存和同步。规则执行边界见[稀客调度](rare-order-participation.md)。
+
+迁移保留设备身份、主设备与其他有效偏好，为各设备更新 profile revision/hash 和待同步标识；有设备时同时推进 authority/state revision，客户端须保存并确认新配置。损坏或未来版本保留原文件并拒绝使用，HTTP 不接受旧 schema、旧独立数量字段或隐式版本。
 
 Dart 的 `CompanionProfile.fromCheckpoint` 只负责本机历史 checkpoint 迁移，作为注册初值使用；只有这个明确的历史入口将缺失版本解释为 v1。服务端磁盘文件与 HTTP 均要求显式版本，不能套用此规则补全损坏数据。
 
@@ -200,6 +226,8 @@ Dart 的 `CompanionProfile.fromCheckpoint` 只负责本机历史 checkpoint 迁�
 运行时阶段 permit 与 job 行为由 [自动化运行时](automation-runtime.md) 定义。
 
 ## 快照与缓存协议
+
+订单快照中的 `nightBusiness.orders[*].patienceRemainingRatio` 与 `normalBusiness.orders[*].patienceRemainingRatio` 统一表示游戏等待条剩余比例（0–1），未知为 `null`。只有精确当前生命周期且等待倒计时有效时才提供，不表示剩余秒数。比例变化可刷新快照显示，但不参与料理需求指纹或候选缓存；采集边界见[订单生命周期](runtime-order-lifecycle.md#订单等待条)。低耐心自动调度由主线程本次采样后判定，客户端不根据显示值发起自动启用。
 
 `recommendationState.inventoryReadReady` 参与正式快照内容签名，其变化不能被 `unchanged` 缓存掩盖。缺失或 false 不得归一化为已读取；真实数量、稀疏零值和经营兜底的含义由[运行时 Provider](runtime-provider.md)定义，不由客户端或 HTTP 缓存猜测。
 

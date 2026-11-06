@@ -856,9 +856,9 @@ AssertColorEquals(
     "The normal throw-delivery card must use its injected color from a real normal capture.");
 AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "active:2/2",
     "Both exact throw-delivery targets must bind simultaneously.");
-AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "Rare:target:",
+AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "Rare:R-",
     "The active binding directory must expose the rare slot.");
-AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "Normal:target:",
+AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "Normal:N-",
     "The active binding directory must expose the normal slot.");
 
 var retainedNormalFillPointer = dualNormalFill.Pointer;
@@ -915,11 +915,45 @@ var sharedDeskPanel = CreatePanel(Card(2, sharedDeskRareOrder, sharedDeskRareCon
 InvokeOpen(sharedDeskPanel);
 Assert(LiveOwnedFills().Length == 1,
     "A shared desk with one exact current panel order must publish only one owned fill.");
-AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "Rare:target:",
+AssertContains(RuntimeThrowDeliverOrderHighlightService.Status, "Rare:R-",
     "The matching rare panel order must own the shared-desk fill.");
-Assert(!RuntimeThrowDeliverOrderHighlightService.Status.Contains("Normal:target:", StringComparison.Ordinal),
+Assert(!RuntimeThrowDeliverOrderHighlightService.Status.Contains("Normal:N-", StringComparison.Ordinal),
     "A normal target must not bind to a same-desk SpecialOrder by desk fallback.");
 RuntimeThrowDeliverOrderHighlightService.Dispose("dual target throw-delivery coverage complete");
+
+// 同类八单与混合八单必须独立占用精确卡片，不能再按 Rare/Normal 两个键覆盖。
+foreach (var composition in new[] { "rare", "normal", "mixed" })
+{
+    var generation = NextGeneration(); BeginBusiness(generation); ClearRuntimeCaptures();
+    var orders = new GuestsManager.OrderBase[8];
+    var controllers = new GuestGroupController[8];
+    var targets = new RuntimeUiTargetSnapshot[8];
+    for (var slot = 0; slot < 8; slot++)
+    {
+        orders[slot] = composition == "normal" || composition == "mixed" && slot % 2 == 1
+            ? new GuestsManager.NormalOrder(slot) : new GuestsManager.SpecialOrder(slot);
+        controllers[slot] = new GuestGroupController(slot);
+        targets[slot] = CaptureTarget(orders[slot], controllers[slot], slot, 30_000 + slot,
+            new RuntimeTargetHighlightColor((byte)(20 + slot * 20), 120, 210), slot);
+    }
+    var panel = CreatePanel(Enumerable.Range(0, 8).Select(slot => Card(slot, orders[slot], controllers[slot])).ToArray());
+    RuntimeThrowDeliverOrderHighlightService.UpdateTargets(CreateTargetSet(generation, targets));
+    InvokeOpen(panel);
+    var fills = Enumerable.Range(0, 8).Select(slot => SingleLiveOwnedFill(GetVisuals(panel, slot).Button)).ToArray();
+    Assert(fills.Select(fill => fill.Pointer).Distinct().Count() == 8, composition + " 八张卡必须独立拥有八个填充层。");
+    var createdCount = GameObject.Instantiated.Count;
+    RuntimeThrowDeliverOrderHighlightService.UpdateTargets(CreateTargetSet(generation, targets.Reverse().ToArray()));
+    RuntimeThrowDeliverOrderHighlightService.Tick();
+    Assert(GameObject.Instantiated.Count == createdCount && fills.All(fill => fill.m_CachedPtr != IntPtr.Zero),
+        "发布顺序变化不得重建抛送高亮。");
+    RuntimeThrowDeliverOrderHighlightService.UpdateTargets(CreateTargetSet(generation, targets.Where(target => target.ColorSlot != 3).ToArray()));
+    RuntimeThrowDeliverOrderHighlightService.Tick();
+    Assert(fills[3].m_CachedPtr == IntPtr.Zero && fills.Where((_, index) => index != 3).All(fill => fill.m_CachedPtr != IntPtr.Zero),
+        "撤回一单不得影响同类其他抛送卡片。");
+    InvokeClose(panel);
+    Assert(fills.All(fill => fill.m_CachedPtr == IntPtr.Zero), "关闭面板必须释放全部多单填充层。");
+    RuntimeThrowDeliverOrderHighlightService.Dispose("eight target regression complete");
+}
 
 // 帧尾销毁 + 原生按钮池复用：旧自有 Image 仍存活时必须已经离开按钮层级，
 // 同帧下一次绑定仍只认两个原生背景；不能依赖即时 Destroy 桩或跳过所有 inactive Image。
@@ -1190,7 +1224,8 @@ RuntimeUiTargetSnapshot CaptureTarget(
     GuestGroupController controller,
     int deskCode,
     long lifecycle,
-    RuntimeTargetHighlightColor? color = null)
+    RuntimeTargetHighlightColor? color = null,
+    int colorSlot = -1)
 {
     var at = DateTime.UtcNow.AddMilliseconds(order.Pointer.ToInt64() % 997);
     if (order is GuestsManager.NormalOrder)
@@ -1223,7 +1258,7 @@ RuntimeUiTargetSnapshot CaptureTarget(
             Array.Empty<int>(),
             -1,
             -1,
-            $"throw-normal:{lifecycle}:{order.Pointer:x}");
+            $"throw-normal:{lifecycle}:{order.Pointer:x}", colorSlot);
     }
 
     if (order is not GuestsManager.SpecialOrder)
@@ -1266,7 +1301,7 @@ RuntimeUiTargetSnapshot CaptureTarget(
         Array.Empty<int>(),
         -1,
         -1,
-        $"throw-rare:{lifecycle}:{order.Pointer:x}");
+        $"throw-rare:{lifecycle}:{order.Pointer:x}", colorSlot);
 }
 
 void InvokeOpen(
@@ -1516,7 +1551,6 @@ void AuditProductionSource()
                  "TryReadPanelDirectoryEvidence",
                  "TryReadTargetPanelEvidence",
                  "RuntimeUiTargetOrderResolver.TryResolveCurrentCapture",
-                 "Dictionary<RuntimeUiTargetKind, ActiveTargetBinding>",
                  "TryReadSelectionEventTarget",
                  "HasValidRectTransformGeometry",
                  "HasSameRectTransformGeometry",
@@ -1599,7 +1633,7 @@ void AuditProductionSource()
 
     var publishedBinding = Slice(
         source,
-        "ActiveBindings[target.Kind] = binding;",
+        "ActiveBindings[target.IdentityKey] = binding;",
         "private static bool TryReadVisualSourceEvidence(");
     Assert(publishedBinding.Contains(
                "geometry={visualSource.SelectionGeometryFingerprint}",

@@ -13,6 +13,7 @@ internal enum RuntimeOrderTerminalReceiptSource
     RemoveFromOrder,
     CleanOrderInfo,
     RepellInternal,
+    LeaveFromDesk,
 }
 
 /// <summary>
@@ -172,6 +173,48 @@ internal static class RuntimeOrderTerminalReceiptStore
             }
 
             return found;
+        }
+    }
+
+    /// <summary>
+    /// 冻结真正离桌前，该客人控制器已绑定的订单生命周期；结果只包含标量身份。
+    /// </summary>
+    /// <remarks>
+    /// 耐心耗尽路径会内联移除 HUD，既不调用普通清理 Hook，也不保证清空订单栈。
+    /// 因而离桌终态应撤回该控制器在进入原生方法前的绑定，不重新 Peek 历史栈，
+    /// 也不按桌号或 HUD 是否可见推断。返回值携带原生命周期，防止原生回调重用指针后误删新单。
+    /// </remarks>
+    public static RuntimeOrderBindingToken[] CaptureActiveControllerLifecycles(
+        long businessGeneration,
+        RuntimeOrderKind orderKind,
+        nint controllerPointer)
+    {
+        if (businessGeneration <= 0
+            || (orderKind != RuntimeOrderKind.Normal && orderKind != RuntimeOrderKind.Special)
+            || controllerPointer == 0)
+        {
+            return Array.Empty<RuntimeOrderBindingToken>();
+        }
+
+        lock (SyncRoot)
+        {
+            var bindings = new List<RuntimeOrderBindingToken>();
+            foreach (var pair in ActiveLifecycles)
+            {
+                if (pair.Key.BusinessGeneration == businessGeneration
+                    && pair.Key.OrderKind == orderKind
+                    && pair.Key.ControllerPointer == controllerPointer)
+                {
+                    bindings.Add(new RuntimeOrderBindingToken(
+                        businessGeneration,
+                        orderKind,
+                        pair.Key.OrderPointer,
+                        controllerPointer,
+                        pair.Value));
+                }
+            }
+
+            return bindings.ToArray();
         }
     }
 
@@ -357,7 +400,8 @@ internal static class RuntimeOrderTerminalReceiptStore
             && state.Source != RuntimeOrderTerminalReceiptSource.EvaulateManualOrder
             && state.Source != RuntimeOrderTerminalReceiptSource.RemoveFromOrder
             && state.Source != RuntimeOrderTerminalReceiptSource.CleanOrderInfo
-            && state.Source != RuntimeOrderTerminalReceiptSource.RepellInternal)
+            && state.Source != RuntimeOrderTerminalReceiptSource.RepellInternal
+            && state.Source != RuntimeOrderTerminalReceiptSource.LeaveFromDesk)
         {
             throw new ArgumentOutOfRangeException(nameof(state), "Unknown terminal receipt source.");
         }

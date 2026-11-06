@@ -18,8 +18,10 @@ internal static class RuntimeGuestImageIdentityReader
     internal const string RareType = "GameData.Core.Collections.NightSceneUtility.SpecialGuest";
 
     /// <summary>
-    /// 对当前订单 Guest 与控制器 OrderingGuest 分别做精确原生转换，随后按对应命名空间核对目录。
-    /// 数字相同并不表示同类实体；未知包装、转换冲突、非法 ID 或两个来源不一致均不给图片身份。
+    /// 当前订单 Guest 是生成订单时保存的点单人；控制器 OrderingGuest 会在下一次生成订单时
+    /// 被同桌随机选中的另一位客人覆盖（NormalGuestsController.PostGenerateOrder，RVA 0x510DC0）。
+    /// 因此订单已有 Guest 时只核对它的精确原生类型及目录，不能再要求它与整桌的临时字段相同。
+    /// 仅 Guest 缺失时才读取控制器兜底；已有但未知、转换冲突或非法的 Guest 不得被另一身份掩盖。
     /// 委托由生产反射边界传入，离线测试可验证基类包装语义而不加载 Unity 或执行游戏方法。
     /// </summary>
     internal static RuntimeGuestImageIdentity Resolve(object? guest, object? orderingGuest,
@@ -29,11 +31,7 @@ internal static class RuntimeGuestImageIdentityReader
         try
         {
             var orderIdentity = Read(guest);
-            var controllerIdentity = Read(orderingGuest);
-            if (guest == null) return controllerIdentity;
-            if (orderingGuest == null) return orderIdentity;
-            return orderIdentity.Kind.Length > 0 && orderIdentity.Kind == controllerIdentity.Kind
-                && orderIdentity.Id == controllerIdentity.Id ? orderIdentity : RuntimeGuestImageIdentity.Unknown;
+            return guest == null ? Read(orderingGuest) : orderIdentity;
         }
         catch
         {
