@@ -1,6 +1,8 @@
 using BepInEx;
+using BepInEx.Configuration;
 using BepInEx.Unity.IL2CPP;
 using Il2CppInterop.Runtime.Injection;
+using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.Save;
 using MystiaStewardCompanion.Ui;
 using UnityEngine;
@@ -32,7 +34,33 @@ public sealed class MystiaStewardCompanionPlugin : BasePlugin
     /// </remarks>
     public override void Load()
     {
-        var settings = StewardPluginConfig.Bind(Config);
+        StewardPluginConfig settings;
+        ModDataPaths paths;
+        try
+        {
+            paths = new ModDataPaths(Paths.ConfigPath);
+            // 框架仍构造指向旧根的只读 Config 属性；关闭其自动保存，且本插件不再 Bind/Save 它。
+            // 第三方若显式写回该路径，已完成的清理记录会保留新出现文件，不再次自动删除。
+            Config.SaveOnConfigSet = false;
+            // 不绑定 BasePlugin.Config：它对应旧根 CFG。先完成备份/布局恢复，再构造新根的
+            // ConfigFile，避免 Bind 默认值或后续 JSON schema 升级先行覆盖可恢复的旧数据。
+            ModDataLayoutMigration.EnsureReady(paths, StewardPluginConfig.ValidateStoredConfiguration,
+                isLegacyCompanion: encoded => StewardPluginConfig.IsKnownLegacyCompanion(encoded, message => Log.LogWarning(message)));
+            settings = StewardPluginConfig.Bind(new ConfigFile(paths.PluginConfigPath, saveOnInit: false));
+        }
+        catch (Exception ex)
+        {
+            // 不把框架转换异常或配置正文写入日志；其中可能包含手工 Token 或私有路径。
+            // 初始化失败后停止后续运行初始化；Bind 可能已保存必要配置，但不得继续注册 Hook、启动 API 或打开数据日志。
+            var reason = ex is ModDataValidationException ? ex.Message : $"{ex.GetType().Name}；请检查文件访问权限与占用情况";
+            Log.LogError($"Mod 数据目录或主配置初始化失败：{reason} 请检查主配置与 layout-state.json，原数据未自动重置。");
+            return;
+        }
+        // 仅清理已经完成真实绑定、Token 保存和回读的旧 CFG；失败保留源并提示，不阻止正常启动。
+        // 此处在启动时调用一次，不进入逐帧循环，也不以局部清理结果冒充全部业务数据迁移成功。
+        var cleanup = ModDataLayoutMigration.TryCleanupLegacyConfiguration(paths, settings.ValidatePersistedConfiguration);
+        if (cleanup.Warning != null) Log.LogWarning(cleanup.Warning);
+        else if (cleanup.Removed) Log.LogInfo("旧根主配置已自动清理，原字节备份保留在统一数据目录中。");
         BepInExConsoleWindow.Instance.ConfigurePreference(
             () => settings.ShowBepInExConsoleOnStartup.Value,
             visible => settings.ShowBepInExConsoleOnStartup.Value = visible);

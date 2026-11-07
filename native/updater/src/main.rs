@@ -14,6 +14,10 @@ mod client_exit;
 #[cfg(any(windows, feature = "updater-windows-ui-check"))]
 mod game_process;
 mod install_control;
+mod legacy_cleanup;
+mod legacy_cleanup_client;
+mod legacy_cleanup_layout;
+mod offline_migration;
 mod package_manifest;
 #[cfg(any(windows, feature = "updater-windows-ui-check"))]
 use game_process::GameProcess;
@@ -127,6 +131,32 @@ impl InstallProgress {
 fn main() {
     // 只读验证入口供 Node/C#/Rust 共用夹具矩阵调用；不创建状态文件、不显示窗口、不执行安装。
     let raw: Vec<String> = env::args().skip(1).collect();
+    // 旧版残留清理与安装分别准入：默认只生成预览，删除需要用户确认迁移及绑定本次清单摘要。
+    // 不经普通更新 GUI 启动，也不因为安装成功自动删除旧客户端资料或回退副本。
+    if raw.first().is_some_and(|value| value == "--cleanup-v1-3-1") {
+        let terminal = prepare_cli_output();
+        match legacy_cleanup::run(&raw[1..]) {
+            Ok(report) => show_cli_message(&report, false, terminal),
+            Err(error) => {
+                show_cli_message(&error, true, terminal);
+                process::exit(1);
+            }
+        }
+        return;
+    }
+    // 保留此前维护脚本的显式离线入口。公开 v1.3.1 的默认升级步骤现为手动替换程序目录；
+    // 普通更新流程仍要求完整 Flutter 安装树，不得把这个维护入口当作在线兼容回退。
+    if raw.first().is_some_and(|value| value == "--migrate-v1-3-1") {
+        let terminal = prepare_cli_output();
+        match offline_migration::run(&raw[1..]) {
+            Ok(report) => show_cli_message(&report, false, terminal),
+            Err(error) => {
+                show_cli_message(&error, true, terminal);
+                process::exit(1);
+            }
+        }
+        return;
+    }
     if raw.len() == 2 && raw[0] == "--validate-package" {
         if let Err(error) = package_manifest::validate(Path::new(&raw[1]), false) {
             eprintln!("{error}");
@@ -134,9 +164,15 @@ fn main() {
         }
         return;
     }
-    let args = parse_args(env::args().skip(1).collect());
-    let status_file =
-        get_path(&args, "status-file").unwrap_or_else(|| PathBuf::from("update-status.json"));
+    let args = parse_args(raw);
+    // 无参数或相对状态路径不具有写入授权；不得再向进程的任意当前目录生成 update-status.json。
+    let status_file = match explicit_status_path(&args) {
+        Ok(path) => path,
+        Err(error) => {
+            show_cli_message(&error, true, prepare_cli_output());
+            process::exit(1);
+        }
+    };
     #[cfg(target_os = "windows")]
     let result = windows_updater_ui::run(args, status_file.clone());
     #[cfg(not(target_os = "windows"))]
@@ -147,6 +183,90 @@ fn main() {
         eprintln!("{error}");
         process::exit(1);
     }
+}
+
+/// GUI 子系统默认没有控制台；显式命令行模式附着父控制台，并保留调用方已经重定向的输出句柄。
+fn prepare_cli_output() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::{
+            Foundation::INVALID_HANDLE_VALUE,
+            System::Console::{
+                AttachConsole, GetStdHandle, SetStdHandle, ATTACH_PARENT_PROCESS, STD_ERROR_HANDLE,
+                STD_OUTPUT_HANDLE,
+            },
+        };
+        let output = GetStdHandle(STD_OUTPUT_HANDLE);
+        let error = GetStdHandle(STD_ERROR_HANDLE);
+        if !output.is_null()
+            && output != INVALID_HANDLE_VALUE
+            && !error.is_null()
+            && error != INVALID_HANDLE_VALUE
+        {
+            return true;
+        }
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            return false;
+        }
+        // AttachConsole 会重设标准句柄；逐一恢复原有有效句柄，保证仅重定向单路输出时也不丢结果。
+        if !output.is_null() && output != INVALID_HANDLE_VALUE {
+            SetStdHandle(STD_OUTPUT_HANDLE, output);
+        }
+        if !error.is_null() && error != INVALID_HANDLE_VALUE {
+            SetStdHandle(STD_ERROR_HANDLE, error);
+        }
+        true
+    }
+    #[cfg(not(windows))]
+    {
+        true
+    }
+}
+
+/// 没有终端时以原生对话框给出结果；预览仍不写文件，错误也不落入任意工作目录。
+fn show_cli_message(message: &str, failed: bool, terminal: bool) {
+    if terminal {
+        if failed {
+            eprintln!("{message}");
+        } else {
+            println!("{message}");
+        }
+        return;
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
+        };
+        let text: Vec<u16> = message.encode_utf16().chain(Some(0)).collect();
+        let title: Vec<u16> = "Mystia Steward Companion"
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK
+                | if failed {
+                    MB_ICONERROR
+                } else {
+                    MB_ICONINFORMATION
+                },
+        );
+    }
+}
+
+fn explicit_status_path(args: &HashMap<String, String>) -> Result<PathBuf, String> {
+    let path = get_path(args, "status-file")
+        .ok_or("missing explicit --status-file; no status file was written")?;
+    if !path.is_absolute() || path.file_name().is_none() || path.is_dir() {
+        return Err("--status-file must be an explicit absolute file path".into());
+    }
+    offline_migration::ensure_no_links(&path)?;
+    // 只有一份完整的安装请求才能取得状态写入能力；参数缺失时也不创建旁路失败文件。
+    parse_install_context(args)?;
+    Ok(path)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -228,7 +348,7 @@ fn run_install_steps(
         progress,
         InstallProgress::new("preparing", "正在校验更新包。准备与等待期间可以取消。", 5),
     );
-    validate_plugin_path(&context.plugin_dir)?;
+    validate_update_source(&context.plugin_dir)?;
     package_manifest::validate(&context.staged_dir, false)?;
     if !control.enter_waiting()? {
         return Ok(InstallOutcome::Cancelled);
@@ -398,6 +518,24 @@ fn validate_plugin_path(plugin_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// 在等待游戏和请求客户端退出之前验证自动更新的来源安装。
+///
+/// 远端清单协议只能阻止旧版重新发现新版；已缓存或已暂存的更新仍可能直接启动本程序。
+/// 因而本地也必须拒绝没有完整 Flutter 清单的旧安装。这里不根据三个相同文件名猜测版本，
+/// 也不向旧 Tauri 客户端发送新版退出请求。真正替换前的 preserve 校验继续保留，以覆盖等待
+/// 期间安装树发生变化的情况；本次提前校验不能取代最后的事务准入。
+fn validate_update_source(plugin_dir: &Path) -> Result<(), String> {
+    validate_plugin_path(plugin_dir)?;
+    package_manifest::validate(plugin_dir, true).map(|_| ()).map_err(|error| {
+        format!(
+            "当前插件目录不满足自动更新条件，未请求游戏或客户端退出、未替换插件。\
+             从 v1.3.1 首次升级时，请退出游戏、旧客户端及更新程序，保留 BepInEx/config，\
+             移出插件目录内自行保存的资料，然后删除 BepInEx/plugins/mystia-steward-companion，\
+             再解压新版完整 Mod 包到该位置。已使用 Flutter 的安装请先核对程序包完整性。校验原因：{error}"
+        )
+    })
+}
+
 /// 校验暂存目录包含新版本运行所需的关键文件。
 fn validate_staged_package(staged_dir: &Path) -> Result<(), String> {
     if !staged_dir.is_dir() {
@@ -449,6 +587,25 @@ fn replace_plugin_directory(
     status_file: &Path,
     progress: &mut dyn FnMut(InstallProgress),
 ) -> Result<(), String> {
+    replace_plugin_directory_using(
+        plugin_dir,
+        staged_dir,
+        backup_dir,
+        status_file,
+        progress,
+        || package_manifest::preserve(plugin_dir, staged_dir),
+    )
+}
+
+/// 两种入口仅共用目录事务；旧包身份与附加数据准入由入口各自提供，普通更新器不接受旧版例外。
+fn replace_plugin_directory_using(
+    plugin_dir: &Path,
+    staged_dir: &Path,
+    backup_dir: &Path,
+    status_file: &Path,
+    progress: &mut dyn FnMut(InstallProgress),
+    preserve: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     // 进入本事务时游戏已经退出。等待可能持续很久，不能复用等待前对暂存目录的校验结果；
     // 本次失败发生在任何旧目录移动之前，因此已安装版本完全不受影响。
     package_manifest::validate(staged_dir, false)?;
@@ -457,7 +614,7 @@ fn replace_plugin_directory(
             "backup directory already exists; inspect previous transaction before retry".into(),
         );
     }
-    package_manifest::preserve(plugin_dir, staged_dir)?;
+    preserve()?;
 
     publish_progress(
         status_file,
@@ -560,6 +717,10 @@ fn publish_progress(
 ///
 /// 状态文件是 updater 与下一次 Mod 启动之间的唯一通信方式，因此写入失败不再向外抛出，避免掩盖原始安装错误。
 fn write_status(path: &Path, state: &str, message: &str, progress: u8) {
+    // 每次写入重新检查既有祖先，避免安装过程中出现的链接把诊断文件导向其他目录。
+    if !path.is_absolute() || offline_migration::ensure_no_links(path).is_err() {
+        return;
+    }
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
@@ -1457,6 +1618,50 @@ mod tests {
             self.assert_old_version_active();
             super::package_manifest::validate(&self.staged, false).unwrap();
             assert!(!self.staged.join("user-data").exists());
+        }
+    }
+
+    #[test]
+    fn unsupported_installation_is_rejected_before_game_wait_or_client_request() {
+        use super::*;
+        // 旧三文件安装缺少完整清单；已损坏的新安装也不得进入等待及客户端控制阶段。
+        // 两种情形都必须保留原树和暂存包，不能为了显示升级提示先触碰安装目录。
+        for missing_manifest in [true, false] {
+            let fixture = PackageTransactionFixture::new();
+            if missing_manifest {
+                // 收窄为公开旧包的三个文件名，不把“新包删一份清单”误称为旧三文件结构。
+                // 内容仍是测试文本，不执行任何旧载荷；真正公开 ZIP 由独立手动升级脚本验证。
+                for (name, path) in package_manifest::tree(&fixture.plugin).unwrap() {
+                    if ![REQUIRED_DLL, REQUIRED_COMPANION_EXE, REQUIRED_UPDATER_EXE].contains(&name.as_str()) {
+                        fs::remove_file(path).unwrap();
+                    }
+                }
+                assert_eq!(package_manifest::tree(&fixture.plugin).unwrap().len(), 3);
+            } else {
+                fs::write(fixture.plugin.join(REQUIRED_DLL), "受控损坏组件").unwrap();
+            }
+            let snapshot = |root: &Path| -> std::collections::BTreeMap<String, Vec<u8>> {
+                package_manifest::tree(root).unwrap().into_iter()
+                    .map(|(name, path)| (name, fs::read(path).unwrap())).collect()
+            };
+            let previous = snapshot(&fixture.plugin);
+            let staged = snapshot(&fixture.staged);
+            struct NeverObserve;
+            impl ProcessObservation for NeverObserve {
+                fn is_running(&self) -> Result<bool, String> {
+                    panic!("不兼容安装不应观察游戏进程");
+                }
+            }
+            let mut states = Vec::new();
+            let error = run_install(
+                &fixture.context(), &fixture.status, &NeverObserve,
+                &InstallControl::default(), &mut |event| states.push(event.state),
+            ).unwrap_err();
+            assert!(error.contains("从 v1.3.1 首次升级"), "{error}");
+            assert_eq!(states, ["preparing", "failed"]);
+            assert_eq!(snapshot(&fixture.plugin), previous);
+            assert_eq!(snapshot(&fixture.staged), staged);
+            assert!(!fixture.backup.exists());
         }
     }
 

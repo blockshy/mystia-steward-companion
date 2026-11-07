@@ -1,6 +1,8 @@
 # mystia-steward-companion Mod 使用说明
 
-本客户端使用 Flutter，面向《东方夜雀食堂》Mod 用户提供密集列表、推荐详情、扩展模块与可选自动化。游戏电脑运行完整 Mod，Windows 或 Android 伴随客户端负责显示和操作。开发资料见[开发说明](README.dev.md)。
+游戏电脑运行完整 Mod，Windows 或 Android 伴随客户端负责显示推荐、管理配置和发起操作。客户端使用 Flutter；独立 Windows 电脑无需安装游戏或 BepInEx，使用方法见[独立客户端说明](../../docs/standalone-client.md)。开发资料见[开发说明](README.dev.md)。
+
+常用入口：[安装](#安装-mod) · [首次升级](#从-v131-首次升级) · [连接其他设备](#另一台设备连接windows--android) · [数据与备份](#配置与数据位置) · [故障排查](#故障排查)。
 
 标题画面、主菜单和加载过程中，游戏数据可能尚未读取完整。进入可操作场景后会刷新；未知数据不会显示为零库存或空结果。
 
@@ -15,7 +17,15 @@
 
 ## 安装 Mod
 
-从[项目发布页](https://github.com/blockshy/mystia-steward-companion/releases)取得与本说明对应的完整包，或使用本地已验证构建。新客户端必须使用同一套 Mod 与客户端，不能只复制 EXE 或主 DLL。
+从[项目发布页](https://github.com/blockshy/mystia-steward-companion/releases)取得与本说明对应的完整包，或使用本地已验证构建。Mod 与客户端应使用同一套版本，不能只复制 EXE 或主 DLL。
+
+| 用途 | 安装包 |
+| --- | --- |
+| 游戏电脑 | `mystia-steward-companion-bepinex.zip`，包含 Mod、更新程序与内置 Windows 客户端。 |
+| 独立 Windows 客户端 | `mystia-steward-companion-companion-windows-x64.zip`，用于独立目录或另一台电脑，使用 EXE 同级 `client-data/`。 |
+| Android 客户端 | 对应设备 ABI 的 arm64-v8a 或 armeabi-v7a APK。 |
+
+游戏电脑退出游戏后，将完整 Mod ZIP 中的 `mystia-steward-companion/` 解压到 `BepInEx/plugins/`，最终结构如下。已有 v1.3.1 时先按[首次升级步骤](#从-v131-首次升级)处理旧目录。
 
 ```text
 BepInEx/plugins/mystia-steward-companion/
@@ -31,25 +41,63 @@ BepInEx/plugins/mystia-steward-companion/
     data/
 ```
 
-保留压缩包中完整 companion 目录及全部资源。另一台 Windows 电脑使用完整的 `mystia-steward-companion-companion-windows-x64.zip`，解压后运行；Android 使用对应的 arm64-v8a 或 armeabi-v7a APK。独立客户端仍需连接游戏电脑。
+保留 `package-manifest.json`、完整 `companion/` 及其资源，不要嵌套两层同名插件目录。独立 Windows 包具有不同的入口名称和目录清单，不用于覆盖 Mod 的 `companion/`；按[独立客户端步骤](../../docs/standalone-client.md#下载与首次使用)解压和启动。
 
 此源码分支的完成不表示已经发布 GitHub Release；实际可下载版本以发布页为准。
 
 ## 更新 Mod
 
-新包采用完整目录替换。进入“设置 → 更新”可以检查、下载整包并请求退出游戏后安装。更新程序确认目标进程退出，核验全部文件，失败时恢复备份；不会在运行的游戏中替换程序集。
+### 从 v1.3.1 首次升级
 
-页头右侧出现“有更新”或“更新异常”时，可打开提醒查看详情、直达更新页，或选择“24小时后提醒”。提醒不会自动下载或安装；版本说明按标题、段落和列表阅读，读取失败会单独显示，也可打开对应发布页核对。
+**公开版 v1.3.1 首次升级至 Flutter 版本使用手动替换，不能通过旧在线更新器完成。**
 
-从旧客户端首次迁移时使用完整包安装入口，不能用旧单 EXE 更新方式：
+1. 下载新版完整 Mod 包，保存进度并退出游戏、旧托盘客户端及更新程序，再备份存档与 `BepInEx/config`。
+2. 如果曾在插件目录自行保存日志、导出文件或其他资料，先移出这些文件。只删除 `BepInEx/plugins/mystia-steward-companion/`，保留整个 `BepInEx/config` 和游戏存档。需要回退旧程序时，先将旧完整插件目录另存到 `BepInEx/plugins/` 之外。
+3. 将新版完整插件目录解压到 `BepInEx/plugins`，确保最终仍为 `BepInEx/plugins/mystia-steward-companion`；保留 `package-manifest.json` 和 `companion` 内全部文件，不嵌套两层同名目录、不只覆盖 DLL 或 EXE。
+4. 启动游戏。Mod 自动备份并迁移旧主配置，实际读取、保存和回读验证成功后，才删除旧位置的 CFG；迁移备份仍保留。文件冲突或损坏时按错误提示处理，不删除设备注册表或凭据重试。
+5. 已有旧主设备时，按[历史数据迁移](#历史数据迁移)先同步旧主配置、等待保存确认，再按需设为主设备。
 
-1. 关闭游戏、托盘中的客户端及更新程序。
-2. 备份原插件目录以及 BepInEx/config/MystiaStewardCompanion/ 和主配置。
-3. 将原插件目录移到 BepInEx/plugins 之外保留，再放入新完整目录；不要把旧 companion 文件混进新目录。
-4. 原插件内如有额外用户文件，单独保留并确认用途；不要盲目删除。
-5. 新客户端以新设备身份注册，按下述迁移流程同步配置。
+新 Release 的更新清单会被 v1.3.1 旧更新检查拒绝。出现清单协议不受支持时，直接按发布页执行上述步骤；手动删除和解压不提供自动安装回滚。
 
-收藏、自定义料理、设备注册表和 Mod 设置仍位于 BepInEx/config，不由插件目录替换清理。另一台 Windows 或 Android 设备需分别更新。
+收藏、自定义配方和设备注册表原本就在配置目录中，不随插件目录删除。自动清理只处理已验证迁移的旧主 CFG，不代表旧客户端全部资料已迁移，也不自动删除 AppData、历史更新备份或外部日志。
+
+曾在 `[Companion]` 中设置外部 `ExecutablePath` 时，迁移只对内容精确匹配公开 v1.3.1 的旧客户端自动恢复包内默认值，不删除外部程序。未知或不可读取的自定义路径会保留并提示核对；若仍指向旧 Tauri 客户端，请退出游戏后清空新配置中的该值，或改为配套 Flutter 完整运行目录中的 EXE。
+
+### 后续 Flutter 版本更新
+
+进入“设置 → 更新 → 游戏电脑上的 Mod 更新”检查和下载整包，再在游戏电脑通过本机连接请求“退出游戏后安装”。局域网主设备可以请求下载，但安装须在游戏电脑本机操作。更新程序确认目标进程退出后替换完整目录，核验全部文件；失败时尝试恢复备份，恢复异常会保留错误与事务信息，不在运行的游戏中替换程序集。
+
+页头右侧的“有更新”或“更新异常”可直达更新页，也可选择“24小时后提醒”；提醒不会自动下载或安装。版本说明读取失败时仍可打开发布页核对。
+
+这里更新的是游戏电脑上的完整 Mod 及包内客户端。其他 Windows 目录或电脑按[独立客户端更新步骤](../../docs/standalone-client.md#更新独立客户端)分别更新；Android 覆盖安装须保持同包名、原证书签名且版本号更高。未连接或协议不兼容时，“本机客户端更新”的说明与发布页入口仍可使用。
+
+## 清理 v1.3.1 残留
+
+旧插件程序在首次手动升级时移除，旧主 CFG 在新版启动验证成功后自动清理。本节用于处理其他可核验的残留，**不是升级必经步骤**。先完成配置接管，再退出游戏、客户端及其他更新程序，在新版插件目录运行以下命令；默认只预览，游戏目录须填写绝对路径：
+
+```powershell
+.\mystia-steward-companion-updater.exe --cleanup-v1-3-1 --game-dir '<游戏根目录>'
+```
+
+预览会列出本次候选及计划 SHA-256。核对后以相同选项追加 `--execute --plan-sha256 '<预览返回的 SHA-256>' --confirm-migrated` 才会永久删除；文件或选项变化后应重新预览，不沿用旧计划。
+
+默认范围仅包含已有完整迁移记录、原件备份可验证且内容未变的旧主 cfg，以及符合严格旧版身份检查的 updater 运行副本。不会按名称扫描全盘，也不会删除未知 `update-status.json`、当前配置、设备注册表、存档或整个 `updates` 目录。
+
+可按需在预览与执行两次命令中加入以下选项：
+
+| 选项 | 清理范围 |
+| --- | --- |
+| `--migration-backup-dir '<已有离线升级事务备份目录>'` | 仅适用于已经存在、明确成功的离线升级事务；只清理 `original-copy/` 与 `plugin-backup/` 中三个已核验的公开旧程序，保留附加用户资料和事务记录。手动另存的普通备份目录不适用；删除后不能再依赖该事务备份原样恢复旧程序。 |
+| `--legacy-package-zip '<公开 v1.3.1 原始 ZIP>'` | 仅清理摘要精确匹配的官方旧 ZIP，其他文件保留。使用绝对文件路径；若位于游戏目录内，只允许直接放在 `BepInEx/plugins/` 下，不接受其子目录或游戏内其他位置。游戏目录外的绝对文件路径也可指定。 |
+| `--include-legacy-client-data` | 清理当前 Windows 用户的旧 Tauri WebView 整个目录和旧窗口状态文件；不接受任意用户资料目录作为替代目标。 |
+
+选择旧客户端数据时，目标为系统 LocalAppData 下的 `com.tyukki.mystia-steward-companion/`，以及 RoamingAppData 下同名目录中的 `.window-state.json`。前者包含缓存及未加应用层加密的历史 localStorage 数据，可能有偏好、Token、设备身份；后者之外的未知文件保留。执行前自行导出或备份仍需保留的资料；“历史偏好迁移”只导入白名单字段，不能恢复整个 WebView 数据库。
+
+当前 Flutter 的用户私有目录和便携 `client-data/` 均不在清理范围。本入口不处理 Android；两代 Android 客户端使用同一应用包名，不要用清除应用数据代替升级。
+
+此操作不进入回收站，不新建等体积归档。多个文件的永久删除不能整体回滚，过程中失败可能只完成部分项目；查看逐项结果及 `partial` 状态，解决占用或冲突后重新预览再重试。工具保留小型执行记录，记录清理结果，不保留被删除资料的可恢复副本。
+
+执行记录位于 `BepInEx/config/MystiaStewardCompanion/legacy-cleanup/<标识>/`，使用 `plan.json` 保存计划、`events.jsonl` 记录逐项进度、`result.json` 保存结果。预览不创建这些文件；执行时若已没有待删文件或目录，会返回零删除结果，也不新建记录目录。
 
 ## 快速开始
 
@@ -108,13 +156,15 @@ Android 没有桌面托盘、置顶、穿透及游戏退出联动。远程客户
 
 ## 历史数据迁移
 
-新客户端不会复用旧设备身份或 Token 数据库。旧主设备记录和共享配置留在游戏电脑；自动化按已保存的共享总开关运行：
+本节针对旧 Tauri 客户端转换为 Flutter。新客户端不会自动读取旧 WebView 中的身份或 Token，旧主设备记录和共享配置仍保存在游戏电脑。旧 Flutter 私有目录转为便携目录属于另一个[显式导入流程](../../docs/standalone-client.md#从旧-flutter-私有目录导入)，同样不会复制旧身份。
+
+已有旧主设备时，按以下顺序接管：
 
 1. 同机启动接收 Mod 凭据，或在“设置 → 连接与设备”填写地址、Token 和名称。
-2. 有旧主设备时，先点击当前设备的“同步主配置”。
-3. 等待同步落盘并确认完成，再将新设备设为主设备。
+2. 有旧主设备时，先在标有“本设备”的新记录上点击“同步主配置”；旧主设备离线时也可读取它已保存的共享配置。
+3. 等待同步落盘并确认完成，再将新设备设为主设备。切换主设备不会复制旧主配置，不能省略或颠倒这两步。
 4. 核对共享自动化、推荐与高亮设置；自动化总开关若已开启，新主设备会在连接、配置确认和场景条件满足后恢复执行。
-5. 旧设备记录可在确认迁移完成后显式忘记。
+5. 旧设备记录可在确认迁移完成后显式忘记；不需要删除整个注册表或复用旧客户端身份。
 
 “历史偏好迁移”接受一次性导出的 JSON，格式为 `{"schemaVersion":1,"preferences":{"旧键名":"字符串值"}}`。它只读取白名单偏好，拒绝身份和秘密字段；原文件保留。窗口、主题、字号、不透明度、页面选择及任务列表/稀客邀请的旧模块开关映射到新客户端。此前已导入的历史记录会在新开关尚未设置时补齐，明确关闭的本机设置不会被覆盖。库存修改没有旧模块开关可迁移，默认关闭；其余已解析字段保留在迁移记录中，不恢复已移除的旧页面行为。不能直接把浏览器数据库文件当作该 JSON。
 
@@ -277,7 +327,7 @@ Android 没有桌面托盘、置顶、穿透及游戏退出联动。远程客户
 
 图片由 Mod 首次加载时初始化。缓存核验、等待游戏目录、实际提取及失败均在同一个独立初始化界面显示对应状态，完成后自动进入工作台；核验不表示重新提取图片，失败保留错误及重试入口。初始化、核验与重读期间暂停业务操作和自动化。
 
-`user-data/game-media` 中的旧缓存若没有启动凭据，需要进入存档完成一次完整确认；已有 PNG 通过校验后原样复用并补建凭据。之后游戏版本、已启用 DLC 与资源未变化且缓存完整时，可在主菜单完成校验并复用，无需先读档。每次启动仍检查资源身份、缓存清单和图片文件。安装包不包含游戏图片；Android 经已认证连接读取同一份已验证资源。
+图片缓存位于 `BepInEx/config/MystiaStewardCompanion/cache/game-media/`。从旧插件 `user-data/game-media` 迁入统一布局时不复制缓存，旧文件保留，新位置在进入存档后按当前资源重新生成；缓存可重建，不承载收藏或用户配方。之后游戏版本、已启用 DLC 与资源未变化且缓存完整时，可在主菜单完成校验并复用，无需先读档。每次启动仍检查资源身份、缓存清单和图片文件。安装包不包含游戏图片；Android 经已认证连接读取同一份已验证资源。
 
 数据 → 资源管理默认浏览全部分类，也可切换单类并按名称或编号搜索；游戏更新后先重启游戏，再由主设备按需重新读取。搜索只筛选已有资源清单，不为匹配内容额外提取图片。日常订单与页面刷新只使用缓存，不重新提取纹理。
 
@@ -305,15 +355,43 @@ Windows 使用 XInput，Android 接收系统手柄按键和摇杆事件。两端
 
 ## 配置与数据位置
 
+Mod 自有数据统一保存在游戏目录下的 `BepInEx/config/MystiaStewardCompanion/`，主要内容如下：
+
 ```text
-BepInEx/config/com.tyukki.mystia-steward-companion.cfg
-BepInEx/config/MystiaStewardCompanion/favorites.json
-BepInEx/config/MystiaStewardCompanion/custom-recipes.json
-BepInEx/config/MystiaStewardCompanion/companion-devices.json
-BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
+BepInEx/config/MystiaStewardCompanion/
+  com.tyukki.mystia-steward-companion.cfg
+  favorites.json
+  custom-recipes.json
+  companion-devices.json
+  game-focus-overlay.json
+  aggregate-mod.log
+  diagnostic-packages/
+  updates/
+  cache/game-media/
+  layout-state.json
+  legacy-cfg-cleanup.json
+  migration-backups/
 ```
 
-新 Windows 本地数据位于 `%LOCALAPPDATA%\mystia-steward-companion\flutter-v1`。Token 与身份用当前用户 DPAPI 加密；Android 使用应用私有存储和 Keystore。损坏凭据不会被静默删除重建。旧客户端数据原样保留，不作为新客户端运行时存储。
+主 CFG 保存 Mod 设置与 API Token；三个主要 JSON 分别保存收藏、配方和设备注册表，`game-focus-overlay.json` 保存游戏内专注面板布局。`updates/` 是更新暂存，`cache/game-media/` 是可重建的图片缓存。备份 Mod 设置时，退出游戏后保留整个数据根；该备份不包含游戏存档或其他设备的客户端私有资料。
+
+### 旧配置迁移与清理
+
+旧主配置位于 `BepInEx/config/com.tyukki.mystia-steward-companion.cfg`。首次迁移保留其中的 API Token，将原件备份到 `migration-backups/layout-v1-<标识>/`，再使用统一目录中的新 CFG，不继续双写。收藏、配方、设备注册表等原本就在统一目录中的文件不另建运行时副本。
+
+新 CFG 实际读取、保存并回读成功，且备份和旧原件再次核对通过后，自动删除旧位置的 CFG。仅清理失败不影响新版正常使用，下次启动可重试同一原件；清理完成后旧路径再次出现，或原件发生变化时，会保留并提示，不再次按文件名删除。以后只编辑新位置，迁移备份可能包含 API Token，应按配置原件保管。
+
+`layout-state.json` 记录目录迁移，`legacy-cfg-cleanup.json` 记录旧 CFG 清理；它们不是业务配置，也不要通过删除这些记录绕过冲突。源文件变化、目标冲突或无法验证的中断状态会保留原件并报错。完成迁移后，新主配置缺失或损坏会停止本插件初始化，不会自动重新导入旧配置、生成替代凭据或开启 API；先核对错误与备份后恢复。正常修改新主配置仍会生效，不要求其始终与首次迁移摘要相同。
+
+### 客户端本机数据
+
+| 客户端 | 存储位置与凭据保护 |
+| --- | --- |
+| Mod 内置 Windows 客户端 | `%LOCALAPPDATA%/mystia-steward-companion/flutter-v1/`，当前用户 DPAPI。 |
+| 专用独立 Windows 包 | 实际 EXE 同级 `client-data/`，当前用户 DPAPI；目录不可用时不改存 AppData。 |
+| Android | 应用私有 `noBackupFilesDir/companion-v1/`，Android Keystore。 |
+
+Windows 的 `preferences.json` 保存本机偏好与共享配置确认记录，`window-state-v1.txt` 保存窗口状态，Token 与身份分别加密保存。损坏或跨用户、跨电脑无法解密的凭据会报错并保留，不会静默重建。独立包的首次导入、目录保护、备份与更新见[独立客户端说明](../../docs/standalone-client.md)。
 
 常见 Mod 配置包括 Companion.AutoLaunch、LocalApi.AllowLanConnections、LocalApi.LanHost、LocalApi.Port 和 Diagnostics.EnableAggregateModLog。修改前关闭相关进程并保留备份。
 
@@ -325,6 +403,8 @@ BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
 4. 排查后可关闭聚合日志；需要重新读取日志设置和包列表时点击“刷新诊断”。
 
 默认单段 10 MiB、保留 30 段；保留数量可设置为1–30。BepInEx LogOutput.log 和 Unity Player.log 不由该轮转管理。本机 Windows 可控制 BepInEx 控制台显隐；使用页面按钮隐藏，不关闭 Mod 创建的控制台窗口。
+
+布局迁移后聚合日志使用统一目录中的 `aggregate-mod.log` 及其轮转段。旧自定义日志路径不再作为新日志写入位置，原先位于外部目录的历史日志保留，不会被迁移程序删除；需要查旧问题时仍应查看原日志位置。
 
 “最近操作 · 本次运行”保留最近 20 条实际动作、时间及成功/失败/结果待确认状态，不记录后台轮询、Token 或原始请求正文。客户端重启后不会恢复这份操作列表；需要跨次排查时使用日志。
 
@@ -340,6 +420,7 @@ BepInEx/config/MystiaStewardCompanion/aggregate-mod.log
 - 没有推荐：查看订单需求、库存、预算、排除项、收藏限制和阻断原因。
 - 自动化暂停：先查看自动化详情中的当前阶段、下一步和异常原因；实际送达与已发送请求分开显示。普通暂停可重试；需要人工确认的事项必须先核对现场再确认。
 - 连接失败：先查看窗口底栏的具体错误，完整内容也可在“设置 → 诊断”查看。初始化失败会保留失败阶段，切页不会将其清除；在“设置 → 连接与设备”可重新初始化并连接：启动参数连接点击“重试连接”，其它来源点击“保存并连接”，不需要删除原设备身份。同机启动由 Mod 提供凭据；手机再检查地址、Token、LAN 监听错误与防火墙。重连不会更改已保存的自动化开关，也不会重放此前未知结果的游戏写操作。
-- 重置数据：先备份，关闭进程后按用途处理配置或设备记录。删除凭据会产生新设备身份，不能借此直接接管主设备的自动化。
+- 配置迁移报错：保留现有 CFG、迁移记录与备份，按错误核对新旧文件；不要删除布局记录或整个设备注册表来重试。
+- 独立客户端无法启动或凭据无法解密：按[目录检查与恢复说明](../../docs/standalone-client.md#目录检查与启动失败)处理，不删除 `client-data` 或密文来绕过检查。需要新设备时使用新的完整客户端目录，再同步主配置并按需接管。
 
 开发验证入口与证据要求见[验证指南](../../docs/validation-guide.md)。离线预览、组件测试和构建结果不能替代目标平台及真实经营场景的专项验证。

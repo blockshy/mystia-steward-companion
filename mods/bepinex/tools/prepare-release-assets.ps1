@@ -220,7 +220,7 @@ function Assert-MystiaStagedMetadata {
     Assert-MystiaCanonicalUtcTimestamp `
         -Value $Manifest.publishedAtUtc `
         -Label "Staged update manifest publishedAtUtc"
-    if ($ManifestSchemaVersion -ne 1 -or
+    if ($ManifestSchemaVersion -ne $script:MystiaUpdateManifestSchemaVersion -or
         $Manifest.version -cne $ExpectedVersion -or
         $Manifest.tag -cne $ExpectedTag -or
         $Manifest.channel -cne $ExpectedChannel -or
@@ -411,7 +411,11 @@ try {
     }
 
     [void](Resolve-MystiaRequiredFile -Path (Join-Path $DistRoot $script:MystiaReleasePackageName) -Label "Mod package")
-    [void](Resolve-MystiaRequiredFile -Path (Join-Path $DistRoot $script:MystiaReleaseCompanionName) -Label "Windows companion executable")
+    [void](Resolve-MystiaRequiredFile -Path (Join-Path $DistRoot $script:MystiaReleaseCompanionName) -Label "Windows standalone package")
+    # 元数据生成前核对独立包目录标记和两 ZIP 的实际载荷，不能仅凭非空文件生成发布摘要。
+    Assert-MystiaWindowsPackagePair -ModPackageZip (Join-Path $DistRoot $script:MystiaReleasePackageName) `
+        -StandaloneZip (Join-Path $DistRoot $script:MystiaReleaseCompanionName) -RepositoryRoot $RepoRoot `
+        -ExpectedVersion $Version -ExpectedCommit $TargetCommitSha
 
     $PresentAndroid = @(
         $script:MystiaReleaseAndroidNames |
@@ -469,7 +473,7 @@ try {
         $PackageItem = Get-Item -LiteralPath $PackagePath
         $CatalogItem = Get-Item -LiteralPath $CatalogPath
         $Manifest = [ordered]@{
-            schemaVersion = 1
+            schemaVersion = $script:MystiaUpdateManifestSchemaVersion
             version = $Version
             tag = $Tag
             channel = $Channel

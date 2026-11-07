@@ -2,6 +2,9 @@ using MystiaStewardCompanion.Updates;
 using BepInEx.Logging;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.IO.Compression;
+using System.Security.Cryptography;
 
 try
 {
@@ -12,6 +15,9 @@ try
     VerifyCachedReleaseHistoryValidation();
     VerifyAtomParsing();
     VerifyCachedStateValidation();
+    VerifyLegacyCacheInvalidation();
+    VerifyActiveRollbackSurvivesCacheInvalidation();
+    VerifySchemaTwoDownloadAndReload();
     VerifyBoundedDownloadCopy();
     VerifyUpdateSchedule();
     VerifySchedulerLifecycle();
@@ -43,12 +49,13 @@ static void VerifyManifestValidation()
 {
     UpdateService.ValidateManifest(Manifest());
     UpdateService.ValidateManifest(Manifest(withCatalog: true));
-    ExpectInvalidManifest(Manifest(schemaVersion: 2), "schemaVersion");
+    UpdateService.ValidateManifest(Manifest(version: "1.4.0-preview.1", tag: "v1.4.0-preview.1", channel: "preview"));
+    foreach (var schema in new[] { 0, 1, 3 }) ExpectInvalidManifest(Manifest(schemaVersion: schema), "schemaVersion");
     ExpectInvalidManifest(Manifest(channel: "preview"), "channel");
     ExpectInvalidManifest(Manifest(packageSha256: "abc"), "packageSha256");
     ExpectInvalidManifest(new UpdateManifest
     {
-        SchemaVersion = 1,
+        SchemaVersion = 2,
         Version = "1.2.3",
         Tag = "v1.2.3",
         Channel = "stable",
@@ -204,17 +211,17 @@ static void VerifyOptionalReleaseHistoryIsolation()
         using (var service = new UpdateService(
                    Settings(),
                    log,
-                   Path.Combine(root, "legacy-manifest"),
+                   Path.Combine(root, "manifest-without-catalog"),
                    () => nowUtc,
                    _ => Candidate()))
         {
             var status = service.CheckForUpdates();
-            AssertEqual(true, status.Ok, "A legacy manifest without catalog metadata failed the core update check.");
-            AssertEqual(true, status.HasUpdate, "A legacy manifest without catalog metadata hid an available update.");
+            AssertEqual(true, status.Ok, "A schema-2 manifest without catalog metadata failed the core update check.");
+            AssertEqual(true, status.HasUpdate, "A schema-2 manifest without catalog metadata hid an available update.");
             AssertEqual("unavailable", status.ReleaseHistoryState,
-                "A legacy manifest without catalog metadata did not report unavailable history.");
+                "A schema-2 manifest without catalog metadata did not report unavailable history.");
             AssertEqual(0, status.AvailableReleases.Count,
-                "A legacy manifest without catalog metadata fabricated release history.");
+                "A schema-2 manifest without catalog metadata fabricated release history.");
         }
     }
     finally
@@ -291,9 +298,221 @@ static void VerifyCachedStateValidation()
         PackageSize = 42,
         PackageDownloadUrl = "https://example.test/package.zip",
     };
+    AssertEqual(false, UpdateService.HasAvailableUpdate(state), "An unmarked cache was silently promoted to the supported schema.");
+    state.ManifestSchemaVersion = 1;
+    AssertEqual(false, UpdateService.HasAvailableUpdate(state), "A legacy schema cache was accepted.");
+    state.ManifestSchemaVersion = 3;
+    AssertEqual(false, UpdateService.HasAvailableUpdate(state), "A future schema cache was accepted.");
+    state.ManifestSchemaVersion = 2;
     AssertEqual(true, UpdateService.HasAvailableUpdate(state), "A valid cached candidate was rejected.");
     state.PackageSize = 0;
     AssertEqual(false, UpdateService.HasAvailableUpdate(state), "A cached candidate without package size was accepted.");
+}
+
+// 旧缓存没有真实 schema 字段；即使带有效版本、URL 和暂存目录，也必须重新检查而不能补填 schema 2。
+// 测试不运行 updater，下载替身只观察新候选被采用后立即失败，原暂存哨兵必须保留。
+static void VerifyLegacyCacheInvalidation()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"mystia-update-schema-cache-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
+    var log = Logger.CreateLogSource("update-schema-cache-smoke");
+    var now = new DateTime(2026, 11, 7, 1, 2, 3, DateTimeKind.Utc);
+    try
+    {
+        foreach (var schema in new[] { 0, 1, 3 })
+        {
+            var serviceRoot = Path.Combine(root, schema.ToString());
+            var staged = Path.Combine(serviceRoot, "downloads", "legacy-staged");
+            Directory.CreateDirectory(staged);
+            var sentinel = Path.Combine(staged, "user-note.txt");
+            File.WriteAllText(sentinel, "retained old staged data");
+            var state = AvailableState("downloaded", now);
+            state.ManifestSchemaVersion = schema;
+            state.DownloadedManifestSchemaVersion = schema;
+            state.DownloadedVersion = "1.2.4";
+            state.StagedDirectory = staged;
+            state.PackageDownloadUrl = "https://example.test/legacy-only.zip";
+            WriteUpdateState(serviceRoot, state);
+            if (schema == 0)
+            {
+                var path = Path.Combine(serviceRoot, "update-state.json");
+                var json = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+                json.Remove("manifestSchemaVersion");
+                json.Remove("downloadedManifestSchemaVersion");
+                File.WriteAllText(path, json.ToJsonString());
+            }
+            var fetched = 0;
+            var downloaded = 0;
+            using var service = new UpdateService(Settings(), log, serviceRoot, () => now,
+                _ => { fetched++; return Candidate(); },
+                downloadFile: (url, _, _, _) =>
+                {
+                    AssertEqual(Candidate().PackageDownloadUrl, url, "Download reused an invalidated legacy URL.");
+                    downloaded++;
+                    throw new InvalidOperationException("synthetic stop after fresh schema-2 selection");
+                });
+            var loaded = service.GetStatus();
+            AssertEqual(false, loaded.HasUpdate, "Legacy cached metadata remained available before a fresh check.");
+            AssertEqual(false, loaded.Staged, "Legacy cached staging remained installable.");
+            AssertEqual(now.ToString("O"), loaded.NextCheckAtUtc, "Legacy cache kept an old automatic-check backoff.");
+            AssertEqual(false, service.InstallOnExit().Ok, "Legacy staging reached the updater launch path.");
+            service.DownloadUpdate();
+            AssertEqual(1, fetched, "Legacy cache download did not recheck the remote manifest.");
+            AssertEqual(1, downloaded, "A freshly accepted schema-2 candidate could not enter download.");
+            AssertEqual("retained old staged data", File.ReadAllText(sentinel), "Cache invalidation deleted staged files.");
+            var persisted = ReadUpdateState(serviceRoot);
+            AssertEqual(2, persisted.ManifestSchemaVersion, "The accepted manifest schema was not persisted.");
+            AssertEqual(0, persisted.DownloadedManifestSchemaVersion, "A fresh check retroactively authorized old staging.");
+            AssertEqual("", persisted.StagedDirectory, "An invalidated staging reference was restored by a later check.");
+        }
+
+        // 已有 schema-2 候选并不能为缺少下载来源的旧暂存包背书。
+        var mixedRoot = Path.Combine(root, "mixed");
+        var mixed = AvailableState("downloaded", now);
+        mixed.DownloadedVersion = "1.2.4";
+        mixed.StagedDirectory = Path.Combine(mixedRoot, "staged");
+        Directory.CreateDirectory(mixed.StagedDirectory);
+        WriteUpdateState(mixedRoot, mixed);
+        using (var service = NewRecoveryService(mixedRoot, now, log))
+        {
+            AssertEqual(true, service.GetStatus().HasUpdate, "Valid schema-2 candidate was lost with unrelated old staging.");
+            AssertEqual(false, service.GetStatus().Staged, "Old staging inherited the latest candidate's schema.");
+        }
+
+        // 候选数据源本身也必须通过门禁，不能依赖某个网络读取实现曾经验证过。
+        var invalidFetches = 0;
+        using (var service = new UpdateService(Settings(), log, Path.Combine(root, "old-remote"), () => now,
+                   _ => new UpdateCandidate { Manifest = Manifest(schemaVersion: 1, version: "1.2.4", tag: "v1.2.4"), PackageDownloadUrl = "https://example.test/old.zip" },
+                   downloadFile: (_, _, _, _) => invalidFetches++))
+        {
+            AssertEqual(false, service.DownloadUpdate().Ok, "A schema-1 remote candidate was accepted.");
+            AssertEqual(0, invalidFetches, "A schema-1 remote candidate started a package download.");
+        }
+    }
+    finally { Logger.Sources.Remove(log); Directory.Delete(root, recursive: true); }
+}
+
+// 使用完整清单与合成载荷走真正的下载摘要/解压/暂存路径，验证 schema-2 更新可在重启后继续使用。
+// EXE/DLL 只作为字节夹具，整个用例不调用安装入口或启动任何合成程序。
+static void VerifySchemaTwoDownloadAndReload()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"mystia-update-schema-download-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
+    var log = Logger.CreateLogSource("update-schema-download-smoke");
+    var now = new DateTime(2026, 11, 7, 2, 3, 4, DateTimeKind.Utc);
+    try
+    {
+        var source = Path.Combine(root, "source");
+        var package = Path.Combine(source, "mystia-steward-companion");
+        Directory.CreateDirectory(package);
+        var files = new List<object>();
+        foreach (var name in BusinessPackageManifest.Files)
+        {
+            var bytes = Encoding.UTF8.GetBytes("synthetic package payload: " + name);
+            var path = Path.Combine(package, name.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, bytes);
+            files.Add(new { path = name, size = bytes.Length, sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() });
+        }
+        File.WriteAllText(Path.Combine(package, "package-manifest.json"), JsonSerializer.Serialize(new
+        {
+            schemaVersion = 1, product = "mystia-steward-companion", version = "1.2.4", sourceCommit = new string('a', 40),
+            sourceDigest = new string('b', 64), toolchainSha256 = new string('c', 64), businessProtocolVersion = 1, clientProtocolVersion = 2, files,
+        }));
+        var zip = Path.Combine(root, "fixture.zip");
+        ZipFile.CreateFromDirectory(source, zip);
+        var manifest = Manifest(version: "1.2.4", tag: "v1.2.4", packageSize: new FileInfo(zip).Length,
+            packageSha256: Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(zip))).ToLowerInvariant());
+        var serviceRoot = Path.Combine(root, "updates");
+        using (var service = new UpdateService(Settings(), log, serviceRoot, () => now,
+                   _ => new UpdateCandidate { Manifest = manifest, PackageDownloadUrl = "https://example.test/new.zip" },
+                   downloadFile: (_, destination, _, _) => File.Copy(zip, destination)))
+        {
+            var status = service.DownloadUpdate();
+            AssertEqual(true, status.Ok, "Schema-2 package failed the full download and staging flow.");
+            AssertEqual(true, status.Staged, "Schema-2 staging was not reported as installable.");
+        }
+        var stored = ReadUpdateState(serviceRoot);
+        AssertEqual(2, stored.ManifestSchemaVersion, "Fresh candidate did not preserve its schema.");
+        AssertEqual(2, stored.DownloadedManifestSchemaVersion, "Successful download did not preserve its own schema.");
+        using (var service = new UpdateService(Settings(), log, serviceRoot, () => now,
+                   _ => new UpdateCandidate { Manifest = Manifest(version: "1.2.5", tag: "v1.2.5"), PackageDownloadUrl = "https://example.test/next.zip" }))
+        {
+            AssertEqual(true, service.GetStatus().Staged, "Restart discarded verified schema-2 staging.");
+            service.CheckForUpdates();
+            var latest = ReadUpdateState(serviceRoot);
+            AssertEqual("1.2.5", latest.LatestVersion, "Next schema-2 online update could not be discovered.");
+            AssertEqual("1.2.4", latest.DownloadedVersion, "Checking a newer release rewrote the staged package identity.");
+            AssertEqual(2, latest.DownloadedManifestSchemaVersion, "Checking a newer release lost staging provenance.");
+        }
+    }
+    finally { Logger.Sources.Remove(log); Directory.Delete(root, recursive: true); }
+}
+
+static UpdateState ReadUpdateState(string root) => JsonSerializer.Deserialize<UpdateState>(
+    File.ReadAllText(Path.Combine(root, "update-state.json")), new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
+
+// 使用可控的进程存活探针验证服务端互斥，不启动实际 updater，也不把此测试视为文件回滚事务验收。
+// 清单缓存失效只能撤销下载来源，不能抹除仍在执行回滚的 PID 或允许覆盖该进程持有的暂存文件。
+static void VerifyActiveRollbackSurvivesCacheInvalidation()
+{
+    var root = Path.Combine(Path.GetTempPath(), $"mystia-update-active-rollback-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(root);
+    var log = Logger.CreateLogSource("update-active-rollback-smoke");
+    var now = new DateTime(2026, 11, 7, 3, 4, 5, DateTimeKind.Utc);
+    try
+    {
+        foreach (var schema in new[] { 0, 1, 3 })
+        {
+            var serviceRoot = Path.Combine(root, schema.ToString());
+            var state = AvailableState("downloaded", now);
+            state.ManifestSchemaVersion = schema;
+            state.DownloadedManifestSchemaVersion = schema;
+            state.DownloadedVersion = "1.2.4";
+            state.StagedDirectory = Path.Combine(serviceRoot, "downloads", "1.2.4", "staged");
+            state.InstallState = "rolling-back";
+            state.InstallProcessId = 12345;
+            Directory.CreateDirectory(state.StagedDirectory);
+            var sentinel = Path.Combine(state.StagedDirectory, "rollback-owned.txt");
+            File.WriteAllText(sentinel, "active rollback owns this staging");
+            WriteUpdateState(serviceRoot, state);
+            var statusPath = Path.Combine(serviceRoot, "install-status.json");
+            File.WriteAllText(statusPath, "{\"state\":\"rolling-back\",\"message\":\"synthetic active rollback\",\"progress\":75}");
+            var running = true;
+            var fetches = 0;
+            var downloads = 0;
+            using var service = new UpdateService(Settings(), log, serviceRoot, () => now,
+                _ => { fetches++; return Candidate(); },
+                downloadFile: (_, _, _, _) => downloads++,
+                isUpdaterProcessRunning: pid =>
+                {
+                    AssertEqual(12345, pid, "Schema invalidation changed the active updater PID.");
+                    return running;
+                });
+            var loaded = service.GetStatus();
+            AssertEqual(false, loaded.HasUpdate, "Old candidate remained usable during rollback.");
+            AssertEqual(false, loaded.Staged, "Old staging remained authorized after schema invalidation.");
+            AssertEqual("rolling-back", loaded.InstallState, "Schema invalidation erased the active rollback state.");
+            var rejectedDownload = service.DownloadUpdate();
+            AssertEqual(false, rejectedDownload.Ok, "A running rollback allowed another download.");
+            AssertEqual(true, rejectedDownload.Error?.Contains("不能覆盖", StringComparison.Ordinal) == true,
+                "The download did not reject the active installation before attempting a fresh check.");
+            var existingInstall = service.InstallOnExit();
+            AssertEqual(true, existingInstall.Ok, "Repeated install should report the existing active operation.");
+            AssertEqual("rolling-back", existingInstall.InstallState, "Repeated install did not preserve the running rollback.");
+            AssertEqual(0, fetches, "Download began a fresh check while rollback still owned the staging area.");
+            AssertEqual(0, downloads, "Download wrote a new package while rollback was active.");
+            AssertEqual(12345, ReadUpdateState(serviceRoot).InstallProcessId, "The persisted active PID was lost.");
+            AssertEqual("active rollback owns this staging", File.ReadAllText(sentinel), "Active staging was modified.");
+
+            // 同一在途状态在进程退出后必须转为失败，不能永久显示为仍在回滚。
+            running = false;
+            AssertEqual("failed", service.GetStatus().InstallState, "An exited updater left rollback indefinitely active.");
+            AssertEqual("failed", JsonNode.Parse(File.ReadAllText(statusPath))!["state"]!.GetValue<string>(),
+                "The interrupted rollback status was not persisted as failed.");
+        }
+    }
+    finally { Logger.Sources.Remove(log); Directory.Delete(root, recursive: true); }
 }
 
 // 校验流复制的实际字节数，覆盖长度不足和超出声明大小，防止只信任响应元数据。
@@ -758,6 +977,7 @@ static void VerifyAbruptOperationRecovery()
         var currentRoot = Path.Combine(root, "current");
         WriteUpdateState(currentRoot, new UpdateState
         {
+            ManifestSchemaVersion = 2,
             State = "checking",
             LastSuccessAtUtc = nowUtc - TimeSpan.FromHours(1),
             NextCheckAtUtc = nowUtc + TimeSpan.FromHours(24),
@@ -777,6 +997,7 @@ static void VerifyAbruptOperationRecovery()
         Directory.CreateDirectory(stablePendingDirectory);
         WriteUpdateState(stableRoot, new UpdateState
         {
+            ManifestSchemaVersion = 2,
             State = "current",
             LastSuccessAtUtc = nowUtc - TimeSpan.FromHours(1),
             NextCheckAtUtc = nowUtc + TimeSpan.FromHours(24),
@@ -809,6 +1030,7 @@ static void VerifyAbruptOperationRecovery()
         Directory.CreateDirectory(stagedDirectory);
         var downloadedState = AvailableState("downloading", nowUtc);
         downloadedState.DownloadedVersion = "1.2.4";
+        downloadedState.DownloadedManifestSchemaVersion = 2;
         downloadedState.StagedDirectory = stagedDirectory;
         WriteUpdateState(downloadedRoot, downloadedState);
         using (var downloadedService = NewRecoveryService(downloadedRoot, nowUtc, log))
@@ -835,6 +1057,7 @@ static UpdateState AvailableState(string state, DateTime nowUtc)
     return new UpdateState
     {
         State = state,
+        ManifestSchemaVersion = 2,
         LastAttemptAtUtc = nowUtc - TimeSpan.FromMinutes(1),
         LastSuccessAtUtc = nowUtc - TimeSpan.FromHours(1),
         NextCheckAtUtc = nowUtc + TimeSpan.FromHours(24),
@@ -922,7 +1145,7 @@ static void VerifyAtomParsing()
 }
 
 static UpdateManifest Manifest(
-    int schemaVersion = 1,
+    int schemaVersion = 2,
     string version = "1.2.3",
     string tag = "v1.2.3",
     string channel = "stable",
@@ -989,11 +1212,12 @@ static void ExpectInvalidCatalog(
     try
     {
         UpdateService.ValidateCatalog(catalog, manifest);
-        throw new InvalidOperationException($"Catalog containing invalid {expectedMessage} was accepted.");
     }
     catch (InvalidOperationException ex) when (ex.Message.Contains(expectedMessage, StringComparison.Ordinal))
     {
+        return;
     }
+    throw new InvalidOperationException($"Catalog containing invalid {expectedMessage} was accepted.");
 }
 
 static void ExpectInvalidManifest(UpdateManifest manifest, string expectedMessage)
@@ -1001,11 +1225,13 @@ static void ExpectInvalidManifest(UpdateManifest manifest, string expectedMessag
     try
     {
         UpdateService.ValidateManifest(manifest);
-        throw new InvalidOperationException($"Manifest containing invalid {expectedMessage} was accepted.");
     }
     catch (InvalidOperationException ex) when (ex.Message.Contains(expectedMessage, StringComparison.Ordinal))
     {
+        return;
     }
+    // 断言错误必须在 catch 之外抛出，防止其自身文本被当成验证器的预期拒绝而产生假通过。
+    throw new InvalidOperationException($"Manifest containing invalid {expectedMessage} was accepted.");
 }
 
 static void AssertEqual<T>(T expected, T actual, string message)

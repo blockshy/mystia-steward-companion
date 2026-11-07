@@ -22,6 +22,8 @@ $backup = Join-Path $modRoot ('dist.backup-' + [Guid]::NewGuid().ToString('N'))
 $packageName = 'mystia-steward-companion'
 $package = Join-Path $stage $packageName
 $manifestTool = Join-Path $repository 'scripts/package-manifest.mjs'
+$portableTool = Join-Path $repository 'scripts/portable-client-package.mjs'
+. (Join-Path $PSScriptRoot 'windows-package-pair.ps1')
 if (-not $CompanionDirectory) { $CompanionDirectory = Join-Path $repository 'apps/companion-flutter/build/windows/x64/runner/Release' }
 if (-not $UpdaterPath) {
     $cargoOutput = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $repository 'native/updater/target' }
@@ -71,6 +73,8 @@ $pending = @(Get-ChildItem -LiteralPath $modRoot -Force | Where-Object Name -Mat
 if ($pending.Count) { throw "存在未收尾打包事务，需先审查：$($pending.FullName -join '；')" }
 Assert-RealTree $CompanionDirectory
 Assert-NoBundledGameMedia $CompanionDirectory
+& node $portableTool check-build-tree $CompanionDirectory | Out-Null
+if ($LASTEXITCODE -ne 0) { throw 'Windows 构建树含运行数据或便携专用文件；拒绝打包。' }
 foreach ($artifactInput in @($UpdaterPath, (Join-Path $CompanionDirectory 'mystia-steward-companion.exe'), (Join-Path $CompanionDirectory 'flutter_windows.dll'))) {
     $item = Get-Item -LiteralPath $artifactInput -Force
     if ($item.PSIsContainer -or $item.Length -le 0 -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "组件不可用：$artifactInput" }
@@ -94,13 +98,22 @@ try {
     Copy-Item -LiteralPath $CompanionDirectory -Destination (Join-Path $package 'companion') -Recurse
     # 再检查实际复制结果，避免预检之后输入目录变化使旧资源进入最终 ZIP。
     Assert-NoBundledGameMedia (Join-Path $package 'companion')
+    & node $portableTool check-build-tree (Join-Path $package 'companion') | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '复制后的 Mod 客户端树含运行数据或便携专用文件。' }
     # 构建配置的 Release 运行树是受管理载荷，清单记录全部数据文件及插件 DLL。
     & node $manifestTool create $package | Out-Null
     if ($LASTEXITCODE -ne 0) { throw '完整包清单生成失败。' }
     Validate-Package $package
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($package, (Join-Path $stage 'mystia-steward-companion-bepinex.zip'), [IO.Compression.CompressionLevel]::Optimal, $true)
-    [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $package 'companion'), (Join-Path $stage 'mystia-steward-companion-companion-windows-x64.zip'), [IO.Compression.CompressionLevel]::Optimal, $false)
+    # 独立分发使用唯一产品目录及专用 EXE 名称；只有这一个名称映射，程序字节与 Mod 内客户端完全相同。
+    # staging 内复制是发布载荷，不创建 client-data。标记缺失时专用 EXE 仍可拒绝运行，不能降级写 AppData。
+    $portable = Join-Path $stage 'mystia-steward-companion-windows-x64'
+    Copy-Item -LiteralPath (Join-Path $package 'companion') -Destination $portable -Recurse
+    Rename-Item -LiteralPath (Join-Path $portable 'mystia-steward-companion.exe') -NewName 'mystia-steward-companion-portable.exe'
+    & node $portableTool create $portable $package | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw '独立便携目录清单生成失败。' }
+    [IO.Compression.ZipFile]::CreateFromDirectory($portable, (Join-Path $stage 'mystia-steward-companion-companion-windows-x64.zip'), [IO.Compression.CompressionLevel]::Optimal, $true)
     # ZIP 必须恰好包含清单声明的载荷与清单自身，禁止只检查几个必需文件。
     $manifest = Get-Content -LiteralPath (Join-Path $package 'package-manifest.json') -Raw | ConvertFrom-Json
     $expected = @($manifest.files.path | ForEach-Object { "$packageName/$_" }) + @("$packageName/package-manifest.json")
@@ -118,6 +131,8 @@ try {
             if ($entry.Length -ne (Get-Item -LiteralPath $source).Length -or $digest -cne (Get-FileHash -LiteralPath $source).Hash.ToLowerInvariant()) { throw "ZIP字节校验失败：$relative" }
         }
     } finally { $zip.Dispose() }
+    Assert-MystiaWindowsPackagePair -ModPackageZip (Join-Path $stage 'mystia-steward-companion-bepinex.zip') `
+        -StandaloneZip (Join-Path $stage 'mystia-steward-companion-companion-windows-x64.zip') -RepositoryRoot $repository
     if (Test-Path -LiteralPath $dist) { Assert-Managed $dist; Assert-Managed $backup; Move-Item -LiteralPath $dist -Destination $backup; $oldMoved=$true }
     try { Assert-Managed $stage; Move-Item -LiteralPath $stage -Destination $dist }
     catch { if ($oldMoved -and -not (Test-Path -LiteralPath $dist)) { Assert-Managed $backup; Move-Item -LiteralPath $backup -Destination $dist }; throw }

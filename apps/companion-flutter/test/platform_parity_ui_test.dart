@@ -6,9 +6,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forui/forui.dart';
 import 'package:material_ui/material_ui.dart' as material;
 import 'package:mystia_steward_companion/app/workbench_model.dart';
+import 'package:mystia_steward_companion/app/steward_app.dart';
 import 'package:mystia_steward_companion/features/device_name_editor.dart';
 import 'package:mystia_steward_companion/features/settings.dart';
+import 'package:mystia_steward_companion/features/settings_storage.dart';
 import 'package:mystia_steward_companion/features/update_content.dart';
+import 'package:mystia_steward_companion/ui/components.dart';
 import 'package:mystia_steward_companion/ui/steward_select.dart';
 import 'package:mystia_steward_companion/ui/steward_theme.dart';
 
@@ -30,6 +33,16 @@ class _Model extends FixtureModel {
   ConnectionSource connectionSource = ConnectionSource.launchArguments;
   final names = <String>[];
   final urls = <String>[];
+  @override
+  PlatformStorageStatus? storageStatus;
+  @override
+  bool credentialUnavailable = false;
+  final storageChoices = <bool>[];
+  @override
+  Future<void> initializeStorage({required bool importLegacy}) async {
+    storageChoices.add(importLegacy);
+  }
+
   Completer<void>? renameGate;
   @override
   Future<void> renameDevice(String value) async {
@@ -76,6 +89,95 @@ void main() {
     );
     await tester.pump();
   }
+
+  testWidgets('便携首次导入离线可用，必须确认且不继承旧身份', (tester) async {
+    final model = _Model()
+      ..connected = false
+      ..storageStatus = PlatformStorageStatus(
+        mode: 'windows-portable',
+        location: 'synthetic/private/client-data',
+        needsInitialization: true,
+        canImportLegacy: true,
+      );
+    await open(
+      tester,
+      SingleChildScrollView(child: SettingsStorageSection(model)),
+    );
+    expect(find.text('独立客户端 · 便携目录'), findsOneWidget);
+    expect(find.text('synthetic/private/client-data'), findsNothing);
+    await tester.tap(find.text('导入旧 Flutter 数据'));
+    await tester.pumpAndSettle();
+    expect(model.storageChoices, isEmpty);
+    expect(find.textContaining('不复制旧设备身份'), findsOneWidget);
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+    expect(model.storageChoices, [true]);
+    expect(model.writes, isEmpty);
+    await tester.tap(find.text('显示存储位置'));
+    await tester.pumpAndSettle();
+    expect(find.text('synthetic/private/client-data'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final waiting in [true, false]) {
+    testWidgets('存储${waiting ? '首次选择' : '凭据恢复'}优先于旧lastPage且不写导航偏好', (
+      tester,
+    ) async {
+      final model = _Model()
+        ..connected = false
+        ..credentialUnavailable = !waiting
+        ..localPreferences = {'lastPage': 1, 'reduceMotion': true}
+        ..storageStatus = PlatformStorageStatus(
+          mode: 'windows-portable',
+          location: 'synthetic/client-data',
+          needsInitialization: waiting,
+          canImportLegacy: waiting,
+        );
+      addTearDown(model.dispose);
+      await open(tester, WorkbenchShell(model), width: 640);
+      await tester.pumpAndSettle();
+      model.publish();
+      await tester.pumpAndSettle();
+      expect(find.text('本机数据存储'), findsOneWidget);
+      expect(model.localPreferences['lastPage'], 1);
+      expect(model.writes, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('没有旧数据时允许新设备初始化，损坏凭据只提供恢复说明', (tester) async {
+    final model = _Model()
+      ..connected = false
+      ..storageStatus = PlatformStorageStatus(
+        mode: 'windows-portable',
+        location: 'synthetic/client-data',
+        needsInitialization: true,
+        canImportLegacy: false,
+        importUnavailableReason: '未找到可导入的旧 Flutter 数据。',
+      );
+    await open(
+      tester,
+      SingleChildScrollView(child: SettingsStorageSection(model)),
+    );
+    final import = tester.widget<StewardButton>(
+      find.widgetWithText(StewardButton, '导入旧 Flutter 数据'),
+    );
+    expect(import.onPressed, isNull);
+    await tester.tap(find.text('作为新设备开始'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('确认'));
+    await tester.pumpAndSettle();
+    expect(model.storageChoices, [false]);
+    model.storageStatus!.needsInitialization = false;
+    model.credentialUnavailable = true;
+    await open(
+      tester,
+      SingleChildScrollView(child: SettingsStorageSection(model)),
+    );
+    expect(find.textContaining('不要清空原目录或凭据文件'), findsOneWidget);
+    expect(find.text('作为新设备开始'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
 
   test('发布页白名单拒绝任意来源、userinfo、端口和编码路径', () {
     for (final suffix in ['', '/latest', '/tag/v1.3.2', '/tag/v1.4.0-beta.1']) {
@@ -125,7 +227,7 @@ void main() {
       SettingsPage(model, requestedTab: 'updates', navigationRevision: 1),
     );
     await tester.pump();
-    expect(find.text('成套更新'), findsOneWidget);
+    expect(find.text('游戏电脑上的 Mod 更新'), findsOneWidget);
     expect(find.text('设备与共享配置'), findsNothing);
   });
 
@@ -162,6 +264,85 @@ void main() {
     await tester.pump(const Duration(milliseconds: 120));
     expect(model.urls, [url]);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('局域网主设备只下载游戏电脑整包，本机安装入口保持禁用', (tester) async {
+    final model = _Model()..endpoint = 'http://192.168.1.20:32145';
+    model.authority['currentDeviceIsPrimary'] = true;
+    model.resources['/updates/status'] = {
+      'enabled': true,
+      'hasUpdate': true,
+      'staged': true,
+    };
+    await open(
+      tester,
+      SingleChildScrollView(child: SettingsUpdatesSection(model)),
+    );
+    StewardButton button(String text) =>
+        tester.widget<StewardButton>(find.widgetWithText(StewardButton, text));
+    expect(button('退出游戏后安装').onPressed, isNull);
+    expect(find.textContaining('此处不会更新当前设备的客户端'), findsOneWidget);
+
+    model.resources['/updates/status']!['staged'] = false;
+    await open(
+      tester,
+      SingleChildScrollView(child: SettingsUpdatesSection(model)),
+    );
+    await tester.tap(find.text('下载整包'));
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(model.writes.single.$1, '/updates/download');
+
+    model.endpoint = 'http://127.0.0.1:32145';
+    model.resources['/updates/status']!['staged'] = true;
+    await open(
+      tester,
+      SingleChildScrollView(child: SettingsUpdatesSection(model)),
+    );
+    expect(button('退出游戏后安装').onPressed, isNotNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  for (final error in ['', '客户端协议不兼容，请成套更新']) {
+    testWidgets('未连接或协议不兼容仍可阅读本机更新说明并打开发布页：$error', (tester) async {
+      final model = _Model()..connected = false;
+      model.error = error;
+      await open(
+        tester,
+        SettingsPage(model, requestedTab: 'updates', navigationRevision: 1),
+      );
+      expect(find.text('本机客户端更新'), findsOneWidget);
+      expect(find.textContaining('不要只替换或复制 EXE'), findsOneWidget);
+      final release = find.text('客户端发布页');
+      await tester.ensureVisible(release);
+      await tester.tap(release);
+      await tester.pump(const Duration(milliseconds: 120));
+      expect(model.urls, [
+        'https://github.com/blockshy/mystia-steward-companion/releases',
+      ]);
+      expect(model.writes, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  test('本机连接界面门禁不以主设备或桌面平台代替回环地址', () {
+    final model = _Model();
+    for (final endpoint in [
+      'http://127.0.0.1:32145',
+      'http://localhost:32145',
+    ]) {
+      model.endpoint = endpoint;
+      expect(model.localGameConnection, isTrue);
+    }
+    for (final endpoint in ['http://192.168.1.20:32145', 'invalid']) {
+      model.endpoint = endpoint;
+      expect(model.localGameConnection, isFalse);
+    }
+    model.endpoint = 'http://127.0.0.1:32145';
+    model.desktop = false;
+    expect(model.localGameConnection, isFalse);
+    model.desktop = true;
+    model.connected = false;
+    expect(model.localGameConnection, isFalse);
   });
 
   testWidgets('Markdown说明排版无原始标记，代码和图片保持文本且窄屏不溢出', (tester) async {

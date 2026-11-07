@@ -26,7 +26,34 @@ class _LifecycleHost extends PlatformHostApi {
   int preferenceReads = 0;
   final secretReads = <String>[];
   Object? actionFailure;
+  Object? identityFailure;
+  Object? tokenFailure;
   Completer<void>? actionGate;
+  PlatformStorageStatus storage = PlatformStorageStatus(
+    mode: 'windows-embedded',
+    location: 'synthetic/private',
+    needsInitialization: false,
+    canImportLegacy: false,
+  );
+  final storageChoices = <bool>[];
+  Object? storageFailure;
+
+  @override
+  Future<PlatformStorageStatus> readStorageStatus() async => storage;
+
+  @override
+  Future<String?> readLegacyPreferences() async => preferences;
+
+  @override
+  Future<void> initializeStorage(
+    bool importLegacy,
+    String? expectedLegacyPreferences,
+  ) async {
+    storageChoices.add(importLegacy);
+    if (storageFailure case final Object error) throw error;
+    if (!storage.needsInitialization) throw StateError('already initialized');
+    storage.needsInitialization = false;
+  }
 
   @override
   Future<bool> performWindowAction(WindowAction action) async {
@@ -70,8 +97,12 @@ class _LifecycleHost extends PlatformHostApi {
   @override
   Future<String?> readSecret(String key) async {
     secretReads.add(key);
+    if (key == 'connection-token') {
+      if (tokenFailure case final Object error) throw error;
+    }
     if (key == 'client-id') {
       identityReads++;
+      if (identityFailure case final Object error) throw error;
       if (failIdentity)
         throw PlatformException(
           code: 'platform-failure',
@@ -138,6 +169,153 @@ PlatformEvent _activation(String endpoint, String token) => PlatformEvent(
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('便携首次选择前不读取偏好或身份，显式开始只生成一次新身份', () async {
+    final host = _LifecycleHost()
+      ..preferences = null
+      ..storage = PlatformStorageStatus(
+        mode: 'windows-portable',
+        location: 'synthetic/client-data',
+        needsInitialization: true,
+        canImportLegacy: true,
+      )
+      ..secrets.clear();
+    final model = LiveWorkbenchModel(platform: CompanionPlatform(host: host));
+    addTearDown(model.dispose);
+    await model.initialize();
+    expect(model.storageStatus?.needsInitialization, isTrue);
+    expect(host.preferenceReads, 0);
+    expect(host.identityReads, 0);
+    expect(host.identityWrites, 0);
+    expect(model.error, contains('本机数据存储'));
+    await Future.wait([
+      model.initializeStorage(importLegacy: false),
+      model.initializeStorage(importLegacy: false),
+    ]);
+    expect(host.storageChoices, [false]);
+    expect(host.identityWrites, 1);
+    expect(host.secrets['client-id'], isNotEmpty);
+    expect(model.clientLabel, 'Windows 独立客户端');
+    expect(model.connected, isFalse);
+  });
+
+  test('导入失败不会读取或生成身份，失败原因可见且可重试', () async {
+    final host = _LifecycleHost()
+      ..storage = PlatformStorageStatus(
+        mode: 'windows-portable',
+        location: 'synthetic/client-data',
+        needsInitialization: true,
+        canImportLegacy: true,
+      )
+      ..storageFailure = StateError('synthetic target changed')
+      ..secrets.clear();
+    final model = LiveWorkbenchModel(platform: CompanionPlatform(host: host));
+    addTearDown(model.dispose);
+    await model.initialize();
+    await model.initializeStorage(importLegacy: true);
+    expect(model.error, contains('synthetic target changed'));
+    expect(host.identityReads, 0);
+    expect(host.identityWrites, 0);
+    expect(model.storageStatus?.needsInitialization, isTrue);
+    host.storageFailure = null;
+    await model.initializeStorage(importLegacy: true);
+    expect(host.storageChoices, [true, true]);
+    expect(host.identityWrites, 1);
+    expect(model.error, isEmpty);
+    expect(model.clientLabel, '游戏电脑'); // 导入的显式名称保持原值。
+  });
+
+  test('已完成导入的恢复启动清除旧设备确认，同身份确认保留', () async {
+    for (final sameIdentity in [false, true]) {
+      final checkpoint = {
+        'currentDeviceId': sameIdentity
+            ? 'synthetic-device-00000001'
+            : 'synthetic-old-device',
+        'pendingSyncId': 'synthetic-old-ack',
+        'profile': {'automationEnabled': true},
+      };
+      final host = _LifecycleHost()
+        ..storage = PlatformStorageStatus(
+          mode: 'windows-portable',
+          location: 'synthetic/client-data',
+          needsInitialization: false,
+          canImportLegacy: false,
+        )
+        ..preferences = jsonEncode({
+          'themeMode': 'dark',
+          'profileCheckpoint': checkpoint,
+        });
+      final model = LiveWorkbenchModel(platform: CompanionPlatform(host: host));
+      addTearDown(model.dispose);
+      await model.initialize();
+      expect(model.error, isEmpty);
+      expect(
+        model.localPreferences['profileCheckpoint'],
+        sameIdentity ? checkpoint : null,
+      );
+      expect(
+        (jsonDecode(host.preferences!) as Map)['profileCheckpoint'],
+        sameIdentity ? checkpoint : null,
+      );
+      expect(model.localPreferences['themeMode'], 'dark');
+      expect(model.profile['automationEnabled'], isFalse);
+    }
+  });
+
+  test('跨机凭据无法解密保留身份且不输出底层路径，不自动创建新身份', () async {
+    final host = _LifecycleHost()
+      ..storage = PlatformStorageStatus(
+        mode: 'windows-portable',
+        location: 'synthetic/client-data',
+        needsInitialization: false,
+        canImportLegacy: false,
+      )
+      ..identityFailure = PlatformException(
+        code: 'credential-unavailable',
+        message: 'synthetic/private/path',
+      );
+    final original = Map.of(host.secrets);
+    final model = LiveWorkbenchModel(platform: CompanionPlatform(host: host));
+    addTearDown(model.dispose);
+    await model.initialize();
+    await model.retryConnection();
+    expect(model.credentialUnavailable, isTrue);
+    expect(model.error, contains('原文件已保留'));
+    expect(model.error, isNot(contains('synthetic/private/path')));
+    expect(host.identityWrites, 0);
+    expect(host.secrets, original);
+    expect(model.connected, isFalse);
+  });
+
+  test('便携缺少身份但旧Token无法解密时不生成身份，启动参数也不能绕过', () async {
+    for (final managed in [false, true]) {
+      final host = _LifecycleHost()
+        ..storage = PlatformStorageStatus(
+          mode: 'windows-portable',
+          location: 'synthetic/client-data',
+          needsInitialization: false,
+          canImportLegacy: false,
+        )
+        ..secrets.clear()
+        ..secrets['connection-token'] = 'synthetic-preserved-ciphertext'
+        ..tokenFailure = PlatformException(code: 'credential-unavailable');
+      if (managed) {
+        host.launch.endpoint = 'http://127.0.0.1:32145';
+        host.launch.token = 'synthetic-launch-token';
+      }
+      final model = LiveWorkbenchModel(platform: CompanionPlatform(host: host));
+      addTearDown(model.dispose);
+      await model.initialize();
+      expect(model.credentialUnavailable, isTrue);
+      expect(host.secretReads, ['connection-token']);
+      expect(host.identityWrites, 0);
+      expect(host.preferenceReads, 0);
+      expect(host.secrets, {
+        'connection-token': 'synthetic-preserved-ciphertext',
+      });
+      expect(model.connected, isFalse);
+    }
+  });
 
   test('移动端明确编辑可读回同地址安全存储Token，受管连接不提供编辑凭据', () async {
     final host = _LifecycleHost()

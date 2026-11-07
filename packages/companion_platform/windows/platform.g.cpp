@@ -462,6 +462,148 @@ size_t PigeonInternalDeepHash(const PlatformLaunch& v) {
   return v.Hash();
 }
 
+// PlatformStorageStatus
+
+PlatformStorageStatus::PlatformStorageStatus(
+  const std::string& mode,
+  const std::string& location,
+  bool needs_initialization,
+  bool can_import_legacy)
+ : mode_(mode),
+    location_(location),
+    needs_initialization_(needs_initialization),
+    can_import_legacy_(can_import_legacy) {}
+
+PlatformStorageStatus::PlatformStorageStatus(
+  const std::string& mode,
+  const std::string& location,
+  bool needs_initialization,
+  bool can_import_legacy,
+  const std::string* import_unavailable_reason)
+ : mode_(mode),
+    location_(location),
+    needs_initialization_(needs_initialization),
+    can_import_legacy_(can_import_legacy),
+    import_unavailable_reason_(import_unavailable_reason ? std::optional<std::string>(*import_unavailable_reason) : std::nullopt) {}
+
+const std::string& PlatformStorageStatus::mode() const {
+  return mode_;
+}
+
+void PlatformStorageStatus::set_mode(std::string_view value_arg) {
+  mode_ = value_arg;
+}
+
+
+const std::string& PlatformStorageStatus::location() const {
+  return location_;
+}
+
+void PlatformStorageStatus::set_location(std::string_view value_arg) {
+  location_ = value_arg;
+}
+
+
+bool PlatformStorageStatus::needs_initialization() const {
+  return needs_initialization_;
+}
+
+void PlatformStorageStatus::set_needs_initialization(bool value_arg) {
+  needs_initialization_ = value_arg;
+}
+
+
+bool PlatformStorageStatus::can_import_legacy() const {
+  return can_import_legacy_;
+}
+
+void PlatformStorageStatus::set_can_import_legacy(bool value_arg) {
+  can_import_legacy_ = value_arg;
+}
+
+
+const std::string* PlatformStorageStatus::import_unavailable_reason() const {
+  return import_unavailable_reason_ ? &(*import_unavailable_reason_) : nullptr;
+}
+
+void PlatformStorageStatus::set_import_unavailable_reason(const std::string_view* value_arg) {
+  import_unavailable_reason_ = value_arg ? std::optional<std::string>(*value_arg) : std::nullopt;
+}
+
+void PlatformStorageStatus::set_import_unavailable_reason(std::string_view value_arg) {
+  import_unavailable_reason_ = value_arg;
+}
+
+
+EncodableList PlatformStorageStatus::ToEncodableList() const {
+  EncodableList list;
+  list.reserve(5);
+  list.push_back(EncodableValue(mode_));
+  list.push_back(EncodableValue(location_));
+  list.push_back(EncodableValue(needs_initialization_));
+  list.push_back(EncodableValue(can_import_legacy_));
+  list.push_back(import_unavailable_reason_ ? EncodableValue(*import_unavailable_reason_) : EncodableValue());
+  return list;
+}
+
+PlatformStorageStatus PlatformStorageStatus::FromEncodableList(const EncodableList& list) {
+  PlatformStorageStatus decoded(
+    std::get<std::string>(list[0]),
+    std::get<std::string>(list[1]),
+    std::get<bool>(list[2]),
+    std::get<bool>(list[3]));
+  auto& encodable_import_unavailable_reason = list[4];
+  if (!encodable_import_unavailable_reason.IsNull()) {
+    decoded.set_import_unavailable_reason(std::get<std::string>(encodable_import_unavailable_reason));
+  }
+  return decoded;
+}
+
+bool PlatformStorageStatus::operator==(const PlatformStorageStatus& other) const {
+  return PigeonInternalDeepEquals(mode_, other.mode_) && PigeonInternalDeepEquals(location_, other.location_) && PigeonInternalDeepEquals(needs_initialization_, other.needs_initialization_) && PigeonInternalDeepEquals(can_import_legacy_, other.can_import_legacy_) && PigeonInternalDeepEquals(import_unavailable_reason_, other.import_unavailable_reason_);
+}
+
+bool PlatformStorageStatus::operator!=(const PlatformStorageStatus& other) const {
+  return !(*this == other);
+}
+
+size_t PlatformStorageStatus::Hash() const {
+  size_t result = 1;
+  result = result * 31 + PigeonInternalDeepHash(mode_);
+  result = result * 31 + PigeonInternalDeepHash(location_);
+  result = result * 31 + PigeonInternalDeepHash(needs_initialization_);
+  result = result * 31 + PigeonInternalDeepHash(can_import_legacy_);
+  result = result * 31 + PigeonInternalDeepHash(import_unavailable_reason_);
+  return result;
+}
+
+std::ostream& operator<<(
+  std::ostream& os,
+  const PlatformStorageStatus& obj) {
+  os << "PlatformStorageStatus(";
+  os << "mode: ";
+  os << PigeonInternalToString(obj.mode_);
+  os << ", location: ";
+  os << PigeonInternalToString(obj.location_);
+  os << ", needs_initialization: ";
+  os << PigeonInternalToString(obj.needs_initialization_);
+  os << ", can_import_legacy: ";
+  os << PigeonInternalToString(obj.can_import_legacy_);
+  os << ", import_unavailable_reason: ";
+  if (obj.import_unavailable_reason_) {
+    os << PigeonInternalToString(*obj.import_unavailable_reason_);
+  }
+  else {
+    os << "null";
+  }
+  os << ")";
+  return os;
+}
+
+size_t PigeonInternalDeepHash(const PlatformStorageStatus& v) {
+  return v.Hash();
+}
+
 // WindowPreferences
 
 WindowPreferences::WindowPreferences(
@@ -806,9 +948,12 @@ EncodableValue PigeonInternalCodecSerializer::ReadValueOfType(
         return CustomEncodableValue(PlatformLaunch::FromEncodableList(std::get<EncodableList>(ReadValue(stream))));
       }
     case 131: {
-        return CustomEncodableValue(WindowPreferences::FromEncodableList(std::get<EncodableList>(ReadValue(stream))));
+        return CustomEncodableValue(PlatformStorageStatus::FromEncodableList(std::get<EncodableList>(ReadValue(stream))));
       }
     case 132: {
+        return CustomEncodableValue(WindowPreferences::FromEncodableList(std::get<EncodableList>(ReadValue(stream))));
+      }
+    case 133: {
         return CustomEncodableValue(PlatformInput::FromEncodableList(std::get<EncodableList>(ReadValue(stream))));
       }
     default:
@@ -830,13 +975,18 @@ void PigeonInternalCodecSerializer::WriteValue(
       WriteValue(EncodableValue(std::any_cast<PlatformLaunch>(*custom_value).ToEncodableList()), stream);
       return;
     }
-    if (custom_value->type() == typeid(WindowPreferences)) {
+    if (custom_value->type() == typeid(PlatformStorageStatus)) {
       stream->WriteByte(131);
+      WriteValue(EncodableValue(std::any_cast<PlatformStorageStatus>(*custom_value).ToEncodableList()), stream);
+      return;
+    }
+    if (custom_value->type() == typeid(WindowPreferences)) {
+      stream->WriteByte(132);
       WriteValue(EncodableValue(std::any_cast<WindowPreferences>(*custom_value).ToEncodableList()), stream);
       return;
     }
     if (custom_value->type() == typeid(PlatformInput)) {
-      stream->WriteByte(132);
+      stream->WriteByte(133);
       WriteValue(EncodableValue(std::any_cast<PlatformInput>(*custom_value).ToEncodableList()), stream);
       return;
     }
@@ -873,6 +1023,83 @@ void PlatformHostApi::SetUp(
           }
           EncodableList wrapped;
           wrapped.push_back(CustomEncodableValue(std::move(output).TakeValue()));
+          reply(EncodableValue(std::move(wrapped)));
+        } catch (const std::exception& exception) {
+          reply(WrapError(exception.what()));
+        }
+      });
+    } else {
+      channel.SetMessageHandler(nullptr);
+    }
+  }
+  {
+    BasicMessageChannel<> channel(binary_messenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.readStorageStatus" + prepended_suffix, &GetCodec());
+    if (api != nullptr) {
+      channel.SetMessageHandler([api](const EncodableValue& message, const ::flutter::MessageReply<EncodableValue>& reply) {
+        try {
+          ErrorOr<PlatformStorageStatus> output = api->ReadStorageStatus();
+          if (output.has_error()) {
+            reply(WrapError(output.error()));
+            return;
+          }
+          EncodableList wrapped;
+          wrapped.push_back(CustomEncodableValue(std::move(output).TakeValue()));
+          reply(EncodableValue(std::move(wrapped)));
+        } catch (const std::exception& exception) {
+          reply(WrapError(exception.what()));
+        }
+      });
+    } else {
+      channel.SetMessageHandler(nullptr);
+    }
+  }
+  {
+    BasicMessageChannel<> channel(binary_messenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.readLegacyPreferences" + prepended_suffix, &GetCodec());
+    if (api != nullptr) {
+      channel.SetMessageHandler([api](const EncodableValue& message, const ::flutter::MessageReply<EncodableValue>& reply) {
+        try {
+          ErrorOr<std::optional<std::string>> output = api->ReadLegacyPreferences();
+          if (output.has_error()) {
+            reply(WrapError(output.error()));
+            return;
+          }
+          EncodableList wrapped;
+          auto output_optional = std::move(output).TakeValue();
+          if (output_optional) {
+            wrapped.push_back(EncodableValue(std::move(output_optional).value()));
+          } else {
+            wrapped.push_back(EncodableValue());
+          }
+          reply(EncodableValue(std::move(wrapped)));
+        } catch (const std::exception& exception) {
+          reply(WrapError(exception.what()));
+        }
+      });
+    } else {
+      channel.SetMessageHandler(nullptr);
+    }
+  }
+  {
+    BasicMessageChannel<> channel(binary_messenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.initializeStorage" + prepended_suffix, &GetCodec());
+    if (api != nullptr) {
+      channel.SetMessageHandler([api](const EncodableValue& message, const ::flutter::MessageReply<EncodableValue>& reply) {
+        try {
+          const auto& args = std::get<EncodableList>(message);
+          const auto& encodable_import_legacy_arg = args.at(0);
+          if (encodable_import_legacy_arg.IsNull()) {
+            reply(WrapError("import_legacy_arg unexpectedly null."));
+            return;
+          }
+          const auto& import_legacy_arg = std::get<bool>(encodable_import_legacy_arg);
+          const auto& encodable_expected_legacy_preferences_arg = args.at(1);
+          const auto* expected_legacy_preferences_arg = std::get_if<std::string>(&encodable_expected_legacy_preferences_arg);
+          std::optional<FlutterError> output = api->InitializeStorage(import_legacy_arg, expected_legacy_preferences_arg);
+          if (output.has_value()) {
+            reply(WrapError(output.value()));
+            return;
+          }
+          EncodableList wrapped;
+          wrapped.push_back(EncodableValue());
           reply(EncodableValue(std::move(wrapped)));
         } catch (const std::exception& exception) {
           reply(WrapError(exception.what()));

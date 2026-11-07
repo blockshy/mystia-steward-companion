@@ -29,6 +29,7 @@ foreach ($Path in $PowerShellSources) {
 }
 
 . $ReleaseCommonPath
+. (Join-Path $PSScriptRoot 'windows-package-fixture.ps1')
 foreach ($InvalidTag in @("V1.4.0", "v1.4.0-PREVIEW.1", "v01.4.0")) {
     try {
         [void](Get-MystiaVersionFromTag -Tag $InvalidTag)
@@ -210,12 +211,7 @@ function New-TestMetadataFixture {
         Remove-Item -LiteralPath $Root -Recurse -Force
     }
     [void](New-Item -ItemType Directory -Path $Root)
-    Write-MystiaUtf8WithoutBom `
-        -Path (Join-Path $Root $script:MystiaReleasePackageName) `
-        -Content "package"
-    Write-MystiaUtf8WithoutBom `
-        -Path (Join-Path $Root $script:MystiaReleaseCompanionName) `
-        -Content "companion"
+    New-MystiaSyntheticWindowsPackagePair -Root $Root
     if ($IncludeAndroid) {
         foreach ($AndroidName in $script:MystiaReleaseAndroidNames) {
             Write-MystiaUtf8WithoutBom `
@@ -243,7 +239,7 @@ function New-TestMetadataFixture {
             releases = [object[]]@($Owner)
         }
         Manifest = [ordered]@{
-            schemaVersion = 1
+            schemaVersion = 2
             version = "9.9.9"
             tag = $script:Tag
             channel = "stable"
@@ -1692,7 +1688,7 @@ Write-ErrorAndExit -Message "unexpected fake-gh endpoint: $Method $Endpoint" -Co
     Assert-TestMetadataFixture -Root $MetadataRoot
 
     $Fixture = New-TestMetadataFixture -Root $MetadataRoot
-    $Fixture.Manifest.schemaVersion = "1"
+    $Fixture.Manifest.schemaVersion = "2"
     Write-TestJson `
         -Path (Join-Path $MetadataRoot $script:MystiaReleaseManifestName) `
         -Value $Fixture.Manifest
@@ -1701,6 +1697,17 @@ Write-ErrorAndExit -Message "unexpected fake-gh endpoint: $Method $Endpoint" -Co
         -Action { Assert-TestMetadataFixture -Root $MetadataRoot } `
         -Pattern "*schemaVersion must be a JSON integer*" `
         -Label "String manifest schema"
+
+    # 首个及后续 Flutter Release 都必须使用数值 schema 2；catalog 继续保持独立的 schema 1。
+    foreach ($UnsupportedManifestSchema in @(1, 3)) {
+        $Fixture = New-TestMetadataFixture -Root $MetadataRoot
+        $Fixture.Manifest.schemaVersion = $UnsupportedManifestSchema
+        Write-TestMetadataFixture -Root $MetadataRoot -Fixture $Fixture
+        Assert-ThrowsLike `
+            -Action { Assert-TestMetadataFixture -Root $MetadataRoot } `
+            -Pattern "*scalar fields have an invalid JSON type*" `
+            -Label "Unsupported remote manifest schema $UnsupportedManifestSchema"
+    }
 
     $Fixture = New-TestMetadataFixture -Root $MetadataRoot
     $Fixture.Manifest.version = [object[]]@("9.9.9")

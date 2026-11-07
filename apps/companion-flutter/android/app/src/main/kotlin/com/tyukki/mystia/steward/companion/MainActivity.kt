@@ -159,6 +159,24 @@ class MainActivity : FlutterActivity(), PlatformHostApi, InputManager.InputDevic
         super.cleanUpFlutterEngine(engine)
     }
     override fun initialize() = PlatformLaunch(desktop = false)
+
+    // Android 沿用应用私有存储；查询不显式创建客户端子目录，也不读取 Windows 历史资料。
+    // noBackupFilesDir 本身由系统管理，此处不对系统访问器内部的目录准备行为作保证。
+    override fun readStorageStatus() = PlatformStorageStatus(
+        mode = "android-private",
+        location = File(noBackupFilesDir.canonicalFile, "companion-v1").absolutePath,
+        needsInitialization = false,
+        canImportLegacy = false,
+        importUnavailableReason = "Android 使用应用私有存储，不支持 Windows 数据目录导入。",
+    )
+
+    override fun readLegacyPreferences(): String? {
+        throw IllegalStateException("Android 不支持读取 Windows 历史数据目录。")
+    }
+
+    override fun initializeStorage(importLegacy: Boolean, expectedLegacyPreferences: String?) {
+        throw IllegalStateException("Android 不需要便携存储初始化，也不能导入 Windows 凭据。")
+    }
     override fun applyWindowPreferences(preferences: WindowPreferences) {
         require(!preferences.mousePassthrough) { "Android 不支持鼠标穿透。" }
     }

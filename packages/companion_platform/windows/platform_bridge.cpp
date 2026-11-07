@@ -17,6 +17,7 @@
 #include <stdexcept>
 #include <thread>
 #include "focus_transition.h"
+#include "portable_storage.h"
 
 namespace {
 using namespace mystia_platform;
@@ -35,9 +36,17 @@ std::atomic<bool> stopping{false};
 std::atomic<HWND> control_window{nullptr};
 SOCKET listener = INVALID_SOCKET;
 std::thread control_thread;
+std::unique_ptr<mystia_storage::Storage> storage;
 
 void Require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
-FlutterError Error(const std::exception& error) { return FlutterError("platform-failure", error.what()); }
+FlutterError Error(const std::exception& error) {
+  if (dynamic_cast<const mystia_storage::CredentialUnavailable*>(&error))
+    return FlutterError("credential-unavailable", error.what());
+  // filesystem_error.what() 可包含本机绝对路径。位置只通过专用状态字段交给设置页，不进入操作记录。
+  if (dynamic_cast<const std::filesystem::filesystem_error*>(&error))
+    return FlutterError("platform-failure", "文件系统访问失败，原有数据已保留。请检查目录权限与完整性。");
+  return FlutterError("platform-failure", error.what());
+}
 uint64_t CreationTime(HANDLE process) {
   FILETIME created{}, exited{}, kernel{}, user{};
   Require(GetProcessTimes(process, &created, &exited, &kernel, &user) != FALSE, "process identity unavailable");
@@ -173,27 +182,17 @@ void ServeControl() {
   }
 }
 
-/// 检查每一级目录的重解析属性，避免身份或 Token 被重定向到外部目录。
-std::filesystem::path StorageRoot() {
+/// 仅计算框架私有目录；是否创建由引擎启动前的存储门禁决定，查询已知目录不能隐式创建客户端数据。
+std::filesystem::path EmbeddedStorageRoot() {
   PWSTR value = nullptr;
   Require(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &value)), "local application directory unavailable");
   std::filesystem::path root(value); CoTaskMemFree(value);
   root /= L"mystia-steward-companion"; root /= L"flutter-v1";
-  // 离线测试明确使用隔离名称，不读取或改写真实客户端凭据与窗口状态。
-  if (!isolation_id.empty()) { root /= L"isolation"; root /= isolation_id; }
-  std::filesystem::path current;
-  for (const auto& part : root) {
-    current /= part;
-    if (current == current.root_name()) continue;
-    auto attrs = GetFileAttributesW(current.c_str());
-    if (attrs == INVALID_FILE_ATTRIBUTES) {
-      Require(GetLastError() == ERROR_FILE_NOT_FOUND || GetLastError() == ERROR_PATH_NOT_FOUND, "storage path inaccessible");
-      Require(CreateDirectoryW(current.c_str(), nullptr) || GetLastError() == ERROR_ALREADY_EXISTS, "storage directory create failed");
-      attrs = GetFileAttributesW(current.c_str());
-    }
-    Require(attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) && !(attrs & FILE_ATTRIBUTE_REPARSE_POINT), "storage directory reparse point refused");
-  }
   return root;
+}
+std::filesystem::path StorageRoot() {
+  Require(storage != nullptr, "storage has not passed startup validation");
+  return storage->Root();
 }
 std::filesystem::path SecretPath(const std::string& key) {
   Require(!key.empty() && key.size() <= 64 && std::all_of(key.begin(), key.end(), [](char ch) {
@@ -233,15 +232,7 @@ void AtomicWrite(const std::filesystem::path& path, const std::string& value) {
 // 使用当前用户 DPAPI，并把存储键作为附加熵绑定密文用途；禁止弹出系统交互窗口。
 // 返回副本前清零并释放系统分配的缓冲区，调用者仍负责限制返回明文的存活与传播。
 std::string Crypt(const std::string& value, const std::string& key, bool protect) {
-  // 预留 DPAPI 包装开销，不能接受写入后超出解密读取上限的明文。
-  Require(!value.empty() && value.size() <= (protect ? 60000u : 65536u), "credential size invalid");
-  DATA_BLOB source{static_cast<DWORD>(value.size()), reinterpret_cast<BYTE*>(const_cast<char*>(value.data()))};
-  DATA_BLOB entropy{static_cast<DWORD>(key.size()), reinterpret_cast<BYTE*>(const_cast<char*>(key.data()))}, output{};
-  BOOL ok = protect ? CryptProtectData(&source, L"Mystia companion", &entropy, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output)
-                    : CryptUnprotectData(&source, nullptr, &entropy, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &output);
-  Require(ok != FALSE, "credential protection failed; original data preserved");
-  std::string result(reinterpret_cast<char*>(output.pbData), output.cbData);
-  SecureZeroMemory(output.pbData, output.cbData); LocalFree(output.pbData); return result;
+  return mystia_storage::CryptCredential(value, key, protect);
 }
 }
 
@@ -265,6 +256,14 @@ int StartCompanionControl(const std::vector<std::string>& arguments) {
     Require((control_port == kControlPort) == isolation_id.empty(), "isolated control and storage must be selected together");
     launch_arguments = arguments;
   } catch (const std::exception&) { return 2; }
+  try {
+    // 即使本次只是激活既有实例，也先验证实际 EXE 所在目录；不得以 cwd 或端口占用绕过便携门禁。
+    storage = mystia_storage::Storage::Open(mystia_storage::ExecutablePath(), EmbeddedStorageRoot(), isolation_id);
+  } catch (const std::exception&) {
+    MessageBoxW(nullptr, L"客户端目录或存储校验失败。请将完整独立包解压到可写的专属文件夹，并保留便携程序名称和清单；不要混入其他文件。原有数据未被重置。",
+        L"夜雀管家无法启动", MB_OK | MB_ICONERROR);
+    return 2;
+  }
   WSADATA data{}; if (WSAStartup(MAKEWORD(2, 2), &data) != 0) return 2;
   listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); if (listener == INVALID_SOCKET) return 2;
   BOOL exclusive = TRUE; setsockopt(listener, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<char*>(&exclusive), sizeof(exclusive));
@@ -286,6 +285,9 @@ int StartCompanionControl(const std::vector<std::string>& arguments) {
       if (ValidCommand(request) && ParseIdentity(ExchangeControl(address, request)) == identity) result = 1;
     } catch (const std::exception&) { /* 身份不匹配或 ACK 无效时不启动第二窗口、不泄露凭据。 */ }
     if (process) CloseHandle(process);
+    if (result != 1)
+      MessageBoxW(nullptr, L"已有客户端或其他程序占用控制端口，请先退出其他目录中的夜雀管家后重试。",
+          L"夜雀管家无法启动", MB_OK | MB_ICONERROR);
     WSACleanup(); return result;
   }
   if (listen(listener, 8) == SOCKET_ERROR) { closesocket(listener); WSACleanup(); return 2; }
@@ -295,7 +297,7 @@ void StopCompanionControl() {
   stopping = true; control_window = nullptr;
   if (control_thread.joinable()) control_thread.join();
   if (listener != INVALID_SOCKET) closesocket(listener);
-  listener = INVALID_SOCKET; WSACleanup();
+  listener = INVALID_SOCKET; WSACleanup(); storage.reset();
 }
 
 struct CompanionPlatformBridge::Impl {
@@ -355,6 +357,8 @@ struct CompanionPlatformBridge::Impl {
   }
   void AddTray() { tray = Shell_NotifyIconW(NIM_ADD, &icon) != FALSE; if (tray) { icon.uVersion = NOTIFYICON_VERSION_4; Shell_NotifyIconW(NIM_SETVERSION, &icon); } }
   void SaveGeometry() {
+    // 初始化选择页允许移动窗口，但选择完成前不创建窗口状态，也不以保存行为绕过导入决策。
+    if (!storage || !storage->Ready()) return;
     WINDOWPLACEMENT placement{}; placement.length = sizeof(placement);
     Require(GetWindowPlacement(top, &placement) != FALSE, "window placement unavailable");
     const auto& rect = placement.rcNormalPosition;
@@ -365,6 +369,7 @@ struct CompanionPlatformBridge::Impl {
     AtomicWrite(StorageRoot() / L"window-state-v1.txt", output.str());
   }
   void RestoreGeometry() {
+    if (!storage || !storage->Ready()) return;
     auto stored = ReadFile(StorageRoot() / L"window-state-v1.txt"); if (!stored) return;
     int schema = 0, x = 0, y = 0, width = 0, height = 0, maximized = 0, dpi = 0;
     std::istringstream input(*stored); std::string excess;
@@ -574,6 +579,36 @@ std::optional<LRESULT> CompanionPlatformBridge::HandleMessage(UINT message, WPAR
   return std::nullopt;
 }
 ErrorOr<PlatformLaunch> CompanionPlatformBridge::Initialize() { return impl_->launch; }
+ErrorOr<PlatformStorageStatus> CompanionPlatformBridge::ReadStorageStatus() {
+  try {
+    Require(storage != nullptr, "storage unavailable");
+    const auto state = storage->Status();
+    const auto wide = state.root.wstring();
+    const auto length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+    Require(length > 0, "storage display path unavailable");
+    std::string location(static_cast<size_t>(length), '\0');
+    Require(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()), location.data(), length, nullptr, nullptr) == length,
+        "storage display path conversion failed");
+    PlatformStorageStatus result(state.portable ? "windows-portable" : "windows-embedded", location,
+        state.needs_initialization, state.can_import_legacy);
+    if (state.import_unavailable_reason) result.set_import_unavailable_reason(*state.import_unavailable_reason);
+    return result;
+  } catch (const std::exception& error) { return Error(error); }
+}
+ErrorOr<std::optional<std::string>> CompanionPlatformBridge::ReadLegacyPreferences() {
+  try { Require(storage != nullptr, "storage unavailable"); return storage->LegacyPreferences(); }
+  catch (const std::exception& error) { return Error(error); }
+}
+std::optional<FlutterError> CompanionPlatformBridge::InitializeStorage(bool import_legacy,
+    const std::string* expected_legacy_preferences) {
+  try {
+    Require(storage != nullptr, "storage unavailable");
+    storage->Initialize(import_legacy, expected_legacy_preferences ? std::optional<std::string>(*expected_legacy_preferences) : std::nullopt,
+        mystia_storage::ValidateImportedPayload);
+    impl_->RestoreGeometry();
+    return std::nullopt;
+  } catch (const std::exception& error) { return Error(error); }
+}
 std::optional<FlutterError> CompanionPlatformBridge::ApplyWindowPreferences(const WindowPreferences& preferences) {
   try {
     Require(preferences.switch_cooldown_ms() >= 250 && preferences.switch_cooldown_ms() <= 2000, "invalid switch cooldown");

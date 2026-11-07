@@ -8,7 +8,12 @@ import 'package:flutter/services.dart';
 
 import 'src/platform.g.dart';
 export 'src/platform.g.dart'
-    show PlatformLaunch, WindowPreferences, PlatformInput, WindowAction;
+    show
+        PlatformLaunch,
+        PlatformStorageStatus,
+        WindowPreferences,
+        PlatformInput,
+        WindowAction;
 export 'src/history_migration.dart';
 export 'src/gamepad_input.dart';
 
@@ -165,6 +170,41 @@ class CompanionPlatform {
       ).hasMatch(url) &&
       !url.contains(RegExp(r'[\r\n]'));
   Future<String?> readSecret(String key) => _host.readSecret(key);
+
+  /// 状态仅留在内存及设置页面；位置不参与普通偏好、业务请求或操作记录。
+  Future<PlatformStorageStatus> readStorageStatus() async {
+    // 失败的写操作已向自身调用者报告；状态复查仍须可用，否则一次拒绝会永久
+    // 阻断后续重试。这里仅等待队列终止，不把失败的写入解释为成功。
+    await _writeTail.catchError((Object _) {});
+    return _host.readStorageStatus();
+  }
+
+  /// 与所有本机写入串行，防止导入期间保存偏好或身份。空目标与导入资格必须由
+  /// 原生层在执行时重新验证，Dart 的按钮状态不能代替磁盘上的实际边界。
+  Future<void> initializeStorage({required bool importLegacy}) =>
+      _serialize(() async {
+        final raw = importLegacy ? await _host.readLegacyPreferences() : null;
+        if (raw != null) {
+          if (utf8.encode(raw).length > 1024 * 1024) {
+            throw const FormatException('旧偏好超过容量限制，原文件已保留。');
+          }
+          final Map<String, Object?> value;
+          try {
+            value = _decode(raw);
+          } on FormatException {
+            // JSON 解析器原错误可能带出源文本片段；仅报告固定原因，避免路径或
+            // 用户输入进入错误提示、截图或后续诊断。
+            throw const FormatException('旧偏好 JSON 无法解析为对象，原文件已保留。');
+          }
+          if (value.keys.any(
+            (key) => {'token', 'apiToken', 'clientId'}.contains(key),
+          )) {
+            throw const FormatException('旧偏好包含不允许的身份或凭据字段，原文件已保留。');
+          }
+        }
+        // 传递验证过的原字符串，不重新编码，以便 Native 对源快照做字节等值确认。
+        await _host.initializeStorage(importLegacy, raw);
+      });
   Future<void> writeSecret(String key, String value) =>
       _serialize(() => _host.writeSecret(key, value));
   Future<void> deleteSecret(String key) =>

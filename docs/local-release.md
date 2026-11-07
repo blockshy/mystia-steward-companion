@@ -1,6 +1,6 @@
 # 发布流程
 
-更新日期：2026-10-23
+更新日期：2026-11-07
 
 本文是稳定版和预览版发布的唯一操作手册，负责 GitHub 配置、审批、资产事务和失败处理。本地工具安装与常规构建见[本地开发与构建](local-development.md)，Android 环境与签名见[Android 开发](android-development.md)，发布前测试选择见[验证指南](validation-guide.md)。
 
@@ -138,6 +138,24 @@ Release 必须恰好包含：
 
 `SHA256SUMS.txt` 覆盖其余 6 项。`update-manifest.json` 只以 Mod ZIP 为安装权威；独立 Windows ZIP 和 APK 不参与 Mod 自动更新。`update-catalog.json` 提供累计版本说明，其读取失败不能改变 manifest 的下载与安装权威。更新协议详见[更新系统](update-system.md)。
 
+### 独立 Windows 分发契约
+
+独立 Windows ZIP 必须只有 `mystia-steward-companion-windows-x64/` 一个外层文件夹。其文件与 Mod ZIP 的 `companion/` 逐项同源，主程序仅从 `mystia-steward-companion.exe` 更名为 `mystia-steward-companion-portable.exe`，另附 `portable-client-v1.manifest`。Mod 包内的 `companion/` 不添加便携标记，不改变程序名称或目录布局。
+
+便携清单使用 UTF-8 无 BOM，仅 LF 换行并以 LF 结束；首行为 `mystia-portable-client-v1`。后续每行按 `小写 SHA-256<TAB>十进制字节数<TAB>相对路径` 记录全部载荷，不列清单自身。字节数使用无前导零的非负整数；v1 载荷路径限定 ASCII、正斜线与规范相对路径，按 ordinal 排序，文件及目录祖先不能出现大小写别名。单路径最多 240 字符、最多 8192 个载荷、单文件最多 512 MiB、总计最多 2 GiB、清单最多 4 MiB；必需组件及 EXE/DLL 不得为空，可选资源允许零字节。该规则不限制用户解压目录使用中文名称。
+
+打包先按名称拒绝 `client-data/`，包括空目录和大小写变体，再读取普通载荷；散落的 `preferences.json`、`window-state-v1.txt`、`client-id.dpapi`、`connection-token.dpapi` 也不能进入任一包。通用 Windows 输入树还不能混入已有便携清单或便携 EXE；这两项只由打包流程在独立包内生成。拒绝时保留输入与原 `dist`。准备及发布阶段通过有界 ZIP 条目流复核完整集合、路径、类型、大小、摘要、发布版本与提交，以及两包的唯一名称映射；验证不会提取或执行载荷。清单用于检查分发结构与文件一致性，不是独立的发布者数字签名。
+
+便携格式和真实 ZIP 流的合成测试均纳入 `audit:release-policy`；打包事务、纯 Win32 存储及最终程序启动的分层要求见[独立 Windows 客户端验证](validation-guide.md#独立-windows-客户端验证)。静态策略及合成包测试不能替代最终 Release EXE 的启动与存储验证。
+
+### v1.3.1 首次升级提示
+
+首个 Flutter Release 起，正式版与预发布版的 `update-manifest.json` 必须使用 schema 2，后续不能退回 1；生成器和发布前校验共用该协议常量。catalog、package-manifest 与 release-metadata 保持各自独立的 schema。公开 v1.3.1 会因不支持新版清单而停止检查，无法显示 catalog 中的新提示，因此 Release 正文必须明确提示手动首次升级：退出游戏及旧客户端，保留 `BepInEx/config`，移出个人附加文件，只删除旧插件目录，再解压新版完整 Mod 包。用户可能跳过多个版本，后续 Release 也应保留提示或明确链接。还须说明独立 Windows 电脑使用完整客户端 ZIP 分别更新、不能只复制 EXE。不得先公开 schema 1 的 Flutter 包再替换清单。
+
+Release 正文可使用以下提示；发布前人工核对它与本次包、用户说明一致。发布脚本验证清单协议和正文文件完整性，不对自然语言提示作语义判定，也不会自动改写用户提供的正文：
+
+> **v1.3.1 首次升级须手动操作。** 请保存进度并退出游戏、旧托盘客户端及更新程序。保留整个 `BepInEx/config`；若插件目录内有自行保存的资料，先移出，然后只删除 `BepInEx/plugins/mystia-steward-companion`，再将新版完整 Mod 包解压到该位置。新版首次启动会备份并迁移旧主配置，验证成功后清理旧位置的 CFG。其他电脑的 Windows 客户端须分别使用配套完整客户端 ZIP，保留包内独立文件夹并运行其中的便携 EXE，不能只复制 EXE；以后更新便携客户端时保留 `client-data/`。首次导入旧 Flutter 数据不会复制设备身份；共享配置接管请先同步、等待保存确认，再设为主设备。
+
 ## 本地预览版发布
 
 预览版通过同一版本脚本设置 `X.Y.Z-preview.N` 和递增 Android 构建号；`pubspec` 仍保留 `+构建号`。提交并推送 `dev` 后，准备 UTF-8、无 BOM 的 Release Note 文件；不要手工创建 tag。显式设置 `MYSTIA_FLUTTER_SDK_ROOT`；涉及 Android 时还须设置锁定 JDK 的 `JAVA_HOME`。离线构建先按[隔离宿主测试依赖](#隔离宿主测试依赖)准备已核验运行库，在线构建由入口自动恢复。
@@ -184,7 +202,7 @@ IncludePrerelease = true
 - 7 项资产名称、MIME、大小和 digest 与 checksum 完全一致；
 - provenance 覆盖 7 项资产；
 - Windows Mod 自动更新、独立完整运行树 ZIP 与两种 ABI APK 都来自本次 run；
-- 在项目目标 Windows 10/11 x64 上完成多 DPI、开始前取消及安装/故障回退实机验收；当前 updater 开始后不能取消等待或安装，不把其他分支的可取消功能纳入验收声明。Android 完成 LAN、Token、前后台和 Wi-Fi 重连真机验收；不能把离线验证记作已完成实机验收。
+- 在项目目标 Windows 10/11 x64 上完成多 DPI、准备/等待阶段取消及安装/故障回退实机验收；文件替换开始后必须完成或回滚，不能中途取消。Android 完成 LAN、Token、前后台和 Wi-Fi 重连真机验收；不能把隔离验证记作已完成实机验收。
 
 ## Flutter 构建与单一整包清单
 
@@ -196,7 +214,7 @@ Windows 树必须包含与 EXE 同级的三个小写 VC DLL：`msvcp140.dll`、`
 
 公共 CI 和发布前无密钥验证显式运行 `flutter:verify-unit` 与 `flutter:contracts-unit`；`production-http` 标签测试由受保护 Windows 构建的完整验证执行，私有编译引用由 workflow 恢复，额外测试运行库由构建入口恢复。发布仍要求原有两道环境审批和七个精确资产，不因 Flutter 迁移降低来源校验。
 
-包内 `package-manifest.json` 是唯一安装清单，包含所有受管理 DLL、Flutter data 与插件、大小和 SHA-256，以及 sourceCommit、sourceDigest、toolchainSha256、businessProtocolVersion=1 和 clientProtocolVersion=2。旧五文件清单不再作为新包格式接受。
+Mod 包内 `package-manifest.json` 是安装器的唯一载荷清单，包含所有受管理 DLL、Flutter data 与插件、大小和 SHA-256，以及 sourceCommit、sourceDigest、toolchainSha256、businessProtocolVersion=1 和 clientProtocolVersion=2。便携标记只约束独立客户端目录，不能代替此安装清单；旧五文件清单不再作为新包格式接受。
 
 版本修改统一使用上文的 `set-version.ps1`，不要分别手改版本字段。首次 Flutter APK 构建号为 1003002；新版本按当前值递增。
 

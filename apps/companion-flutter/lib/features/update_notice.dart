@@ -115,8 +115,8 @@ class UpdateNoticeButton extends StatelessWidget {
                     const SizedBox(height: 12),
                     Text(
                       reminder?.failed == true
-                          ? '更新检查、下载或安装需要处理，可在更新页查看原因与当前进度。'
-                          : '可在更新页查看版本说明，选择下载和安装。',
+                          ? '游戏电脑上的 Mod 更新需要处理，可在更新页查看原因与进度；其他设备的客户端需分别更新。'
+                          : '游戏电脑上的 Mod 有新版本，可在更新页查看说明和整包更新操作；其他设备的客户端需分别更新。',
                     ),
                     const SizedBox(height: 16),
                     ToolRow([

@@ -1,6 +1,5 @@
 using BepInEx.Logging;
 using System.Diagnostics;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using MystiaStewardCompanion.Core;
@@ -241,10 +240,10 @@ internal sealed partial class StewardOverlayController
         RuntimeNightBusinessAutomationGate.Refresh();
         _activeSceneName = GetActiveSceneName();
         LoadRepository();
-        // 图片缓存是运行期用户数据，不进入安装载荷；与客户端是否启动、是否拥有租约无关。
-        var pluginDirectory = Path.GetDirectoryName(typeof(MystiaStewardCompanionPlugin).Assembly.Location)
-            ?? throw new InvalidOperationException("无法确定插件图片缓存目录。");
-        var mediaStore = new GameMediaStore(Path.Combine(pluginDirectory, "user-data", "game-media"));
+        // 图片由游戏运行时重新提取，不属于安装载荷。统一写入数据根下的缓存目录，
+        // 更新插件程序不会替换它；旧插件目录中的缓存不搬移、不删除，保留用于回退。
+        // 新目录为空时沿用既有分帧提取流程，已有缓存仍须通过来源和完整性校验。
+        var mediaStore = new GameMediaStore(new ModDataPaths(BepInEx.Paths.ConfigPath).GameMediaRoot);
         // 首次安装仍等待真实目录提图；已有缓存只在主菜单依赖/许可证据明确后后台验证一次。
         // 图片 ready 不构造 RuntimeDataCatalog，业务运行时和自动化门禁继续使用自己的真实快照。
         _gameMediaStartupProbe = mediaStore.HasCacheCandidate
@@ -258,7 +257,8 @@ internal sealed partial class StewardOverlayController
             $"completed={diagnostic.Completed}; total={diagnostic.Total}; generation={diagnostic.Generation ?? "none"}; " +
             $"cacheHit={(diagnostic.CacheHit.HasValue ? (diagnostic.CacheHit.Value ? "true" : "false") : "unknown")}; " +
             $"reason={diagnostic.Reason ?? "none"}");
-        _localApiToken = EnsureLocalApiToken(config);
+        // 主配置绑定阶段已生成、持久化并回读 Token；控制器仅消费同一份已确认凭据。
+        _localApiToken = config.LocalApiToken.Value;
         CompanionProcessLauncher.UpdateConnectionToken(_localApiToken);
         StartLocalApi();
         RefreshBusinessContext(false);
@@ -1137,7 +1137,7 @@ internal sealed partial class StewardOverlayController
                 CompanionDeviceAuthorityStore.ResolvePath(),
                 _log);
             _gameFocusOverlayStore = new GameFocusOverlayStore(
-                Path.Combine(Path.GetDirectoryName(FavoriteStore.ResolvePath())!, "game-focus-overlay.json"),
+                new ModDataPaths(BepInEx.Paths.ConfigPath).GameFocusOverlayPath,
                 message => _log.LogWarning(message));
 
             _localApiServer = new LocalApiServer(
@@ -3864,27 +3864,6 @@ internal sealed partial class StewardOverlayController
         {
             state.FamousShopEnabled = true;
         }
-    }
-
-    /// <summary>
-    /// 获取或生成本地 API Token。
-    /// </summary>
-    /// <remarks>
-    /// Token 写入 BepInEx 配置，用于伴随窗口和 Mod 本地 API 之间的请求鉴权。
-    /// </remarks>
-    private static string EnsureLocalApiToken(StewardPluginConfig config)
-    {
-        var token = config.LocalApiToken.Value;
-        if (LocalApiConnectionPolicy.IsUsableToken(token)) return token;
-
-        token = GenerateLocalApiToken();
-        config.LocalApiToken.Value = token;
-        return token;
-    }
-
-    private static string GenerateLocalApiToken()
-    {
-        return Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
     }
 
     private static void OpenDirectory(string directory)

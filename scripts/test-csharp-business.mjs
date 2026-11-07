@@ -26,6 +26,8 @@ const projects = [
   ['runtime-rare-guest-participation', 'RuntimeRareGuestParticipationSmoke', true],
   ['csharp-business-package', 'CSharpBusinessPackageSmoke', true],
   ['local-api-storage', 'LocalApiStorageSmoke', true],
+  // 统一目录必须在真实配置绑定前保全原件；故障注入验证中断恢复、冲突及凭据保留。
+  ['mod-data-layout', 'ModDataLayoutSmoke', true],
   ['runtime-automation-control', 'RuntimeAutomationControlSmoke', true],
   // 主线程采集复用与整段日志写入使用独立托管夹具，串行纳入同一离线门禁。
   ['runtime-snapshot-read-cache', 'RuntimeSnapshotReadCacheSmoke', true],

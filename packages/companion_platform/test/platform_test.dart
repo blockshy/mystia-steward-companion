@@ -19,6 +19,32 @@ class MemoryHost extends PlatformHostApi {
   }
 }
 
+/// 只模拟固定历史源和原生提交边界；不读取真实用户目录，也不模拟 DPAPI 成功。
+class LegacyImportHost extends MemoryHost {
+  String? legacy;
+  final imports = <(bool, String?)>[];
+  bool failCommit = false;
+  @override
+  Future<String?> readLegacyPreferences() async => legacy;
+  @override
+  Future<void> initializeStorage(
+    bool importLegacy,
+    String? expectedLegacyPreferences,
+  ) async {
+    imports.add((importLegacy, expectedLegacyPreferences));
+    if (failCommit) throw StateError('synthetic source changed');
+  }
+
+  @override
+  Future<PlatformStorageStatus> readStorageStatus() async =>
+      PlatformStorageStatus(
+        mode: 'windows-portable',
+        location: 'synthetic/client-data',
+        needsInitialization: true,
+        canImportLegacy: true,
+      );
+}
+
 const _initializeChannelName =
     'dev.flutter.pigeon.companion_platform.PlatformHostApi.initialize';
 const _pollChannelName =
@@ -100,6 +126,61 @@ PlatformInput input({
 );
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('历史偏好解析前置且保留原文字节形式，拒绝坏根和敏感字段', () async {
+    final host = LegacyImportHost();
+    final platform = CompanionPlatform(host: host);
+    addTearDown(platform.dispose);
+    for (final raw in [
+      '{synthetic-private-content',
+      '[]',
+      '{"token":"synthetic-token"}',
+      '{"clientId":"synthetic-id"}',
+      '{"apiToken":"synthetic-token"}',
+    ]) {
+      host.legacy = raw;
+      await expectLater(
+        platform.initializeStorage(importLegacy: true),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.toString(),
+            'no source fragment',
+            isNot(contains('synthetic-private-content')),
+          ),
+        ),
+      );
+    }
+    expect(host.imports, isEmpty);
+    const valid = '{ "themeMode" : "dark", "deviceLabel": "合成设备" }\n';
+    host.legacy = valid;
+    await platform.initializeStorage(importLegacy: true);
+    expect(host.imports, [(true, valid)]);
+    host.legacy = null;
+    await platform.initializeStorage(importLegacy: true);
+    await platform.initializeStorage(importLegacy: false);
+    expect(host.imports, [(true, valid), (true, null), (false, null)]);
+  });
+
+  test('导入提交失败后仍可复查状态并重新提交，容量超限不进入原生提交', () async {
+    final host = LegacyImportHost()..legacy = '{"label":"${'中' * 350000}"}';
+    final platform = CompanionPlatform(host: host);
+    addTearDown(platform.dispose);
+    await expectLater(
+      platform.initializeStorage(importLegacy: true),
+      throwsFormatException,
+    );
+    expect(host.imports, isEmpty);
+    host.legacy = '{}';
+    host.failCommit = true;
+    await expectLater(
+      platform.initializeStorage(importLegacy: true),
+      throwsStateError,
+    );
+    expect((await platform.readStorageStatus()).needsInitialization, isTrue);
+    host.failCommit = false;
+    await platform.initializeStorage(importLegacy: true);
+    expect(host.imports.length, 2);
+  });
 
   testWidgets('真实初始化通道迟注册后恢复，成功前没有轮询', (tester) async {
     final native = NativeChannels()..remainUnavailable();

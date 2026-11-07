@@ -431,6 +431,15 @@ void main() {
     expect(find.byKey(const ValueKey('help-reader')), findsNothing);
     await tester.tap(find.text('清除'));
     await tester.pumpAndSettle();
+    // 清除搜索恢复已选文章及原滚动位置；长文章的标题可能已被 ListView 卸载。
+    // 先按文章专属阅读列表核验选择，再回到标题确认内容，不要求产品重置阅读进度。
+    expect(articleList, findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('help-article-title')),
+      -200,
+      scrollable: scrollOf(articleList),
+    );
+    await tester.pumpAndSettle();
     expect(
       tester
           .widget<Text>(find.byKey(const ValueKey('help-article-title')))

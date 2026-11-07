@@ -5,6 +5,7 @@
 
 #include "flutter_window.h"
 #include "utils.h"
+#include "portable_storage.h"
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
@@ -16,8 +17,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // UI 线程使用单线程单元初始化 COM，供 Flutter 与平台插件调用。
   ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
-  flutter::DartProject project(L"data");
-
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
 
@@ -25,6 +24,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   const int control = StartCompanionControl(command_line_arguments);
   if (control != 0) { ::CoUninitialize(); return control == 1 ? EXIT_SUCCESS : EXIT_FAILURE; }
 
+  // 资源与便携根都来自实际 EXE，而非启动终端/快捷方式的当前目录。
+  flutter::DartProject project((mystia_storage::ExecutablePath().parent_path() / L"data").wstring());
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);

@@ -159,6 +159,78 @@ class PlatformLaunch {
   }
 }
 
+/// 本次运行已验证的存储位置。绝对路径仅供本机设置页展示，不得写入公共日志、
+/// 诊断包或业务协议。待初始化的便携目录尚未获准生成设备身份或写入偏好。
+class PlatformStorageStatus {
+  PlatformStorageStatus({
+    required this.mode,
+    required this.location,
+    required this.needsInitialization,
+    required this.canImportLegacy,
+    this.importUnavailableReason,
+  });
+
+  String mode;
+
+  String location;
+
+  bool needsInitialization;
+
+  bool canImportLegacy;
+
+  String? importUnavailableReason;
+
+  List<Object?> _toList() {
+    return <Object?>[
+      mode,
+      location,
+      needsInitialization,
+      canImportLegacy,
+      importUnavailableReason,
+    ];
+  }
+
+  Object encode() {
+    return _toList();
+  }
+
+  static PlatformStorageStatus decode(Object result) {
+    result as List<Object?>;
+    return PlatformStorageStatus(
+      mode: result[0]! as String,
+      location: result[1]! as String,
+      needsInitialization: result[2]! as bool,
+      canImportLegacy: result[3]! as bool,
+      importUnavailableReason: result[4] as String?,
+    );
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  bool operator ==(Object other) {
+    if (other is! PlatformStorageStatus || other.runtimeType != runtimeType) {
+      return false;
+    }
+    if (identical(this, other)) {
+      return true;
+    }
+    return _deepEquals(mode, other.mode) &&
+        _deepEquals(location, other.location) &&
+        _deepEquals(needsInitialization, other.needsInitialization) &&
+        _deepEquals(canImportLegacy, other.canImportLegacy) &&
+        _deepEquals(importUnavailableReason, other.importUnavailableReason);
+  }
+
+  @override
+  // ignore: avoid_equals_and_hash_code_on_mutable_classes
+  int get hashCode => _deepHash(<Object?>[runtimeType, ..._toList()]);
+
+  @override
+  String toString() {
+    return 'PlatformStorageStatus(mode: $mode, location: $location, needsInitialization: $needsInitialization, canImportLegacy: $canImportLegacy, importUnavailableReason: $importUnavailableReason)';
+  }
+}
+
 /// 窗口行为偏好；透明度由 Flutter 分层绘制，原生只提供透明表面。
 class WindowPreferences {
   WindowPreferences({
@@ -341,11 +413,14 @@ class _PigeonCodec extends StandardMessageCodec {
     } else if (value is PlatformLaunch) {
       buffer.putUint8(130);
       writeValue(buffer, value.encode());
-    } else if (value is WindowPreferences) {
+    } else if (value is PlatformStorageStatus) {
       buffer.putUint8(131);
       writeValue(buffer, value.encode());
-    } else if (value is PlatformInput) {
+    } else if (value is WindowPreferences) {
       buffer.putUint8(132);
+      writeValue(buffer, value.encode());
+    } else if (value is PlatformInput) {
+      buffer.putUint8(133);
       writeValue(buffer, value.encode());
     } else {
       super.writeValue(buffer, value);
@@ -361,8 +436,10 @@ class _PigeonCodec extends StandardMessageCodec {
       case 130:
         return PlatformLaunch.decode(readValue(buffer)!);
       case 131:
-        return WindowPreferences.decode(readValue(buffer)!);
+        return PlatformStorageStatus.decode(readValue(buffer)!);
       case 132:
+        return WindowPreferences.decode(readValue(buffer)!);
+      case 133:
         return PlatformInput.decode(readValue(buffer)!);
       default:
         return super.readValueOfType(type, buffer);
@@ -404,6 +481,75 @@ class PlatformHostApi {
       isNullValid: false,
     );
     return pigeonVar_replyValue! as PlatformLaunch;
+  }
+
+  /// 查询固定的存储模式与首次使用状态；不创建身份、不从历史目录自动复制文件。
+  Future<PlatformStorageStatus> readStorageStatus() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.companion_platform.PlatformHostApi.readStorageStatus$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: false,
+    );
+    return pigeonVar_replyValue! as PlatformStorageStatus;
+  }
+
+  /// 只读固定旧 Flutter 目录的偏好原文，限便携目录首次导入预校验；null 表示无文件。
+  /// 不返回凭据内容、不接受调用方指定路径，读取失败不能伪装成文件不存在。
+  Future<String?> readLegacyPreferences() async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.companion_platform.PlatformHostApi.readLegacyPreferences$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(null);
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    final Object? pigeonVar_replyValue = _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: true,
+    );
+    return pigeonVar_replyValue as String?;
+  }
+
+  /// 便携客户端首次使用的显式选择。true 仅导入旧 Flutter 偏好、窗口及连接凭据，
+  /// 不读取或复制旧设备身份；导入后仍以新设备注册。
+  /// false 确认使用新的空目录；原生层重新检查目标与一次性导入资格，失败不重建身份。
+  /// expectedLegacyPreferences 是已由 Dart 验证的原字符串，原生在提交前严格比较
+  /// 当前读取结果（包括 null），防止校验后的源文件变化被当作同一导入请求。
+  Future<void> initializeStorage(
+    bool importLegacy,
+    String? expectedLegacyPreferences,
+  ) async {
+    final pigeonVar_channelName =
+        'dev.flutter.pigeon.companion_platform.PlatformHostApi.initializeStorage$pigeonVar_messageChannelSuffix';
+    final pigeonVar_channel = BasicMessageChannel<Object?>(
+      pigeonVar_channelName,
+      pigeonChannelCodec,
+      binaryMessenger: pigeonVar_binaryMessenger,
+    );
+    final Future<Object?> pigeonVar_sendFuture = pigeonVar_channel.send(
+      <Object?>[importLegacy, expectedLegacyPreferences],
+    );
+    final pigeonVar_replyList = await pigeonVar_sendFuture as List<Object?>?;
+
+    _extractReplyValueOrThrow(
+      pigeonVar_replyList,
+      pigeonVar_channelName,
+      isNullValid: true,
+    );
   }
 
   Future<void> applyWindowPreferences(WindowPreferences preferences) async {

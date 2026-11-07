@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.Business.Domain.Recommendation;
 
 namespace MystiaStewardCompanion.LocalApi;
@@ -141,7 +142,7 @@ internal sealed class CompanionDeviceAuthorityStore
 
     public static string ResolvePath()
     {
-        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "companion-devices.json");
+        return new ModDataPaths(Paths.ConfigPath).DeviceAuthorityPath;
     }
 
     public CompanionDeviceAuthorityStateDto Register(

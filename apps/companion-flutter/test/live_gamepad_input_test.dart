@@ -15,6 +15,14 @@ class _MemoryInputPlatform extends CompanionPlatform {
   @override
   Future<PlatformLaunch> initialize() async => PlatformLaunch(desktop: true);
   @override
+  Future<PlatformStorageStatus> readStorageStatus() async =>
+      PlatformStorageStatus(
+        mode: 'windows-embedded',
+        location: 'synthetic/private',
+        needsInitialization: false,
+        canImportLegacy: false,
+      );
+  @override
   Future<Map<String, Object?>> readPreferences() async => Map.of(_preferences);
   @override
   Future<void> writePreferences(Map<String, Object?> fields) async {

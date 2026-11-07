@@ -17,6 +17,7 @@ add_executable(${BINARY_NAME} WIN32
   "runner.exe.manifest"
   "${PLATFORM_SOURCE}/platform.g.cpp"
   "${PLATFORM_SOURCE}/platform_bridge.cpp"
+  "${PLATFORM_SOURCE}/portable_storage.cpp"
 )
 
 # Apply the standard set of build settings. This can be removed for applications
@@ -36,7 +37,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX" "WIN32_LEAN_AND_MEA
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
-target_link_libraries(${BINARY_NAME} PRIVATE dwmapi ws2_32 crypt32 shell32 ole32 comctl32 xinput9_1_0)
+target_link_libraries(${BINARY_NAME} PRIVATE dwmapi ws2_32 crypt32 bcrypt shell32 ole32 comctl32 xinput9_1_0)
 target_include_directories(${BINARY_NAME} PRIVATE "${PLATFORM_SOURCE}")
 target_compile_options(${BINARY_NAME} PRIVATE /utf-8)
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")

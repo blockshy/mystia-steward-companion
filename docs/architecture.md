@@ -1,6 +1,6 @@
 # 项目架构
 
-更新日期：2026-11-06
+更新日期：2026-11-07
 
 本文只描述长期稳定的组件边界和数据流。构建命令见[本地开发与构建](local-development.md)，具体运行时约束见对应专题文档。
 
@@ -13,7 +13,7 @@
 | C# 业务类库 | `modules/companion-business/` | 纯数据推荐、特殊经营、订单与主方案、游戏 UI 目标投影和自动化编排；目标 .NET 6 / C# 10 |
 | Flutter 客户端 | `apps/companion-flutter/` | Forui页面、表单、设置与焦点；提交小型查询意图，不自行计算推荐或生成执行目标 |
 | Dart 协议/会话 | `packages/companion_protocol/`、`packages/companion_client/` | 不可变协议、Dart IO HTTP、设备CAS、串行租约、来源与执行资格 |
-| 原生平台 | `packages/companion_platform/` | Pigeon 连接 Windows 窗口/托盘/焦点/DPAPI 与 Android Keystore/耐久存储 |
+| 原生平台 | `packages/companion_platform/` | Pigeon 连接 Windows 窗口/托盘/焦点/DPAPI、便携目录准入及首次初始化，与 Android Keystore/耐久存储 |
 | 游戏图片服务 | `mods/bepinex/src/GameMedia/`、`apps/companion-flutter/lib/app/game_media_controller.dart` | 游戏主线程按精确目录提取图像、后台校验与原子缓存、客户端按已确认代次读取 |
 | 独立更新程序 | `native/updater/` | Win32界面、精确进程退出确认、完整清单与整目录事务回退 |
 | 测试与审计 | `tests/`、`scripts/` | 固定协议、运行时 identity、发布策略和 UI 行为，阻止文档与实现边界漂移 |
@@ -67,8 +67,10 @@ Loopback/LAN local API ── Dart IO HTTP ── Flutter companion
 
 ## 配置与持久化所有权
 
+- Mod 自有持久化数据由统一路径入口定位到游戏的 `BepInEx/config/MystiaStewardCompanion/`；程序目录不承担运行数据所有权。首次布局迁移在配置绑定及业务 schema 转换之前保存原字节备份，布局完成只表示目录迁移已完成。API Token 仍属于普通主 CFG，备份亦包含原字节，不适用客户端 DPAPI 的加密保证。目录、旧 CFG 清理及升级顺序由[更新系统](update-system.md#数据与程序目录)定义。
 - 共享推荐、自动化、游戏界面辅助与稀客调度配置由 Mod 设备权威存储持有；客户端先持久化服务端返回的 profile，再确认同步。调度名单及等待条规则保存为共享意图，精确订单的参与队列与单次自动启用事实属于当前经营运行态，不跨生命周期复用。设备协议、磁盘 schema 及一次性历史迁移由[本地 API](local-api.md)定义，迁移不构成旧客户端兼容层。
 - 窗口、字体、导航、专注显示、连接与本机扩展偏好由客户端平台存储持有；主设备耐久保存的专注内容选项和实际主题还会同步到游戏电脑的专注面板，面板布局/外观由独立版本化配置保存。任务、邀请和库存页面的本机模块开关仅控制该设备的附加读取与人工操作入口，不改写其他设备的配置，也不关闭后台共享的任务捕获。
+- Windows 存储在控制端口和窗口恢复之前确定：Mod 内置客户端沿用每用户 AppData，独立包通过专用 EXE 与完整清单准入后使用相邻 `client-data/`，失败不回退其他位置。新便携目录先显示初始化选择，只能导入旧 Flutter 偏好、窗口状态与连接凭据，不复制设备身份；导入、身份生成与服务端共享配置同步分别执行，旧确认记录不能授予新客户端自动化权限。便携目录独立持有本机数据，不是跨设备共享的权威存储；Windows 凭据仍受当前用户 DPAPI 约束。Android 继续使用应用私有存储。用户目录与升级约定见[独立客户端](standalone-client.md)，原生续作及隔离边界见[平台适配包](../packages/companion_platform/README.md)。
 - 收藏、自定义配方、诊断包与游戏图片缓存各有独立存储，不混入设备 profile。发布载荷与运行产生的配置、存档、`user-data` 分离，完整包安装不能把这些数据当作可清理的构建文件。
 
 ## 权威来源

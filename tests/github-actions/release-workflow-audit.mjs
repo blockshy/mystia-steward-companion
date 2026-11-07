@@ -9,8 +9,11 @@ const releasePath = join(workflowsRoot, 'release.yml');
 const ciPath = join(workflowsRoot, 'ci.yml');
 const referencesLockPath = join(repoRoot, 'mods', 'bepinex', 'References', 'references.lock.json');
 const toolchainLockPath = join(repoRoot, 'toolchain.lock.json');
-const release = readFileSync(releasePath, 'utf8');
-const ci = readFileSync(ciPath, 'utf8');
+// Git checkout 在 Windows 上可能使用 CRLF；策略按 YAML 行结构审核，换行表示不属于权限或命令语义。
+// 统一读取边界后仍使用原有精确断言，避免将行尾的 CR 误认为 job 名称或权限字段的一部分。
+const readWorkflow = (path) => readFileSync(path, 'utf8').replace(/\r\n/gu, '\n');
+const release = readWorkflow(releasePath);
+const ci = readWorkflow(ciPath);
 const referencesLock = JSON.parse(readFileSync(referencesLockPath, 'utf8'));
 const toolchain = JSON.parse(readFileSync(toolchainLockPath, 'utf8'));
 
@@ -84,7 +87,7 @@ const workflowFiles = readdirSync(workflowsRoot, { withFileTypes: true })
   .map((entry) => join(workflowsRoot, entry.name));
 
 for (const workflowPath of workflowFiles) {
-  const workflow = readFileSync(workflowPath, 'utf8');
+  const workflow = readWorkflow(workflowPath);
   for (const match of workflow.matchAll(/^\s*uses:\s*([^\s#]+)(?:\s+#.*)?$/gmu)) {
     const reference = match[1];
     if (reference.startsWith('./') || reference.startsWith('docker://')) continue;

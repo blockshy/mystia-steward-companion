@@ -13,6 +13,7 @@
 
   <ItemGroup>
     <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="AtomicFile.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/ModDataPaths.cs" Link="ModDataPaths.cs" />
     <Compile Include="../../mods/bepinex/src/Updates/UpdateService.cs" Link="UpdateService.cs" />
     <Compile Include="../../mods/bepinex/src/Plugin/CompanionProcessEnvironment.cs" Link="CompanionProcessEnvironment.cs" />
     <Compile Include="../../mods/bepinex/src/Updates/BusinessPackageManifest.cs" Link="BusinessPackageManifest.cs" />

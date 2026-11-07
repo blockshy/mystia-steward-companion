@@ -64,6 +64,8 @@ Mod 项目自动构建两个业务依赖 DLL。打包时必须与主 DLL、完�
 | 任务运行时 | [任务系统](../../docs/missions.md) |
 | 特殊挑战 | [特殊经营实现](../../docs/special-business-implementation.md)与[验证](../../docs/special-business-validation.md) |
 | 更新与 updater | [更新系统](../../docs/update-system.md) |
+| Mod 数据布局、旧 CFG 迁移与清理 | [数据与程序目录](../../docs/update-system.md#数据与程序目录) |
+| 独立 Windows 包、便携数据与升级 | [独立客户端](../../docs/standalone-client.md) |
 | 总日志、控制台和诊断包 | [日志与诊断](../../docs/observability.md) |
 
 ## 游戏运行时分析

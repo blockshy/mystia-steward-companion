@@ -325,6 +325,13 @@ assert.match(sources.prepare, /Official releases require exactly the arm64-v8a a
 assert.match(sources.prepare, /catalogSha256/u);
 assert.match(sources.prepare, /catalogSize/u);
 assert.match(sources.prepare, /targetCommitSha = \$TargetCommitSha/u);
+// 远端发现清单统一取 schema 2；生成与两处发布前校验不得分别回退旧版常量。
+assert.match(sources.releaseCommon, /\$script:MystiaUpdateManifestSchemaVersion = 2/u);
+assert.match(sources.prepare, /schemaVersion = \$script:MystiaUpdateManifestSchemaVersion/u);
+for (const source of [sources.prepare, sources.publish]) {
+  assert.match(source, /\$ManifestSchemaVersion -ne \$script:MystiaUpdateManifestSchemaVersion/u);
+  assert.match(source, /\$CatalogSchemaVersion -ne 1/u);
+}
 assert.match(sources.prepare, /Assert-MystiaPreparedChecksums/u);
 assert.match(sources.prepare, /\.release-metadata-\$\(\[Guid\]::NewGuid\(\)\.ToString\('N'\)\)/u);
 assert.match(sources.prepare, /Commit-MystiaPreparedMetadata/u);
@@ -381,6 +388,11 @@ assert.doesNotMatch(
 assert.match(sources.build, /scripts\/manage-build-artifacts\.mjs/u);
 assert.match(sources.packagePowerShell, /未收尾打包事务/u);
 assert.match(sources.packagePowerShell, /package-manifest\.json/u);
+// 两 ZIP 关系在打包、生成发布元数据以及发布复验三个边界都成立，不能仅验证外层 ZIP 的摘要。
+assert.match(sources.packagePowerShell, /portable-client-package\.mjs/u);
+assert.match(sources.packagePowerShell, /Assert-MystiaWindowsPackagePair/u);
+assert.match(sources.prepare, /Assert-MystiaWindowsPackagePair/u);
+assert.match(sources.publish, /Assert-MystiaWindowsPackagePair/u);
 assert.match(sources.packageBash, /exec pwsh/u);
 assert.match(sources.android, /assertRealDirectory\(distDir, 'Android release dist'\)/u);
 assert.match(sources.android, /const stagingDir = mkdtempSync\(path\.join\(distDir, '\.android-apk-stage-'\)\)/u);

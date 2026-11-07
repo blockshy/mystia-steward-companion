@@ -105,9 +105,17 @@ function parseManifest(text) {
 
 /** 验证结构和完整载荷；仅安装后的显式附加文件白名单可以位于清单外。 */
 export function validatePackage(root, { allowPreserved = false, preservePaths = defaultPreservedPaths } = {}) {
-  const tree = readPackageTree(root); const record = tree.get(manifestName);
+  const tree = readPackageTree(root);
+  const record = tree.get(manifestName);
   requireValue(record && record.size > 0 && record.size <= limit.manifest, '缺少或超长 package-manifest.json。');
-  const manifest = parseManifest(readFileSync(path.join(root, manifestName), 'utf8'));
+  return validatePackageRecords(tree, readFileSync(path.join(root, manifestName), 'utf8'), {allowPreserved, preservePaths});
+}
+
+/** 目录与 ZIP 共用清单语义；调用方须先安全枚举并计算实际字节摘要，不能把清单自身当作实际记录。 */
+export function validatePackageRecords(tree, manifestText, { allowPreserved = false, preservePaths = defaultPreservedPaths } = {}) {
+  const record = tree.get(manifestName);
+  requireValue(record && record.size > 0 && record.size <= limit.manifest, '缺少或超长 package-manifest.json。');
+  const manifest = parseManifest(manifestText);
   keys(manifest, ['schemaVersion','product','version','sourceCommit','sourceDigest','toolchainSha256','businessProtocolVersion','clientProtocolVersion','files'], '包清单');
   requireValue(manifest.schemaVersion === 1 && manifest.product === 'mystia-steward-companion', '不支持的包规范或产品。');
   requireValue(manifest.businessProtocolVersion === 1 && manifest.clientProtocolVersion === 2, '成套协议版本不一致。');

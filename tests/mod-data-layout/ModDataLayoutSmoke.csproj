@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="../flutter-contracts/host/BepInExRuntime.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net6.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><LangVersion>10.0</LangVersion>
+    <UseAppHost>false</UseAppHost><CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <BepInExRuntimeDirectory Condition="'$(BepInExRuntimeDirectory)' == ''">$(MSBuildProjectDirectory)/../../temp/flutter-mod-host-runtime</BepInExRuntimeDirectory>
+  </PropertyGroup>
+  <!-- 迁移及配置绑定均链接生产实现；ConfigFile/TOML 转换器使用锁定真实框架，只有游戏枚举与无关 DTO 为隔离替身。 -->
+  <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Core/ModDataPaths.cs" Link="Production/ModDataPaths.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/ModDataLayoutMigration.cs" Link="Production/ModDataLayoutMigration.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/ModDataLayoutMigration.LegacyConfigCleanup.cs" Link="Production/ModDataLayoutMigration.LegacyConfigCleanup.cs" />
+    <Compile Include="../../mods/bepinex/src/Plugin/StewardPluginConfig.cs" Link="Production/StewardPluginConfig.cs" />
+    <Compile Include="../../mods/bepinex/src/LocalApi/LocalApiConnectionPolicy.cs" Link="Production/LocalApiConnectionPolicy.cs" />
+    <Reference Include="BepInEx.Core"><HintPath>../../mods/bepinex/References/BepInEx.Core.dll</HintPath><Private>true</Private></Reference>
+    <Reference Include="SemanticVersioning"><HintPath>$(BepInExRuntimeDirectory)/SemanticVersioning.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+  <Target Name="VerifyLockedBepInExRuntimeDependency" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(BepInExRuntimeDirectory)/SemanticVersioning.dll')" Text="缺少锁定 BepInEx 运行依赖；请使用既有验证入口恢复，或传入 BepInExRuntimeDirectory。" />
+    <GetFileHash Files="$(BepInExRuntimeDirectory)/SemanticVersioning.dll" Algorithm="SHA256"><Output TaskParameter="Items" ItemName="RuntimeHash" /></GetFileHash>
+    <Error Condition="'%(RuntimeHash.FileHash)' != '$(BepInExRuntimeSha256)'" Text="BepInEx 运行依赖摘要不匹配。" />
+  </Target>
+</Project>

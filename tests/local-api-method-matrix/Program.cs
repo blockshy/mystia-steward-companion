@@ -20,6 +20,8 @@ var expectedGetRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/rare-guests/invitations",
     "/runtime-data",
     "/snapshot",
+    // 专注面板的同一资源使用 GET 读取、POST 按修订更新；它不属于已删除的 ui-pinning 旧路由。
+    "/ui/focus-overlay",
 };
 var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
 {
@@ -56,9 +58,10 @@ var expectedPostRoutes = new HashSet<string>(StringComparer.Ordinal)
     "/logs/export-diagnostics",
     "/logs/packages/delete",
     "/logs/open-folder",
-    "/orders/rare/dismiss",
+    "/orders/rare/participation",
     "/rare-guests/invite",
     "/rare-guests/invite-all",
+    "/ui/focus-overlay",
     "/updates/check",
     "/updates/download",
     "/updates/install-on-exit",
@@ -222,7 +225,7 @@ try
     AssertNoDuplicates("POST", postRoutes);
 
     // 新客户端仅消费 C# 宿主生成的动作；已删除的旧客户端入口不保留任何兼容路由。
-    foreach (var legacyRoute in new[] { "/orders/prepare-next", "/orders/complete-first", "/orders/normal/complete-first", "/ui-pinning/targets" })
+    foreach (var legacyRoute in new[] { "/orders/prepare-next", "/orders/complete-first", "/orders/normal/complete-first", "/orders/rare/dismiss", "/ui-pinning/targets" })
     {
         AssertAbsent(source, $"case \"{legacyRoute}\":", "已删除的旧客户端业务入口仍可到达。");
     }
@@ -307,9 +310,9 @@ try
 
     var overlappingRoutes = expectedGetRoutes.Intersect(expectedPostRoutes, StringComparer.Ordinal).ToArray();
     AssertEqual(
-        new[] { "/local-api/config" },
+        new[] { "/local-api/config", "/ui/focus-overlay" },
         overlappingRoutes,
-        "Only the configuration resource may use GET for reading and POST for updating.");
+        "Only the connection configuration and focus-overlay resources may use GET for reading and POST for updating.");
 
     Console.WriteLine($"PASS: {getRoutes.Count} GET routes and {postRoutes.Count} POST routes match the strict method matrix; legacy path aliases are absent.");
     return 0;

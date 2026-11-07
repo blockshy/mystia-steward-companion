@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.IO.Compression;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Core;
 using MystiaStewardCompanion.Plugin;
 using MystiaStewardCompanion.Save;
 using MystiaStewardCompanion.Updates;
@@ -540,6 +541,13 @@ internal sealed partial class LocalApiServer : IDisposable
     /// Flutter 通过 Dart IO 直接发送 Token 与设备身份 Header；写入权限由 Mod 校验，不依赖客户端按钮显隐。
     /// </remarks>
     private void HandleClient(TcpClient client)
+        => HandleClientCore(client, suppliedRemoteEndPoint: null, useSuppliedRemoteEndPoint: false);
+
+    /// <summary>
+    /// 生产路径在异常保护内读取 TCP 对端，关闭中的 socket 也沿用请求错误处理与释放流程。
+    /// 私有来源替身只供隔离回环测试使用，生产入口不启用；HTTP Header 或正文不能提供此来源。
+    /// </summary>
+    private void HandleClientCore(TcpClient client, IPEndPoint? suppliedRemoteEndPoint, bool useSuppliedRemoteEndPoint)
     {
         NetworkStream? stream = null;
         try
@@ -547,7 +555,9 @@ internal sealed partial class LocalApiServer : IDisposable
             client.ReceiveTimeout = 2500;
             client.SendTimeout = 2500;
             stream = client.GetStream();
-            var remoteEndPoint = client.Client.RemoteEndPoint as IPEndPoint;
+            var remoteEndPoint = useSuppliedRemoteEndPoint
+                ? suppliedRemoteEndPoint
+                : client.Client.RemoteEndPoint as IPEndPoint;
             if (!IsClientAddressAllowed(remoteEndPoint))
             {
                 WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "forbidden client address" }));
@@ -680,6 +690,13 @@ internal sealed partial class LocalApiServer : IDisposable
                         WriteResponse(stream, 200, "OK", ToJson(_updateService.DownloadUpdate()));
                         break;
                     case "/updates/install-on-exit":
+                        // 主设备可以位于局域网另一端；启动游戏电脑上的安装进程还要求真实回环来源。
+                        // 下载仍允许 LAN 主设备发起，不能把此门禁扩展为禁止远程查看或下载。
+                        if (!isLoopbackClient)
+                        {
+                            WriteResponse(stream, 403, "Forbidden", ToJson(new LocalApiErrorDto { Error = "update installation is only allowed from the game PC" }));
+                            break;
+                        }
                         WriteResponse(stream, 200, "OK", ToJson(_updateService.InstallOnExit()));
                         break;
                     case "/diagnostics/automation-decision":
@@ -2291,7 +2308,7 @@ internal sealed partial class LocalApiServer : IDisposable
 
     public static string ResolveDiagnosticPackageDirectory()
     {
-        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "diagnostic-packages");
+        return new ModDataPaths(Paths.ConfigPath).DiagnosticPackagesDirectory;
     }
 
     private static void AddAggregateLogEntries(ZipArchive archive, string primaryPath, int maxBytes, int maxLines, List<string> added)

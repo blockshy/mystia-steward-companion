@@ -1,6 +1,6 @@
 # 开发文档索引
 
-复核日期：2026-11-06
+复核日期：2026-11-07
 
 本目录面向维护者，记录项目架构、开发流程和已经由代码、测试或游戏分析资料确认的实现边界。用户安装与操作说明仍以根目录 `README.md`、`mods/bepinex/README.md` 和伴随窗口内置帮助为准。
 
@@ -27,13 +27,14 @@
 
 | 文档 | 唯一职责 |
 | --- | --- |
-| [本地开发与构建](local-development.md) | 锁定工具链、依赖安装、桌面/Mod 构建、缓存和本地预览 |
+| [本地开发与构建](local-development.md) | 锁定工具链、依赖安装、桌面/Mod 构建、便携产物准备及数据迁移测试输入 |
 | [Android 开发](android-development.md) | Android 工具链、签名、双 ABI APK 构建和本地排障 |
-| [验证指南](validation-guide.md) | 按变更范围选择 Flutter/Dart、真实 HTTP 宿主、Cargo、dotnet 与原生 smoke |
-| [发布流程](local-release.md) | 正式 Actions 发布、预览版发布、审批、资产事务和失败处理 |
+| [验证指南](validation-guide.md) | 按范围选择验证层次；明确便携分发、原生存储、隔离升级与实际程序的证据边界 |
+| [发布流程](local-release.md) | 正式/预览版发布、审批、资产事务、双 Windows ZIP 契约及旧版首次升级提示 |
 | [本地构建引用](../mods/bepinex/References/README.md) | 私有引用 bundle 的身份、恢复和校验 |
 | [协议宿主测试](../tests/flutter-contracts/README.md) | 隔离 HTTP 宿主的额外运行库准备、协议执行和管理接口验证 |
-| [平台适配包](../packages/companion_platform/README.md) | Pigeon 生成、系统能力和平台存储边界 |
+| [平台适配包](../packages/companion_platform/README.md) | Pigeon 生成、系统控制协议、原生存储初始化/续作及测试隔离 |
+| [独立 Windows 客户端](standalone-client.md) | 完整运行包、首次新建/导入、本机配置、局域网连接和分别升级 |
 
 ## 运行时与应用契约
 
@@ -71,6 +72,8 @@
 - 改组件关系、进程边界或数据流：更新 `architecture.md`。
 - 改构建命令、锁定工具或本地准备：更新 `local-development.md`；Android 专属内容只改 `android-development.md`。
 - 改正式 Release 事务、GitHub 配置或资产集合：更新 `local-release.md`。
+- 改便携包格式或两包映射：更新 `local-release.md`；存储所有权与原生初始化分别由 `architecture.md`、平台适配包说明负责，用户操作更新 `standalone-client.md`。
+- 改测试入口或隔离范围：更新 `validation-guide.md`；只把具体运行库、构建前置与测试输入准备留在 `local-development.md`。
 - 改运行时读取、订单、自动化、本地 API 或 UI ownership：只更新对应专题文档。
 - 改用户可见功能：另行检查两份用户 README 和 `apps/companion-flutter/assets/help-content.json`，但不要把开发实现复制到用户文档。
 - 新增专题前先确认现有文档没有承担该职责；确需新增时同步本索引和相关入口链接。

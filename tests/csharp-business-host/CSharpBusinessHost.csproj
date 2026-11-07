@@ -22,6 +22,7 @@
     <Compile Include="../../mods/bepinex/src/LocalApi/OrderPreparationModels.cs" Link="Production/OrderPreparationModels.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/HttpRequestReader.cs" Link="Production/HttpRequestReader.cs" />
     <Compile Include="../../mods/bepinex/src/Core/AtomicFile.cs" Link="Production/AtomicFile.cs" />
+    <Compile Include="../../mods/bepinex/src/Core/ModDataPaths.cs" Link="Production/ModDataPaths.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/JsonFileStore.cs" Link="Production/JsonFileStore.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/FavoriteStore.cs" Link="Production/FavoriteStore.cs" />
     <Compile Include="../../mods/bepinex/src/LocalApi/CustomRecipeStore.cs" Link="Production/CustomRecipeStore.cs" />

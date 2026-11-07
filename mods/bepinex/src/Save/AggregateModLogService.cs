@@ -2,6 +2,7 @@ using System.Text;
 using System.Collections.Concurrent;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.Save;
 
@@ -66,7 +67,7 @@ internal static class AggregateModLogService
     public static string ResolvePath(string? configuredPath)
     {
         if (!string.IsNullOrWhiteSpace(configuredPath)) return configuredPath.Trim();
-        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "aggregate-mod.log");
+        return new ModDataPaths(Paths.ConfigPath).AggregateLogPath;
     }
 
     public static IReadOnlyList<string> EnumerateFiles(string? configuredPath)

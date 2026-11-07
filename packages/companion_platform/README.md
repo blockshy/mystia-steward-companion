@@ -4,11 +4,18 @@ Flutter 客户端的平台边界，不包含业务 HTTP 或自动化许可判断
 
 仓库根 `scripts/flutter-workspace.mjs --sdk-root <锁定SDK> --task format-check` 只读检查格式；`--task generated-check` 在全新的 `temp/pigeon-check-*` 目录复制输入/依赖锁，从零生成三种语言并标准格式化生成的 Dart，然后逐字节比较生产文件。失败时保留差异证据，不自动覆盖纳管输出。更新 Pigeon 后需对生成 Dart 执行同 SDK 的 `dart format`。
 
-- Windows runner 显式编译 `windows/platform_bridge.cpp` 与 Pigeon C++；提供窗口/托盘、F8/RS 焦点切换、F10 穿透恢复、保留句柄的游戏进程监视、单实例与 v2 控制通道。原生窗口状态存入 `%LOCALAPPDATA%/mystia-steward-companion/flutter-v1`。
+- Windows runner 显式编译 `windows/platform_bridge.cpp`、`windows/portable_storage.cpp` 与 Pigeon C++；提供窗口/托盘、F8/RS 焦点切换、F10 穿透恢复、保留句柄的游戏进程监视、单实例与 v2 控制通道。内置客户端使用 `%LOCALAPPDATA%/mystia-steward-companion/flutter-v1`，独立包使用实际 EXE 旁的 `client-data/`。
+- 独立包以专用 EXE 名与 `portable-client-v1.manifest` 确定模式，原生启动在控制激活及窗口恢复前核对程序树；拒绝公共目录根部、缺失/修改/混装载荷及链接，权限失败不回退 AppData。首次初始化由用户选择，不能因为目录可写就直接生成身份；用户操作见[独立客户端](../../docs/standalone-client.md)，分发格式见[发布流程](../../docs/local-release.md#独立-windows-分发契约)。
 - Windows 身份密钥使用当前用户 DPAPI，Android 使用 AndroidKeyStore AES-GCM 与应用 no-backup 目录。密文损坏时读、覆盖和删除均报错并保留原文件；普通偏好采用原子写入、持久化回读。
 - `CompanionPlatform.writePreferences` 串行合并顶层字段，只有原生和 Dart 两次回读一致才完成 Future。设备同步层必须等待此 Future，再发送精确 ACK。
-- `HistoryMigration` 仅接收用户明确提供的 schemaVersion 1 JSON 偏好文件；严格白名单及数值/枚举校验，旧 1/0 布尔值规范化。不读取浏览器数据库，不导入 Token、clientId 或任何自动化运行开关。
+- `HistoryMigration` 仅接收用户明确提供的 schemaVersion 1 JSON 偏好文件；严格白名单及数值/枚举校验，旧 1/0 布尔值规范化。不读取浏览器数据库，不导入 Token、clientId 或任何自动化运行开关。此入口与便携首次初始化时的旧 Flutter 原生存储导入相互独立。
 - `GamepadInputController` 只解释纯输入快照；失焦、断开和首次连接要求回中，边缘动作不连发，方向键使用初始延时与重复间隔。LB/RB 切换主页面，LT/RT 切换当前页面横向 Tab；扳机不模拟滚动，同时按下两侧扳机不导航，释放并重新按下才产生新动作。Windows 原生负责 F8/RS，Flutter 不重复处理这两个切换入口。
+
+## 便携首次初始化
+
+原生层只从当前用户旧 Flutter 存储读取 `preferences.json`、`window-state-v1.txt`、`connection-token.dpapi` 中存在的文件，不导入 `client-id.dpapi`；首次允许只包含其中部分文件。Dart 先校验偏好结构，再把原文交回原生层；原生事务保持源句柄并核对同一字节，校验窗口状态与 DPAPI 密文后逐文件持久化及回读。完全没有可导入文件、偏好与 Dart 已校验原文不一致，或续作时来源集合、内容与事务记录不一致时拒绝，不以空值替换失败文件，也不删除旧源。
+
+初始化的 pending 记录绑定“全新”或“导入”选择及来源文件集合、大小、摘要。中断后只恢复同一选择和内容，已有目标或暂存文件必须匹配；完成标记写入成功后才开放普通存储操作。这是可核验的续作机制，不保证三个文件同时出现，也不自动清空失败现场。新设备身份在初始化之后独立生成；旧偏好或窗口状态不能代替服务端 profile 同步与耐久保存后的 ACK。
 
 ## 控制协议
 
@@ -22,10 +29,11 @@ ACK 为 `mystia-companion-v2:ok:<pid>:<creationTimeFileTimeU64>\n`，仅表示�
 
 ## 隔离验证
 
-`--control-port=` 与 `--isolation-id=` 必须成对使用，非生产端口对应独立测试数据子目录，不能传入真实游戏 PID 或凭据。
+`--control-port=` 与 `--isolation-id=` 必须成对使用，不能传入真实游戏 PID 或凭据。普通客户端将目标存储放入 AppData 的 `isolation/<标识>/`；两种模式都将旧 Flutter 导入来源限制在同样的隔离子目录。便携目标始终是实际程序目录旁的 `client-data/`，不会因测试 ID 改变，所以每个便携测试须复制完整包到独占目录，不能仅靠换端口隔离目标。正式入口没有任意导入根覆盖参数。
 
 - `flutter test`：持久化同步边界、历史导入校验与手柄状态机。
 - `node packages/companion_platform/test/run-focus-transition.mjs`：锁定 Windows 工具链的纯原生时序回归，覆盖接受后延迟激活、拒绝、取消、目标退出与超时，不启动窗口或游戏。
+- `node tests/windows-portable-storage/run.mjs`：使用锁定 MSVC 编译生产存储实现，以仓库内合成目录测试完整清单、混装/链接/不可写拒绝、首次初始化、三文件导入、真实 DPAPI 损坏保留、故障恢复及目录移动。公共目录仅作只读拒绝探测，不读取真实旧偏好或凭据；它不替代最终 Flutter 程序启动验证。
 - `test/native_smoke_main.dart` 和 `test/Invoke-NativeSmoke.ps1`：单独编译测试入口，验证真实 DPAPI、损坏保留、窗口、单例、身份握手和实际退出；增加首次启动不完整参数拒绝、控制帧拒绝不改变旧值、完整凭据对原子替换与显式空Token。所有凭据为合成值，不创建业务HTTP连接；仅允许仓库 temp 内的测试 EXE。
 - `test/Measure-OfflineClient.ps1`：最终 Release 的隔离离线窗口采样，默认 60 分钟。通过同 PID 的精确 Flutter 主窗类与 v2 show 测量受控显示时间，不把输入法辅助窗或 `Process.MainWindowHandle` 当作主窗；该时间不是自然启动、首帧或业务连接就绪。CPU/内存数据不等于游戏负载性能，也不提供旧客户端对照。
 - `test/Test-GameLifetime.ps1`：最终 Release 绑定本次自行创建的睡眠测试进程，检查该进程结束后客户端正常退出；不启动、不查找、不终止真实游戏。
@@ -34,3 +42,5 @@ ACK 为 `mystia-companion-v2:ok:<pid>:<creationTimeFileTimeU64>\n`，仅表示�
 - `tests/flutter-platform-control`：C# 回环 fake peer 与自建退出子进程，核对 LF、身份/路径、授权顺序、凭据隔离及 ACK 后实际进程退出。
 
 Android Keystore 真机故障恢复、硬件手柄、多显示器/DPI 和真实游戏焦点切换仍须在对应设备环境验证，不能由上述测试推导通过。
+
+便携清单、双 ZIP、打包事务、生产 Win32 和最终程序启动的分层验证集中在[验证指南](../../docs/validation-guide.md#独立-windows-客户端验证)。各测试只记录本次实际执行的项目；普通构建和平台 Dart 测试不隐含原生初始化或跨电脑凭据可用性。

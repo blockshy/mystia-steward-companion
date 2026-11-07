@@ -78,10 +78,19 @@ class SettingsUpdatesSection extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Section(
-          '成套更新',
+          '游戏电脑上的 Mod 更新',
           [
-            Fact('当前版本', state['currentVersion']),
-            Fact('最新版本', state['latestVersion']),
+            const Text(
+              '检查与下载针对当前连接的游戏电脑，安装会更新该电脑的完整 Mod 包及包内客户端。',
+              style: StewardText.caption,
+            ),
+            if (!model.localGameConnection)
+              const Text(
+                '安装须在游戏电脑上通过本机连接操作；此处不会更新当前设备的客户端。',
+                style: StewardText.caption,
+              ),
+            Fact('Mod 当前版本', state['currentVersion']),
+            Fact('Mod 最新版本', state['latestVersion']),
             Fact('更新状态', updateStateLabel(state)),
             if (label(state['installMessage'], '').isNotEmpty)
               Fact('安装进度', state['installMessage']),
@@ -109,7 +118,7 @@ class SettingsUpdatesSection extends StatelessWidget {
                 '退出游戏后安装',
                 onPressed:
                     model.canEdit &&
-                        model.desktop &&
+                        model.localGameConnection &&
                         enabled &&
                         !busy &&
                         state['staged'] == true
@@ -117,8 +126,8 @@ class SettingsUpdatesSection extends StatelessWidget {
                         if (await confirmCurrentAction(
                           context,
                           model,
-                          '安装更新',
-                          '独立更新程序会等待你保存并退出游戏，准备与等待期间可取消安装；开始替换后会校验整包并在失败时恢复备份。',
+                          '安装游戏电脑上的 Mod 更新',
+                          '更新游戏电脑的完整 Mod 包及包内客户端。独立更新程序会等待你保存并退出游戏，准备与等待期间可取消安装；开始替换后会校验整包并在失败时恢复备份。其他目录或设备上的客户端需分别更新。',
                         )) {
                           await model.mutate(
                             '/updates/install-on-exit',
@@ -139,7 +148,7 @@ class SettingsUpdatesSection extends StatelessWidget {
           titleContent: Row(
             children: [
               const Expanded(
-                child: Text('成套更新', style: StewardText.sectionTitle),
+                child: Text('游戏电脑上的 Mod 更新', style: StewardText.sectionTitle),
               ),
               const SizedBox(width: 8),
               StewardButton(
@@ -151,6 +160,30 @@ class SettingsUpdatesSection extends StatelessWidget {
             ],
           ),
         ),
+        // 独立客户端即使尚未连接或协议不兼容，也需要可用的升级说明和发布页入口。
+        // 固定项目地址不依赖宿主返回的更新状态，更不把宿主的“最新”当作本机版本结论。
+        Section('本机客户端更新', [
+          Text(
+            model.desktop
+                ? '独立 Windows 客户端需手动更新：退出托盘客户端，将完整 Windows 客户端 ZIP 解压到新目录；保留全部 DLL、data 和包内便携标记，并把原目录的 client-data 完整移入新目录后再启动。不要只替换或复制 EXE。'
+                : 'Android 客户端需另行安装同包名、原证书签名且版本号更高的 APK；游戏电脑的 Mod 更新不会替你安装手机上的客户端。',
+            style: StewardText.body,
+          ),
+          Text(
+            model.desktop
+                ? '独立包将资料保存在 EXE 同级 client-data；Mod 内置客户端仍使用 Windows 用户私有目录。client-data 中的加密凭据绑定原 Windows 用户环境，不能靠复制到另一台电脑恢复；另一台电脑应使用新的完整客户端目录，并重新连接。'
+                : '覆盖安装会沿用应用私有数据；不要通过卸载或清除应用数据进行更新。',
+            style: StewardText.caption,
+          ),
+          ToolRow([
+            StewardButton(
+              '客户端发布页',
+              onPressed: () => model.openReleasePage(
+                'https://github.com/blockshy/mystia-steward-companion/releases',
+              ),
+            ),
+          ]),
+        ]),
         CollapsibleSection('检查计划与安装包', [
           Fact(
             '自动检查',
@@ -181,12 +214,14 @@ class SettingsUpdatesSection extends StatelessWidget {
         Section('版本更新内容', [
           if (state['hasUpdate'] != true)
             Text(
-              state['state'] == 'current' ? '当前已经是最新版本。' : '发现新版本后显示更新说明。',
+              state['state'] == 'current'
+                  ? '游戏电脑上的 Mod 已是最新版本；本机客户端版本请另行核对。'
+                  : '发现 Mod 新版本后显示更新说明。',
               style: StewardText.body,
             )
           else if (state['releaseHistoryState'] != 'ready' ||
               releases.isEmpty) ...[
-            const Text('完整版本说明暂不可用，仍可下载和安装更新。', style: StewardText.body),
+            const Text('完整版本说明暂不可用，不影响游戏电脑的整包更新流程。', style: StewardText.body),
             if (label(state['releaseHistoryError'], '').isNotEmpty)
               Fact('说明读取详情', state['releaseHistoryError']),
           ] else

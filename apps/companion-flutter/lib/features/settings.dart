@@ -12,6 +12,7 @@ import 'profile_controls.dart';
 import 'settings_management.dart';
 import 'update_content.dart';
 import 'device_name_editor.dart';
+import 'settings_storage.dart';
 
 /// 设置将本机外观、共享业务配置和宿主管理明确分组，设备角色与操作限制持续可见。
 class SettingsPage extends StatefulWidget {
@@ -481,7 +482,13 @@ class _SettingsPageState extends State<SettingsPage>
                 .length ==
             1;
     return [
+      if (model.storageStatus?.needsInitialization == true ||
+          model.credentialUnavailable)
+        SettingsStorageSection(model),
       _connectionPanel(),
+      if (model.storageStatus?.needsInitialization != true &&
+          !model.credentialUnavailable)
+        SettingsStorageSection(model),
       Section('设备与共享配置', [
         DeviceNameEditor(model),
         const SizedBox(height: 8),

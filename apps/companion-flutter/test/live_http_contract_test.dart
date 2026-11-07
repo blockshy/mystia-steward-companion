@@ -26,6 +26,14 @@ class _IsolatedPlatformHost extends PlatformHostApi {
   @override
   Future<PlatformLaunch> initialize() async => launch;
   @override
+  Future<PlatformStorageStatus> readStorageStatus() async =>
+      PlatformStorageStatus(
+        mode: launch.desktop ? 'windows-embedded' : 'android-private',
+        location: 'synthetic/private',
+        needsInitialization: false,
+        canImportLegacy: false,
+      );
+  @override
   Future<void> applyWindowPreferences(WindowPreferences preferences) async {}
   @override
   Future<bool> performWindowAction(WindowAction action) async => true;

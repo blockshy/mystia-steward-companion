@@ -259,6 +259,64 @@ data class PlatformLaunch (
 }
 
 /**
+ * 本次运行已验证的存储位置。绝对路径仅供本机设置页展示，不得写入公共日志、
+ * 诊断包或业务协议。待初始化的便携目录尚未获准生成设备身份或写入偏好。
+ *
+ * Generated class from Pigeon that represents data sent in messages.
+ */
+data class PlatformStorageStatus (
+  val mode: String,
+  val location: String,
+  val needsInitialization: Boolean,
+  val canImportLegacy: Boolean,
+  val importUnavailableReason: String? = null
+)
+ {
+  companion object {
+    fun fromList(pigeonVar_list: List<Any?>): PlatformStorageStatus {
+      val mode = pigeonVar_list[0] as String
+      val location = pigeonVar_list[1] as String
+      val needsInitialization = pigeonVar_list[2] as Boolean
+      val canImportLegacy = pigeonVar_list[3] as Boolean
+      val importUnavailableReason = pigeonVar_list[4] as String?
+      return PlatformStorageStatus(mode, location, needsInitialization, canImportLegacy, importUnavailableReason)
+    }
+  }
+  fun toList(): List<Any?> {
+    return listOf(
+      mode,
+      location,
+      needsInitialization,
+      canImportLegacy,
+      importUnavailableReason,
+    )
+  }
+  override fun equals(other: Any?): Boolean {
+    if (other == null || other.javaClass != javaClass) {
+      return false
+    }
+    if (this === other) {
+      return true
+    }
+    val other = other as PlatformStorageStatus
+    return PlatformApiPigeonUtils.deepEquals(this.mode, other.mode) && PlatformApiPigeonUtils.deepEquals(this.location, other.location) && PlatformApiPigeonUtils.deepEquals(this.needsInitialization, other.needsInitialization) && PlatformApiPigeonUtils.deepEquals(this.canImportLegacy, other.canImportLegacy) && PlatformApiPigeonUtils.deepEquals(this.importUnavailableReason, other.importUnavailableReason)
+  }
+
+  override fun hashCode(): Int {
+    var result = javaClass.hashCode()
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.mode)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.location)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.needsInitialization)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.canImportLegacy)
+    result = 31 * result + PlatformApiPigeonUtils.deepHash(this.importUnavailableReason)
+    return result
+  }
+  override fun toString(): String {
+    return "PlatformStorageStatus(mode=$mode, location=$location, needsInitialization=$needsInitialization, canImportLegacy=$canImportLegacy, importUnavailableReason=$importUnavailableReason)"
+  }
+}
+
+/**
  * 窗口行为偏好；透明度由 Flutter 分层绘制，原生只提供透明表面。
  *
  * Generated class from Pigeon that represents data sent in messages.
@@ -407,10 +465,15 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
       }
       131.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
-          WindowPreferences.fromList(it)
+          PlatformStorageStatus.fromList(it)
         }
       }
       132.toByte() -> {
+        return (readValue(buffer) as? List<Any?>)?.let {
+          WindowPreferences.fromList(it)
+        }
+      }
+      133.toByte() -> {
         return (readValue(buffer) as? List<Any?>)?.let {
           PlatformInput.fromList(it)
         }
@@ -428,12 +491,16 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
         stream.write(130)
         writeValue(stream, value.toList())
       }
-      is WindowPreferences -> {
+      is PlatformStorageStatus -> {
         stream.write(131)
         writeValue(stream, value.toList())
       }
-      is PlatformInput -> {
+      is WindowPreferences -> {
         stream.write(132)
+        writeValue(stream, value.toList())
+      }
+      is PlatformInput -> {
+        stream.write(133)
         writeValue(stream, value.toList())
       }
       else -> super.writeValue(stream, value)
@@ -444,6 +511,21 @@ private open class PlatformApiPigeonCodec : StandardMessageCodec() {
 /** Generated interface from Pigeon that represents a handler of messages from Flutter. */
 interface PlatformHostApi {
   fun initialize(): PlatformLaunch
+  /** 查询固定的存储模式与首次使用状态；不创建身份、不从历史目录自动复制文件。 */
+  fun readStorageStatus(): PlatformStorageStatus
+  /**
+   * 只读固定旧 Flutter 目录的偏好原文，限便携目录首次导入预校验；null 表示无文件。
+   * 不返回凭据内容、不接受调用方指定路径，读取失败不能伪装成文件不存在。
+   */
+  fun readLegacyPreferences(): String?
+  /**
+   * 便携客户端首次使用的显式选择。true 仅导入旧 Flutter 偏好、窗口及连接凭据，
+   * 不读取或复制旧设备身份；导入后仍以新设备注册。
+   * false 确认使用新的空目录；原生层重新检查目标与一次性导入资格，失败不重建身份。
+   * expectedLegacyPreferences 是已由 Dart 验证的原字符串，原生在提交前严格比较
+   * 当前读取结果（包括 null），防止校验后的源文件变化被当作同一导入请求。
+   */
+  fun initializeStorage(importLegacy: Boolean, expectedLegacyPreferences: String?)
   fun applyWindowPreferences(preferences: WindowPreferences)
   /**
    * 返回原生端是否接受或处理请求；焦点切换可能异步完成，true 不代表目标已成为前台。
@@ -476,6 +558,55 @@ interface PlatformHostApi {
           channel.setMessageHandler { _, reply ->
             val wrapped: List<Any?> = try {
               listOf(api.initialize())
+            } catch (exception: Throwable) {
+              PlatformApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.readStorageStatus$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              listOf(api.readStorageStatus())
+            } catch (exception: Throwable) {
+              PlatformApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.readLegacyPreferences$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { _, reply ->
+            val wrapped: List<Any?> = try {
+              listOf(api.readLegacyPreferences())
+            } catch (exception: Throwable) {
+              PlatformApiPigeonUtils.wrapError(exception)
+            }
+            reply.reply(wrapped)
+          }
+        } else {
+          channel.setMessageHandler(null)
+        }
+      }
+      run {
+        val channel = BasicMessageChannel<Any?>(binaryMessenger, "dev.flutter.pigeon.companion_platform.PlatformHostApi.initializeStorage$separatedMessageChannelSuffix", codec)
+        if (api != null) {
+          channel.setMessageHandler { message, reply ->
+            val args = message as List<Any?>
+            val importLegacyArg = args[0] as Boolean
+            val expectedLegacyPreferencesArg = args[1] as String?
+            val wrapped: List<Any?> = try {
+              api.initializeStorage(importLegacyArg, expectedLegacyPreferencesArg)
+              listOf(null)
             } catch (exception: Throwable) {
               PlatformApiPigeonUtils.wrapError(exception)
             }

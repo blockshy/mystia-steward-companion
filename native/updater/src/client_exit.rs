@@ -205,35 +205,41 @@ pub fn assert_unlocked(root: &Path) -> Result<(), String> {
         {
             continue;
         }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            use windows_sys::Win32::{
-                Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE},
-                Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING},
-            };
-            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            // shareMode=0，验证冲突句柄；失败保留旧安装，不重试强行覆盖。
-            unsafe {
-                let handle = CreateFileW(
-                    wide.as_ptr(),
-                    GENERIC_READ,
-                    0,
-                    std::ptr::null(),
-                    OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL,
-                    std::ptr::null_mut(),
-                );
-                if handle == INVALID_HANDLE_VALUE {
-                    return Err(format!("client payload still locked: {name}"));
-                }
-                CloseHandle(handle);
+        assert_file_unlocked(&path).map_err(|error| format!("{name}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// 离线入口也检查游戏根 EXE；只打开显式文件，不递归遍历或锁定整套游戏资源。
+pub fn assert_file_unlocked(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GENERIC_READ, INVALID_HANDLE_VALUE},
+            Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING},
+        };
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // shareMode=0，验证冲突句柄；失败保留旧安装，不重试强行覆盖。
+        unsafe {
+            let handle = CreateFileW(
+                wide.as_ptr(),
+                GENERIC_READ,
+                0,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                std::ptr::null_mut(),
+            );
+            if handle == INVALID_HANDLE_VALUE {
+                return Err("program payload is still locked".into());
             }
+            CloseHandle(handle);
         }
-        #[cfg(not(windows))]
-        {
-            let _ = path;
-        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
     }
     Ok(())
 }

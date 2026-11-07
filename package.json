@@ -30,7 +30,7 @@
     "audit:release-package": "pwsh -NoProfile -File tests/csharp-business-package/package-transaction.ps1 && pwsh -NoProfile -File tests/csharp-business-package/install-transaction.ps1",
     "audit:android-apk-transaction": "node tests/build-artifacts/android-apk-transaction-audit.mjs && node tests/build-artifacts/android-signing-material-audit.mjs",
     "audit:windows-runtime": "node tests/build-artifacts/windows-runtime-audit.mjs",
-    "audit:release-policy": "node tests/update-catalog/update-catalog-audit.mjs && node tests/build-artifacts/release-script-policy-audit.mjs && pwsh -NoLogo -NoProfile -File tests/build-artifacts/release-powershell-runtime-audit.ps1 && node tests/github-actions/release-workflow-audit.mjs && node tests/flutter-release/release-policy-audit.mjs",
+    "audit:release-policy": "node tests/update-catalog/update-catalog-audit.mjs && node tests/build-artifacts/release-script-policy-audit.mjs && node tests/build-artifacts/portable-package-audit.mjs && pwsh -NoLogo -NoProfile -File tests/build-artifacts/portable-package-zip-audit.ps1 && pwsh -NoLogo -NoProfile -File tests/build-artifacts/release-powershell-runtime-audit.ps1 && node tests/github-actions/release-workflow-audit.mjs && node tests/flutter-release/release-policy-audit.mjs",
     "audit:github-actions": "node tests/github-actions/release-workflow-audit.mjs",
     "audit:toolchain": "node tests/build-toolchain/build-toolchain-policy-audit.mjs",
     "references:restore": "node scripts/restore-build-references.mjs",

@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart' show ImageProvider;
+import 'package:companion_platform/companion_platform.dart'
+    show PlatformStorageStatus;
 import 'package:flutter/widgets.dart' show Brightness, WidgetsBinding;
 import 'package:companion_protocol/companion_protocol.dart'
     show CompanionProfile;
 import 'package:companion_client/companion_client.dart'
-    show projectLiveServiceOrders;
+    show projectLiveServiceOrders, validateEndpoint;
 
 /// 页面只消费服务端投影；该别名不赋予页面解析租约或自行执行订单的权力。
 typedef DataMap = Map<String, Object?>;
@@ -194,6 +196,14 @@ abstract class WorkbenchModel extends ChangeNotifier {
   bool get recommendationLoading => false;
   String get recommendationError => '';
   DataMap get localPreferences;
+
+  /// 本机路径只用于设置页展示，不属于可同步偏好、诊断或游戏 API 数据。
+  PlatformStorageStatus? get storageStatus => null;
+  bool get credentialUnavailable => false;
+  Future<void> initializeStorage({required bool importLegacy}) async {
+    throw UnsupportedError('当前模型不支持首次存储初始化。');
+  }
+
   Map<String, DataMap> get resources;
 
   /// 收藏已读取的空集合与尚未确认的状态不同。生产实现另外绑定连接/写入代次；
@@ -251,6 +261,18 @@ abstract class WorkbenchModel extends ChangeNotifier {
   String get clientLabel;
   String get inputAction;
   int get inputSequence;
+
+  /// 本机限定操作的界面门禁，与客户端会话使用同一地址校验规则。
+  /// 主设备可能位于另一台电脑，不能由主设备身份推断本机安装资格；
+  /// 这里不授予执行权限，生产写入仍须通过会话和服务端的本机检查。
+  bool get localGameConnection {
+    if (!desktop || !connected) return false;
+    try {
+      return validateEndpoint(endpoint).host.split('.').first == '127';
+    } on FormatException {
+      return false;
+    }
+  }
 
   /// 当前连接替换代次，只用于使用户确认失效，不能作为服务端身份。
   int get connectionVersion => 0;

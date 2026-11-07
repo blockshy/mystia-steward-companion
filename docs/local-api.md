@@ -1,6 +1,6 @@
 # 本地 API
 
-更新日期：2026-11-06
+更新日期：2026-11-07
 
 本文档只定义游戏进程内本地 HTTP API 的监听、鉴权、设备权威、方法矩阵、请求生命周期和传输边界。运行时数据含义见 [运行时 Provider](runtime-provider.md)，订单身份见 [运行时订单生命周期](runtime-order-lifecycle.md)，自动化状态机见 [自动化运行时](automation-runtime.md)。
 
@@ -98,6 +98,8 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 | 收藏 | `/favorites/add-recipe`、`/favorites/remove-recipe`、`/favorites/add-beverage`、`/favorites/remove-beverage` |
 | 自定义料理 | `/custom-recipes/upsert`、`/custom-recipes/remove`、`/custom-recipes/settings`、`/custom-recipes/update-flags`、`/custom-recipes/move` |
 
+`/updates/install-on-exit` 在主设备及权威修订检查之外还要求真实 TCP 对端为回环地址；LAN 主设备返回 403，不启动更新器、不改写安装状态。`Forwarded`、`X-Forwarded-For` 等 Header 不能改变来源判断。LAN 主设备仍可请求 `/updates/download`，实际下载与状态均位于游戏电脑，并不会更新发起请求的独立客户端。
+
 设备权威、业务意图、人工确认 `/automation/barriers/ack`、本机连接配置与诊断包删除 POST 使用有界 JSON body 和 exact property set。租约获取/释放只读取身份及权威请求头，游戏资源重读不携带业务参数；其余端点有参数时按下文定义使用 URL query。新增协议不能同时保留 query、JSON 或别名多套写法。
 
 ### 游戏内专注显示设置
@@ -111,6 +113,8 @@ Token 只证明能访问 Mod；它不代表设备是主设备，也不代表持�
 `GET /local-api/config` 的 `availableLanEndpoints` 列出当前可选的实际网卡，`lanEndpoints` 描述当前监听地址；关闭LAN也可读取候选。`POST /local-api/config` 使用JSON `{lanEnabled?, lanHost?, token?}`，显式host必须仍在实际可选列表内，`auto`监听当前符合条件的全部私网网卡。自定义Token为8–128位非空白可见ASCII字符，省略表示保留，空值拒绝。所有字段先验证再应用，返回当前完整配置；旧随机重置路由移除。
 
 本机管理仍要求回环、已注册主设备及精确Authority-Revision。当前客户端只在明确成功回执后用新凭据接续原设备身份，并保存至本机安全存储；迟到的旧连接请求或已替换的启动凭据不能恢复旧Token。失败或结果未知不自动重放修改请求。
+
+Mod 的监听配置与 API Token 存于 `BepInEx/config/MystiaStewardCompanion/com.tyukki.mystia-steward-companion.cfg`。目录布局迁移保留原 Token，不因配置路径改变主动轮换凭据。Windows 同机启动由 Mod 传入地址与 Token；Flutter 不扫描旧 `.cfg`，Android 也不直接读取游戏电脑文件。客户端自己的连接副本与设备身份继续使用 Windows DPAPI 或 Android Keystore 存储，不迁入 Mod 目录。
 
 ### 诊断包管理
 
@@ -201,6 +205,8 @@ Dart 的 `CompanionProfile.fromCheckpoint` 只负责本机历史 checkpoint 迁�
 - 设置主设备、同步、忘记设备等操作使用 `expectedAuthorityRevision` 做 CAS；冲突必须刷新后重试，不做 last-write-wins 合并。
 - “同步配置”是主设备整份 profile 覆盖目标非主设备，不合并字段；目标通过 sync ID、profile revision 和 hash 确认应用结果。
 - 损坏、未知未来 schema 或不完整 JSON fail-closed；持久化使用原子写入。收藏和自定义配方分别位于同一配置目录的 `favorites.json`、`custom-recipes.json`，不合并进设备 profile；自定义配方迁移边界见上文。
+
+从 v1.3.1 的 Tauri 客户端升级时，新 Flutter 身份不会自动继承旧主设备身份。已注册的新设备可显式请求“同步主配置”，从注册表中的旧主记录复制 profile；此操作不要求旧主在线。客户端先将所得配置耐久保存，再发送精确 ACK；确认完成后，用户才把在线的新设备设为主设备。切主仅选择目标自身已保存的 profile，不附带旧主到新主的配置复制，不应颠倒两步或清空注册表来规避迁移。设备管理请求仍受 Token、协议及各自 CAS 门禁约束，不意味着旧客户端在线协议被兼容。
 
 主设备或生效 profile 变化在同一 authority transition 锁内提交，并原子执行：
 

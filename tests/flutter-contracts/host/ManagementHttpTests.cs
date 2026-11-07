@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using BepInEx.Configuration;
@@ -46,7 +47,7 @@ internal static class ManagementHttpTests
             var packages = new DiagnosticPackageStore(Path.Combine(root, "packages"));
             VerifyPackages(root, packages, Check, Reject);
             VerifyHttp(root, packages, profile, log, Check);
-            Console.WriteLine($"PASS: management {checks} assertions (connection/password handoff, real HTTP authority, diagnostic ZIP scope and exact deletion).");
+            Console.WriteLine($"PASS: management {checks} assertions (connection/password handoff, HTTP authority and update origin, diagnostic ZIP scope and exact deletion).");
             return 0;
         }
         catch (Exception exception)
@@ -164,7 +165,7 @@ internal static class ManagementHttpTests
             LocalEndpoint = $"http://127.0.0.1:{port}", Port = port, Token = currentToken, LanBindHost = "auto",
             AvailableLanEndpoints = active?.AvailableLanEndpoints ?? Array.Empty<LocalApiLanEndpointDto>(),
         };
-        using var server = new LocalApiServer(false, "auto", port, "management-test", currentToken,
+        LocalApiServer CreateServer(bool lanEnabled) => new(lanEnabled, "auto", port, "management-test", currentToken,
             () => new LocalApiLogSettings
             {
                 AggregateModLogMaxFileCount = maxFiles,
@@ -177,6 +178,7 @@ internal static class ManagementHttpTests
             (_, _) => throw Forbidden(), (_, _, _, _) => throw Forbidden(), (_, _, _, _) => throw Forbidden(), update,
             new FavoriteStore(Path.Combine(root, "favorites.json"), log), new CustomRecipeStore(Path.Combine(root, "custom.json"), log),
             store, log, diagnosticPackages: packages);
+        using var server = CreateServer(false);
         active = server; server.Start();
         using var client = new HttpClient { BaseAddress = new Uri(server.BaseUrl), Timeout = TimeSpan.FromSeconds(10) };
         JsonElement Send(string path, object? body = null, string? token = null, string device = "management-primary-0001",
@@ -197,6 +199,10 @@ internal static class ManagementHttpTests
             platform = "windows", appVersion = "1.3.1", profile };
         Send("/devices/register", registration);
         Send("/devices/register", registration, device: "management-observer-0002");
+        // 第二实例只构造策略，不调用 Start，因此不会开放真实 LAN 监听。
+        // 合成来源复用已注册权威及关闭的更新服务，既验证 HTTP 路由又禁止启动更新进程。
+        using var originServer = CreateServer(true);
+        VerifyUpdateRequestOrigin(originServer, Path.Combine(root, "updates", "update-state.json"), currentToken, check);
         var config = Send("/local-api/config");
         check(config.GetProperty("availableLanEndpoints").ValueKind == JsonValueKind.Array
             && config.GetProperty("lanEndpoints").GetArrayLength() == 0, "LAN 关闭时缺少独立可选地址列表。");
@@ -224,12 +230,34 @@ internal static class ManagementHttpTests
         check(maxFiles == 30, "日志数量 30 未应用。");
         // 直接经过生产 HTTP 导出链，证明无需初始化全局 Paths.ConfigPath，
         // 返回目录、实际 ZIP 与后续列举删除始终属于同一个临时存储实例。
+        // 统一数据目录后，配置和迁移备份与诊断包共享父目录。用合成敏感内容验证
+        // 导出仍按条目白名单构建，不能通过递归压缩父目录意外收集配置或历史原件。
+        const string privateMarker = "synthetic-config-must-not-enter-diagnostics";
+        File.WriteAllText(Path.Combine(root, "com.tyukki.mystia-steward-companion.cfg"),
+            "[LocalApi]\nToken = " + privateMarker, Encoding.UTF8);
+        var migrationBackup = Path.Combine(root, "migration-backups", "synthetic-batch");
+        Directory.CreateDirectory(migrationBackup);
+        File.WriteAllText(Path.Combine(migrationBackup, "original.cfg"), privateMarker, Encoding.UTF8);
         var exported = Send("/logs/export-diagnostics?open=false", new { });
         check(exported.GetProperty("ok").GetBoolean(), "注入目录中的真实诊断导出失败。");
         var path = exported.GetProperty("path").GetString()!;
         check(exported.GetProperty("directory").GetString() == packages.DirectoryPath
             && Path.GetDirectoryName(path) == packages.DirectoryPath && File.Exists(path),
             "导出回执目录与实际注入存储不一致。");
+        using (var archive = ZipFile.OpenRead(path))
+        {
+            check(archive.GetEntry("snapshot/current-snapshot.json") != null,
+                "诊断导出缺少快照，不能用空归档通过隔离检查。");
+            foreach (var entry in archive.Entries)
+            {
+                check(!entry.FullName.EndsWith(".cfg", StringComparison.OrdinalIgnoreCase)
+                    && !entry.FullName.StartsWith("migration-backups/", StringComparison.OrdinalIgnoreCase),
+                    "诊断导出包含同目录配置或迁移备份。");
+                using var reader = new StreamReader(entry.Open(), Encoding.UTF8);
+                check(!reader.ReadToEnd().Contains(privateMarker, StringComparison.Ordinal),
+                    "诊断导出收集了配置或备份中的合成敏感内容。");
+            }
+        }
         Send("/logs/packages", token: "wrong-password", expected: HttpStatusCode.Unauthorized);
         var listed = Send("/logs/packages", device: "management-observer-0002");
         var id = listed.GetProperty("items")[0].GetProperty("id").GetString()!;
@@ -240,6 +268,78 @@ internal static class ManagementHttpTests
         check(!bad.GetProperty("ok").GetBoolean() && File.Exists(path), "任意路径删除未拒绝。");
         check(Send("/logs/packages/delete", new { id }).GetProperty("ok").GetBoolean() && !File.Exists(path), "主设备精确删除未成功。");
         check(!Send("/logs/packages/delete", new { id }).GetProperty("ok").GetBoolean(), "重复删除伪报成功。");
+    }
+
+    /// <summary>
+    /// 真实回环 socket 承载 HTTP 请求，只有传输层对端由合成值替代；生产入口始终读取 Socket.RemoteEndPoint。
+    /// 不使用请求 Header 伪造测试来源，也不打开真正 LAN 监听。关闭的更新服务会在被调用时写状态，
+    /// 因而可证明被拒绝的安装请求没有进入服务；本测试不证明真实安装或网络防火墙行为。
+    /// </summary>
+    private static void VerifyUpdateRequestOrigin(LocalApiServer server, string statePath, string token,
+        Action<bool, string> check)
+    {
+        var handler = typeof(LocalApiServer).GetMethod("HandleClientCore", BindingFlags.Instance | BindingFlags.NonPublic,
+            null, new[] { typeof(TcpClient), typeof(IPEndPoint), typeof(bool) }, null)
+            ?? throw new InvalidOperationException("缺少 HTTP 传输处理入口。");
+        var productionHandler = typeof(LocalApiServer).GetMethod("HandleClient", BindingFlags.Instance | BindingFlags.NonPublic,
+            null, new[] { typeof(TcpClient) }, null)
+            ?? throw new InvalidOperationException("缺少 HTTP socket 处理入口。");
+        using (var closed = new TcpClient())
+        {
+            // 已关闭连接模拟关闭过程中的确定失败边界，生产入口不能在 try 之外读取 socket 而逃逸。
+            closed.Dispose();
+            productionHandler.Invoke(server, new object[] { closed });
+            check(true, "关闭连接的异常没有被生产请求边界吸收。");
+        }
+        (HttpStatusCode Code, JsonElement Body) Send(IPAddress origin, string route, string forwardedFor,
+            string device = "management-primary-0001")
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                using var client = new TcpClient();
+                client.Connect(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port);
+                using var accepted = listener.AcceptTcpClient();
+                listener.Stop();
+                var handling = Task.Run(() => handler.Invoke(server, new object[] { accepted, new IPEndPoint(origin, 43210), true }));
+                client.ReceiveTimeout = 5000;
+                using var stream = client.GetStream();
+                var request = $"POST {route} HTTP/1.1\r\nHost: localhost\r\n"
+                    + $"X-Mystia-Steward-Companion-Token: {token}\r\n"
+                    + $"X-Mystia-Steward-Companion-Client-Id: {device}\r\n"
+                    + "X-Mystia-Steward-Companion-Client-Label: Synthetic\r\n"
+                    + "X-Mystia-Steward-Companion-Authority-Revision: 1\r\n"
+                    + $"X-Forwarded-For: {forwardedFor}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{{}}";
+                stream.Write(Encoding.UTF8.GetBytes(request));
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                var response = reader.ReadToEnd();
+                handling.GetAwaiter().GetResult();
+                var status = (HttpStatusCode)int.Parse(response.Split(' ', 3)[1]);
+                var bodyOffset = response.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+                using var body = JsonDocument.Parse(response[(bodyOffset + 4)..]);
+                return (status, body.RootElement.Clone());
+            }
+            finally { listener.Stop(); }
+        }
+
+        var lan = IPAddress.Parse("192.168.8.25");
+        var denied = Send(lan, "/updates/install-on-exit", "127.0.0.1");
+        check(denied.Code == HttpStatusCode.Forbidden, "LAN 主设备借自报回环 Header 绕过安装来源检查。");
+        check(!File.Exists(statePath), "拒绝 LAN 安装后仍调用更新服务并写入状态。");
+        var download = Send(lan, "/updates/download", "127.0.0.1");
+        check(download.Code == HttpStatusCode.OK && !download.Body.GetProperty("ok").GetBoolean()
+            && download.Body.GetProperty("error").GetString() == "自动更新已关闭。",
+            "LAN 主设备下载未到达既有更新服务门禁。");
+        check(File.Exists(statePath), "下载用例未真正进入关闭的更新服务。");
+        var previous = File.ReadAllBytes(statePath);
+        check(Send(lan, "/updates/install-on-exit", "127.0.0.1").Code == HttpStatusCode.Forbidden
+            && previous.SequenceEqual(File.ReadAllBytes(statePath)), "拒绝 LAN 安装修改了既有更新状态。");
+        var local = Send(IPAddress.Loopback, "/updates/install-on-exit", "192.168.8.25");
+        check(local.Code == HttpStatusCode.OK && local.Body.GetProperty("error").GetString() == "自动更新已关闭。",
+            "本机安装被请求 Header 误判为 LAN 或绕过服务门禁。");
+        check(Send(lan, "/updates/download", "127.0.0.1", "management-observer-0002").Code == HttpStatusCode.Forbidden,
+            "LAN 查看设备绕过主设备下载权限。");
     }
 
     private static Exception Forbidden() => new InvalidOperationException("隔离管理测试禁止游戏、更新或外部进程操作。");

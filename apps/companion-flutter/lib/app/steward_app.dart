@@ -174,6 +174,7 @@ class _WorkbenchShellState extends State<WorkbenchShell>
   int index = 1;
   int inputSequence = 0;
   bool restoredPage = false;
+  bool _storageRecoveryShown = false;
   bool serviceFocusActive = false;
   bool pageSwitchPending = false;
   String? requestedSettingsTab;
@@ -231,6 +232,23 @@ class _WorkbenchShellState extends State<WorkbenchShell>
 
   void _handleInput() {
     if (_resourcesBlocked) return;
+    if (!_storageRecoveryShown &&
+        (widget.model.storageStatus?.needsInitialization == true ||
+            widget.model.credentialUnavailable)) {
+      _storageRecoveryShown = true;
+      restoredPage = true;
+      // 首次存储选择不依赖连接，也不能通过普通切页路径先写 lastPage。
+      // 同时消费旧页恢复，防止稍后的 lastPage 回调覆盖恢复页。仅引导一次，
+      // 随后仍允许用户离线查看帮助和客户端发布页。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        setState(() {
+          index = 4;
+          requestedSettingsTab = 'connection';
+          settingsNavigationRevision++;
+        });
+      });
+    }
     if (!restoredPage && widget.model.localPreferences['lastPage'] is int) {
       restoredPage = true;
       final saved = widget.model.localPreferences['lastPage'] as int;

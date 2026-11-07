@@ -35,7 +35,9 @@ internal sealed class UpdateService : IDisposable
     private const string RequiredPluginDll = "MystiaStewardCompanion.BepInEx.dll";
     private const string RequiredWindowsCompanion = "companion/mystia-steward-companion.exe";
     private const string RequiredWindowsUpdater = "mystia-steward-companion-updater.exe";
-    private const int SupportedManifestSchemaVersion = 1;
+    // 远端发现清单从首个 Flutter Release 起使用 schema 2，阻止仅支持 schema 1 的公开旧版进入新包下载。
+    // catalog、包内 package-manifest 和发布工件元数据各有独立版本，不能随此常量一并递增。
+    private const int SupportedManifestSchemaVersion = 2;
     private const int SupportedCatalogSchemaVersion = 1;
     private const int MaximumCatalogReleaseCount = 256;
     private const int MaximumReleaseTitleBytes = 512;
@@ -75,6 +77,7 @@ internal sealed class UpdateService : IDisposable
     private readonly Func<CancellationToken, UpdateCandidate> _fetchUpdateCandidate;
     private readonly Func<UpdateManifest, CancellationToken, UpdateCatalog> _fetchReleaseCatalog;
     private readonly Action<string, string, long, CancellationToken> _downloadFile;
+    private readonly Func<int, bool> _isUpdaterProcessRunning;
     private UpdateState _state;
     private Thread? _schedulerThread;
     private int _activeOperationCount;
@@ -95,7 +98,8 @@ internal sealed class UpdateService : IDisposable
         Func<TimeSpan, CancellationToken, bool>? waitForScheduler = null,
         Action<string, string, long, CancellationToken>? downloadFile = null,
         TimeSpan? shutdownTimeout = null,
-        Func<UpdateManifest, CancellationToken, UpdateCatalog>? fetchReleaseCatalog = null)
+        Func<UpdateManifest, CancellationToken, UpdateCatalog>? fetchReleaseCatalog = null,
+        Func<int, bool>? isUpdaterProcessRunning = null)
     {
         _settings = settings;
         _log = log;
@@ -109,6 +113,8 @@ internal sealed class UpdateService : IDisposable
         _fetchUpdateCandidate = fetchUpdateCandidate ?? FetchUpdateCandidate;
         _fetchReleaseCatalog = fetchReleaseCatalog ?? FetchReleaseCatalog;
         _downloadFile = downloadFile ?? DownloadFile;
+        // 与网络和时钟替身一致，隔离测试可提供进程存活结果；生产入口始终使用实际 PID 检查。
+        _isUpdaterProcessRunning = isUpdaterProcessRunning ?? IsUpdaterProcessRunning;
         _state = LoadState();
         RefreshInstallStatus();
         RecoverStartupState();
@@ -245,6 +251,8 @@ internal sealed class UpdateService : IDisposable
             var candidate = _fetchUpdateCandidate(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var manifest = candidate.Manifest;
+            // 网络读取器已经校验，但此处仍在接受候选的唯一边界复核，避免替换数据源绕过版本门禁。
+            ValidateManifest(manifest);
             var hasUpdate = CompareVersion(manifest.Version, MystiaStewardCompanionPlugin.PluginVersion) > 0;
             var releaseHistory = ResolveReleaseHistory(
                 manifest,
@@ -263,6 +271,7 @@ internal sealed class UpdateService : IDisposable
                     consecutiveFailures: 0,
                     checkIntervalHours: _settings.CheckIntervalHours);
                 _state.LatestVersion = manifest.Version;
+                _state.ManifestSchemaVersion = manifest.SchemaVersion;
                 _state.LatestTag = manifest.Tag;
                 _state.ReleaseUrl = string.IsNullOrWhiteSpace(manifest.ReleaseUrl) ? candidate.ReleaseUrl : manifest.ReleaseUrl;
                 _state.PublishedAtUtc = ParseDateOrNull(manifest.PublishedAtUtc) ?? candidate.PublishedAtUtc;
@@ -412,6 +421,8 @@ internal sealed class UpdateService : IDisposable
             {
                 _state.State = "downloaded";
                 _state.DownloadedVersion = snapshot.LatestVersion;
+                // 暂存包保持其下载时的独立来源标记；后续检查另一版本不能替旧暂存包补发验证身份。
+                _state.DownloadedManifestSchemaVersion = snapshot.ManifestSchemaVersion;
                 _state.DownloadedAtUtc = DateTime.UtcNow;
                 _state.StagedDirectory = stagedPluginDirectory;
                 _state.Error = null;
@@ -486,6 +497,11 @@ internal sealed class UpdateService : IDisposable
             }
 
             snapshot = _state.Clone();
+        }
+
+        if (snapshot.DownloadedManifestSchemaVersion != SupportedManifestSchemaVersion)
+        {
+            return ErrorStatus("暂存更新缺少受支持的清单来源，请重新检查并下载更新；原暂存文件已保留。");
         }
 
         if (string.IsNullOrWhiteSpace(snapshot.StagedDirectory) || !Directory.Exists(snapshot.StagedDirectory))
@@ -564,7 +580,7 @@ internal sealed class UpdateService : IDisposable
         {
             lock (_lock)
             {
-                if (startedProcessId > 0 && IsUpdaterProcessRunning(startedProcessId))
+                if (startedProcessId > 0 && _isUpdaterProcessRunning(startedProcessId))
                 {
                     _state.InstallState = "waiting";
                     _state.InstallMessage = "更新程序已启动，但 Mod 无法保存完整安装状态。请在更新窗口中完成或取消安装。";
@@ -1575,7 +1591,17 @@ internal sealed class UpdateService : IDisposable
             if (!File.Exists(_statePath)) return new UpdateState();
             var state = JsonSerializer.Deserialize<UpdateState>(File.ReadAllText(_statePath), JsonOptions)
                 ?? new UpdateState();
+            var invalidated = NormalizeLoadedManifestState(state);
             NormalizeLoadedReleaseHistory(state);
+            if (invalidated)
+            {
+                try { AtomicFile.WriteAllText(_statePath, JsonSerializer.Serialize(state, JsonOptions)); }
+                catch (Exception ex)
+                {
+                    // 即使缓存无法回写，本进程仍使用已经失效的内存状态；不会重新信任磁盘旧候选。
+                    _log.LogWarning($"Persist invalidated update cache failed: {ex.Message}");
+                }
+            }
             return state;
         }
         catch (Exception ex)
@@ -1583,6 +1609,55 @@ internal sealed class UpdateService : IDisposable
             _log.LogWarning($"Read update state failed: {ex.Message}");
             return new UpdateState();
         }
+    }
+
+    /// <summary>
+    /// 缺少真实 schema 标记、旧 schema 或未知未来 schema 的缓存都不能作为下载/安装授权。
+    /// 只撤销更新状态引用，不删除既有 ZIP、暂存树、备份或安装结果；旧进程状态仍用于避免并发覆盖。
+    /// </summary>
+    private bool NormalizeLoadedManifestState(UpdateState state)
+    {
+        var invalidated = false;
+        if (state.ManifestSchemaVersion != SupportedManifestSchemaVersion)
+        {
+            invalidated = !string.IsNullOrWhiteSpace(state.LatestVersion)
+                || !string.IsNullOrWhiteSpace(state.PackageDownloadUrl) || state.LastSuccessAtUtc != null;
+            state.ManifestSchemaVersion = 0;
+            state.LatestVersion = "";
+            state.LatestTag = "";
+            state.ReleaseUrl = "";
+            state.PublishedAtUtc = null;
+            state.PackageAsset = "";
+            state.PackageSha256 = "";
+            state.PackageSize = 0;
+            state.PackageDownloadUrl = "";
+            state.CatalogAsset = "";
+            state.CatalogSha256 = "";
+            state.CatalogSize = 0;
+            state.ReleaseHistoryState = "not-required";
+            state.ReleaseHistoryTag = "";
+            state.ReleaseHistoryCheckedAtUtc = null;
+            state.ReleaseHistoryError = null;
+            state.ReleaseCatalog = null;
+            state.LastSuccessAtUtc = null;
+        }
+        if (state.DownloadedManifestSchemaVersion != SupportedManifestSchemaVersion)
+        {
+            invalidated |= !string.IsNullOrWhiteSpace(state.DownloadedVersion) || !string.IsNullOrWhiteSpace(state.StagedDirectory);
+            state.DownloadedManifestSchemaVersion = 0;
+            state.DownloadedVersion = "";
+            state.DownloadedAtUtc = null;
+            state.StagedDirectory = "";
+        }
+        if (invalidated)
+        {
+            state.State = HasInstallableStagedUpdate(state) ? "downloaded" : HasAvailableUpdate(state) ? "available" : "idle";
+            state.NextCheckAtUtc = _utcNow().ToUniversalTime();
+            state.ConsecutiveFailures = 0;
+            state.Error = null;
+            _log.LogInfo("Unsupported or unmarked update cache was invalidated; a fresh manifest check is required. Existing staged files were retained.");
+        }
+        return invalidated;
     }
 
     private void NormalizeLoadedReleaseHistory(UpdateState state)
@@ -1743,7 +1818,7 @@ internal sealed class UpdateService : IDisposable
                     ? "安装已取消，可重新打开安装程序。"
                     : status.Message;
             }
-            else if (IsInstallInProgress(status.State) && !IsUpdaterProcessRunning(_state.InstallProcessId))
+            else if (IsInstallInProgress(status.State) && !_isUpdaterProcessRunning(_state.InstallProcessId))
             {
                 _state.InstallState = "failed";
                 _state.InstallMessage = "更新程序已退出但安装未完成，请重新打开安装程序。";
@@ -1778,6 +1853,7 @@ internal sealed class UpdateService : IDisposable
 
     private static bool IsInstallInProgress(string state)
     {
+        // 回滚仍会移动安装目录和备份；只有 updater 结束后才能允许下载覆盖暂存区或再次启动安装。
         return state is
             "waiting" or
             "preparing" or
@@ -1787,7 +1863,8 @@ internal sealed class UpdateService : IDisposable
             "game-closed" or
             "backing-up" or
             "installing" or
-            "verifying";
+            "verifying" or
+            "rolling-back";
     }
 
     private static bool IsUpdaterProcessRunning(int processId)
@@ -1962,7 +2039,8 @@ internal sealed class UpdateService : IDisposable
         }
         return new UpdateManifest
         {
-            SchemaVersion = SupportedManifestSchemaVersion,
+            // 重建只使用实际保存的来源标记；不能用当前支持版本把旧缓存“升级”为已验证的新清单。
+            SchemaVersion = state.ManifestSchemaVersion,
             Version = state.LatestVersion,
             Tag = state.LatestTag,
             Channel = parsedVersion?.IsPrerelease == true ? "preview" : "stable",
@@ -1979,20 +2057,22 @@ internal sealed class UpdateService : IDisposable
 
     private static bool HasInstallableStagedUpdate(UpdateState state)
     {
-        return CompareVersion(state.DownloadedVersion, MystiaStewardCompanionPlugin.PluginVersion) > 0
+        return state.DownloadedManifestSchemaVersion == SupportedManifestSchemaVersion
+            && CompareVersion(state.DownloadedVersion, MystiaStewardCompanionPlugin.PluginVersion) > 0
             && !string.IsNullOrWhiteSpace(state.StagedDirectory)
             && Directory.Exists(state.StagedDirectory);
     }
 
-    private static bool IsActiveInstall(UpdateState state)
+    private bool IsActiveInstall(UpdateState state)
     {
         return IsInstallInProgress(state.InstallState)
-            && IsUpdaterProcessRunning(state.InstallProcessId);
+            && _isUpdaterProcessRunning(state.InstallProcessId);
     }
 
     private static string ResolveUpdatesRoot()
     {
-        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "updates");
+        // 更新状态可能引用既有暂存路径；集中路径定义时保持此目录名及层级不变。
+        return new ModDataPaths(Paths.ConfigPath).UpdatesRoot;
     }
 
     private static string EnsureDirectorySeparator(string path)
@@ -2069,6 +2149,8 @@ internal sealed class UpdateStatus
 internal sealed class UpdateState
 {
     public string State { get; set; } = "idle";
+    /// <summary>最近一次已验证远端清单的真实 schema；缺失字段反序列化为 0，表示尚未建立来源。</summary>
+    public int ManifestSchemaVersion { get; set; }
     public DateTime? LastAttemptAtUtc { get; set; }
     public DateTime? LastSuccessAtUtc { get; set; }
     public DateTime? NextCheckAtUtc { get; set; }
@@ -2090,6 +2172,8 @@ internal sealed class UpdateState
     public string? ReleaseHistoryError { get; set; }
     public UpdateCatalog? ReleaseCatalog { get; set; }
     public string DownloadedVersion { get; set; } = "";
+    /// <summary>已下载暂存包所依据的 schema，与最近检查到的候选版本独立保存。</summary>
+    public int DownloadedManifestSchemaVersion { get; set; }
     public DateTime? DownloadedAtUtc { get; set; }
     public string StagedDirectory { get; set; } = "";
     public string InstallState { get; set; } = "";
@@ -2102,6 +2186,7 @@ internal sealed class UpdateState
         return new UpdateState
         {
             State = State,
+            ManifestSchemaVersion = ManifestSchemaVersion,
             LastAttemptAtUtc = LastAttemptAtUtc,
             LastSuccessAtUtc = LastSuccessAtUtc,
             NextCheckAtUtc = NextCheckAtUtc,
@@ -2123,6 +2208,7 @@ internal sealed class UpdateState
             ReleaseHistoryError = ReleaseHistoryError,
             ReleaseCatalog = ReleaseCatalog?.Clone(),
             DownloadedVersion = DownloadedVersion,
+            DownloadedManifestSchemaVersion = DownloadedManifestSchemaVersion,
             DownloadedAtUtc = DownloadedAtUtc,
             StagedDirectory = StagedDirectory,
             InstallState = InstallState,

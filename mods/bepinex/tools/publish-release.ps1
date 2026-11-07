@@ -987,6 +987,10 @@ function Assert-MystiaPreparedMetadata {
     )
 
     Assert-MystiaPreparedChecksums -DistRoot $AssetRoot -IncludeAndroid $IncludeAndroid
+    # 发布前及远端变更流程中的复验均检查同一载荷关系；外层 SHA256SUMS 不能替代分发结构验证。
+    Assert-MystiaWindowsPackagePair -ModPackageZip (Join-Path $AssetRoot $script:MystiaReleasePackageName) `
+        -StandaloneZip (Join-Path $AssetRoot $script:MystiaReleaseCompanionName) -RepositoryRoot $RepoRoot `
+        -ExpectedVersion $Version -ExpectedCommit $ExpectedTargetSha
 
     $ManifestPath = Resolve-MystiaRequiredFile `
         -Path (Join-Path $AssetRoot $script:MystiaReleaseManifestName) `
@@ -1030,7 +1034,7 @@ function Assert-MystiaPreparedMetadata {
         -Value $Catalog.generatedAtUtc `
         -Label "Update catalog generatedAtUtc"
 
-    if ($ManifestSchemaVersion -ne 1 -or
+    if ($ManifestSchemaVersion -ne $script:MystiaUpdateManifestSchemaVersion -or
         $Manifest.version -isnot [string] -or
         $Manifest.tag -isnot [string] -or
         $Manifest.channel -isnot [string] -or

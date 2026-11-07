@@ -1,6 +1,7 @@
 #requires -Version 7.0
 
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'windows-package-pair.ps1')
 
 $script:MystiaReleasePackageName = "mystia-steward-companion-bepinex.zip"
 $script:MystiaReleaseCompanionName = "mystia-steward-companion-companion-windows-x64.zip"
@@ -9,6 +10,9 @@ $script:MystiaReleaseAndroidNames = @(
     "mystia-steward-companion-android-armeabi-v7a.apk"
 )
 $script:MystiaReleaseManifestName = "update-manifest.json"
+# 仅远端更新发现清单使用 schema 2；首个及后续 Flutter 稳定版/预发布版共用此门禁。
+# 版本说明目录、包内完整清单及 release-metadata 的 schema 保持各自独立，不能批量替换。
+$script:MystiaUpdateManifestSchemaVersion = 2
 $script:MystiaReleaseCatalogName = "update-catalog.json"
 $script:MystiaReleaseChecksumsName = "SHA256SUMS.txt"
 $script:MystiaReleaseAssetContentTypes =

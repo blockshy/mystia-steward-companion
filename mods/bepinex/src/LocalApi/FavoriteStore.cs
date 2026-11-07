@@ -1,6 +1,7 @@
 using System.Text.Json;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.LocalApi;
 
@@ -25,7 +26,7 @@ internal sealed class FavoriteStore
 
     public static string ResolvePath()
     {
-        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "favorites.json");
+        return new ModDataPaths(Paths.ConfigPath).FavoritesPath;
     }
 
     public string GetJson()

@@ -21,6 +21,10 @@ class CompanionPlatformBridge final : public mystia_platform::PlatformHostApi {
   /// 有返回值表示消息已消费；nullopt 要求宿主继续交给 Flutter 和默认窗口过程。
   std::optional<LRESULT> HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
   mystia_platform::ErrorOr<mystia_platform::PlatformLaunch> Initialize() override;
+  mystia_platform::ErrorOr<mystia_platform::PlatformStorageStatus> ReadStorageStatus() override;
+  mystia_platform::ErrorOr<std::optional<std::string>> ReadLegacyPreferences() override;
+  std::optional<mystia_platform::FlutterError> InitializeStorage(bool import_legacy,
+      const std::string* expected_legacy_preferences) override;
   std::optional<mystia_platform::FlutterError> ApplyWindowPreferences(const mystia_platform::WindowPreferences&) override;
   mystia_platform::ErrorOr<bool> PerformWindowAction(const mystia_platform::WindowAction&) override;
   mystia_platform::ErrorOr<bool> OpenExternalUrl(const std::string&) override;

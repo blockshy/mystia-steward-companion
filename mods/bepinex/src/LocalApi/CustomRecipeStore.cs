@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text;
 using BepInEx;
 using BepInEx.Logging;
+using MystiaStewardCompanion.Core;
 
 namespace MystiaStewardCompanion.LocalApi;
 
@@ -24,7 +25,7 @@ internal sealed class CustomRecipeStore
 
     public static string ResolvePath()
     {
-        return Path.Combine(Paths.ConfigPath, "MystiaStewardCompanion", "custom-recipes.json");
+        return new ModDataPaths(Paths.ConfigPath).CustomRecipesPath;
     }
 
     public string GetJson()

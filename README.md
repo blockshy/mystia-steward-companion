@@ -34,6 +34,16 @@
 4. 按需启用扩展功能。自动化暂停时到 `经营 → 统计信息` 查看原因与待确认事项；详细任务过程在对应客人类型的“自动化状态”中查看。
 5. 另一台设备按[局域网连接步骤](mods/bepinex/README.md#另一台设备连接windows--android)填写游戏电脑地址和 Token；切换主设备前先同步共享配置。
 
+Mod 自有配置、共享数据、日志、诊断包、更新暂存与图片缓存统一放在 `BepInEx/config/MystiaStewardCompanion/`；程序仍位于插件目录，客户端的本机资料由各设备保存。备份和故障排查时，请按[配置与数据位置](mods/bepinex/README.md#配置与数据位置)区分这些目录。
+
+| 使用情形 | 入口与关键步骤 |
+| --- | --- |
+| 从公开版 v1.3.1 首次升级 | 按[手动升级步骤](mods/bepinex/README.md#从-v131-首次升级)删除旧插件目录并解压新版，保留整个 `BepInEx/config`。新版自动备份、迁移主配置，验证成功才删除旧位置的 CFG。已有旧主设备时，先同步其配置、等待保存确认，再切换主设备。 |
+| 后续 Flutter 版本升级 | 使用游戏电脑的[在线成套更新](mods/bepinex/README.md#后续-flutter-版本更新)；其他设备上的客户端分别更新。 |
+| 另一台 Windows 电脑使用 | 无需游戏或 BepInEx，下载完整独立客户端包，经局域网连接。专用便携入口使用 EXE 同级 `client-data/`；更新先备份并保留此目录。详见[独立客户端说明](docs/standalone-client.md)。 |
+
+确认升级与配置接管完成后，可按需[清理旧版残留](mods/bepinex/README.md#清理-v131-残留)，先预览再确认永久删除；这不是升级必经步骤。旧 WebView 资料不会自动完整迁移，选择删除前应先保存仍需保留的内容。
+
 首次运行从游戏本机读取图像，不随安装包分发游戏图片。缓存校验、等待目录、提取和失败统一在独立初始化界面显示。旧缓存缺少启动凭据时需进入存档确认一次；随后游戏版本、DLC、资源身份及缓存完整性检查通过，即可在主菜单复用。数据中的“资源管理”支持分类、搜索和主设备重新读取。
 
 Windows 使用窄侧栏；Android 使用底部六项导航。字号、主题和显示偏好按设备保存；主题支持跟随系统、浅色和深色，Windows 的背景与内容不透明度分别控制填充与前景。料理/酒水列表展示紧凑标签摘要，余项以“+N”表示，详情保留完整内容；刷新时已有有效信息保持显示，新方案未返回的字段使用占位。
@@ -60,7 +70,7 @@ Windows 与 Android 使用同一套手柄导航；提示仅在手柄操作时显
 
 | 读者 | 入口 |
 | --- | --- |
-| 用户 | [Mod 安装与使用说明](mods/bepinex/README.md)、客户端 `设置 → 帮助` |
+| 用户 | [Mod 安装与使用说明](mods/bepinex/README.md)、[独立 Windows 客户端](docs/standalone-client.md)、客户端 `设置 → 帮助` |
 | 开发者 | [开发环境、构建与打包](mods/bepinex/README.dev.md)、[专题索引](docs/README.md)、[开发约定](docs/development-conventions.md) |
 | UI 与平台开发 | [客户端 UI 规范](docs/companion-ui.md)、[Android 开发](docs/android-development.md) |
 | 运行时分析 | [IL2CPP / IDA 流程](docs/il2cpp-analysis-workflow.md)、[项目机制与约束](docs/repo-memory.md) |

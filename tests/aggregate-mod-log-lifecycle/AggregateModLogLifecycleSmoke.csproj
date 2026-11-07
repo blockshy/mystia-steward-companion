@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../../mods/bepinex/src/Core/ModDataPaths.cs" Link="ModDataPaths.cs" />
     <Compile Include="../../mods/bepinex/src/Save/AggregateModLogService.cs" Link="AggregateModLogService.cs" />
     <EmbeddedResource Include="../../mods/bepinex/src/Save/AggregateModLogService.cs" LogicalName="AggregateModLogService.cs" />
   </ItemGroup>

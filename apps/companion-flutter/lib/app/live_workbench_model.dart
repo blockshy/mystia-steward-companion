@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:companion_client/companion_client.dart';
 import 'package:companion_platform/companion_platform.dart';
@@ -32,6 +33,8 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   int _updateGeneration = 0;
   int _lastUpdateReadAt = -30000;
   bool _disposed = false, _desktop = false, _initialized = false;
+  PlatformStorageStatus? _storageStatus;
+  bool _credentialUnavailable = false;
   bool _pageQueryVisible = true;
   int _pending = 0, _epoch = 0, _resourceGeneration = 0;
   String _initializationError = '',
@@ -175,6 +178,10 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   @override
   DataMap get localPreferences => Map.unmodifiable(_local);
   @override
+  PlatformStorageStatus? get storageStatus => _storageStatus;
+  @override
+  bool get credentialUnavailable => _credentialUnavailable;
+  @override
   Map<String, DataMap> get resources => Map.unmodifiable({
     ..._resources,
     if (_updateStatus.isNotEmpty) '/updates/status': _updateStatus,
@@ -275,9 +282,15 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       if (_disposed) throw StateError('客户端已关闭。');
       _initialized = true;
       _initializationError = '';
+      _credentialUnavailable = false;
     } catch (cause) {
-      _initializationError =
-          '初始化失败（$phase）：${_safeError(cause)}。请在连接设置中点击“${canEditConnection ? '保存并连接' : '重试连接'}”重试。';
+      if (cause is PlatformException &&
+          cause.code == 'credential-unavailable') {
+        _credentialUnavailable = true;
+      }
+      _initializationError = _storageStatus?.needsInitialization == true
+          ? '请先在“本机数据存储”中选择导入旧 Flutter 数据或作为新设备开始。'
+          : '初始化失败（$phase）：${_safeError(cause)}。请在连接设置中点击“${canEditConnection ? '保存并连接' : '重试连接'}”重试。';
       rethrow;
     }
   }
@@ -300,6 +313,24 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
     _token = launch.token ?? _token;
     _rememberToken(_token);
     if (_launchConnectionManaged) _changed();
+    phase('核对本机存储');
+    _storageStatus = await platform.readStorageStatus();
+    if (_disposed) throw StateError('客户端已关闭。');
+    // 首次便携选择必须早于偏好迁移和身份生成。界面选择之外的写入口即使被调用，
+    // 也会被原生存储层拒绝，不能先生成新身份再覆盖为历史身份。
+    if (_storageStatus!.needsInitialization) {
+      throw StateError('请先完成便携客户端的首次存储选择。');
+    }
+    String? portableStoredToken;
+    if (_storageStatus!.mode == 'windows-portable') {
+      phase('核对已有连接凭据');
+      // 即使启动参数提供了另一组连接，便携目录中的已有密文也必须先能读取。
+      // 缺失 client-id 但 Token 无法解密时，不得先生成身份造成部分重置。
+      // 这里只验证本地密文；受管连接仍只采用完整的启动参数组。
+      portableStoredToken = await platform.readSecret('connection-token');
+      if (_disposed) throw StateError('客户端已关闭。');
+      _rememberToken(portableStoredToken ?? '');
+    }
     phase('读取本机偏好');
     _local = {..._local, ...await platform.readPreferences()};
     _savedLocal = Map.of(_local);
@@ -339,17 +370,36 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       if (await platform.readSecret('client-id') != _clientId)
         throw StateError('设备身份未能耐久保存。');
     }
+    // 导入仅复制偏好，不复制身份。旧设备的配置确认不能成为新设备注册的初始
+    // 共享配置，更不能继承同步许可。每次初始化都核对，而非只在导入按钮后清理，
+    // 以覆盖复制成功、进程退出、下次启动才完成此步骤的恢复路径。
+    if (_storageStatus?.mode == 'windows-portable' &&
+        _local['profileCheckpoint'] != null &&
+        object(_local['profileCheckpoint'])['currentDeviceId'] != _clientId) {
+      phase('清理旧设备配置确认');
+      await platform.writePreferences({'profileCheckpoint': null});
+      if (_disposed) throw StateError('客户端已关闭。');
+      _local['profileCheckpoint'] = null;
+      _savedLocal['profileCheckpoint'] = null;
+    }
     _clientLabel = label(
       _local['deviceLabel'],
-      _desktop ? '游戏电脑' : 'Android 伴随设备',
+      _storageStatus!.mode == 'windows-portable'
+          ? 'Windows 独立客户端'
+          : _desktop
+          ? '游戏电脑'
+          : 'Android 伴随设备',
     );
     final savedEndpoint = label(_local['endpoint'], _endpoint);
     _endpoint = launch.endpoint ?? savedEndpoint;
     phase('读取连接凭据');
     // 启动参数必须构成独立的一组，不能拿已保存的另一组凭据补齐缺失部分。
-    // 显式空 Token 仍表示离线启动，不读取或覆写已有的安全存储。
+    // 显式空 Token 仍表示离线启动，不采用或覆写已保存的连接；便携目录前面的
+    // 密文可读性检查只用于阻止部分重置，不会将该 Token 拼入启动参数。
     _token = _launchConnectionManaged
         ? launch.token ?? ''
+        : _storageStatus!.mode == 'windows-portable'
+        ? portableStoredToken ?? ''
         : await platform.readSecret('connection-token') ?? '';
     _rememberToken(_token);
     // 只记录实际读取路径；Windows、回环地址或主设备身份都不能证明由游戏启动。
@@ -396,6 +446,37 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
       }
     });
   }
+
+  /// 首次选择与连接初始化共用队列，重复点击不能并行导入或生成两份身份。
+  /// 原生操作成功后重新读取状态与文件；任何失败都保留原件，不以清空重建作为恢复。
+  @override
+  Future<void> initializeStorage({required bool importLegacy}) =>
+      _queueConnection(() async {
+        if (_initialized) throw StateError('本机存储已经初始化，不能再次导入旧数据。');
+        final status = await platform.readStorageStatus();
+        _storageStatus = status;
+        if (!status.needsInitialization ||
+            importLegacy && !status.canImportLegacy) {
+          throw StateError('当前目录不符合首次初始化或旧数据导入条件。');
+        }
+        _initializationError = '';
+        try {
+          await platform.initializeStorage(importLegacy: importLegacy);
+        } on PlatformException catch (cause) {
+          if (cause.code == 'credential-unavailable')
+            _credentialUnavailable = true;
+          rethrow;
+        }
+        await _ensureInitialized();
+        if (_token.isNotEmpty && !connected && !_launchConnectionIncomplete) {
+          await _replaceConnection(
+            _endpoint,
+            _token,
+            _clientLabel,
+            source: _connectionSource,
+          );
+        }
+      }, operationName: importLegacy ? '导入旧 Flutter 数据' : '初始化便携存储');
 
   /// 比较经过协议校验的实际地址；无效或未知旧地址不能作为复用安全凭据的依据。
   bool _sameEndpoint(String first, String second) {
@@ -1977,6 +2058,9 @@ class LiveWorkbenchModel extends WorkbenchModel with WidgetsBindingObserver {
   }
 
   String _safeError(Object cause) {
+    if (cause is PlatformException && cause.code == 'credential-unavailable') {
+      return '当前 Windows 用户环境无法解密已有凭据，原文件已保留。请返回原电脑和原 Windows 用户恢复使用，或恢复该环境下的原始 client-data；如需新设备，请另建完整客户端目录，不要删除原凭据来绕过错误';
+    }
     var message = cause.toString();
     if (message.isEmpty) return message;
     // Token 更新失败也可能把新输入带入异常；所有本进程已使用/提交的凭据都
